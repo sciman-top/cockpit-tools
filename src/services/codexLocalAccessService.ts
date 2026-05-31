@@ -12,6 +12,8 @@ import type {
   CodexLocalAccessState,
   CodexLocalApiSafetyPresetId,
   CodexLocalAccessTestResult,
+  CodexLocalAccessTimeoutPreset,
+  CodexLocalAccessTimeouts,
   CodexLocalAccessUsageEventPage,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
@@ -141,6 +143,26 @@ export async function updateCodexLocalAccessRoutingOptions(payload: {
   disableCooling: boolean;
 }): Promise<CodexLocalAccessState> {
   return await invoke('codex_local_access_update_routing_options', payload);
+}
+
+export async function updateCodexLocalAccessTimeouts(
+  timeouts: CodexLocalAccessTimeouts,
+  activeTimeoutPresetId?: string,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_update_timeouts', {
+    timeouts,
+    activeTimeoutPresetId: activeTimeoutPresetId ?? null,
+  });
+}
+
+export async function updateCodexLocalAccessTimeoutPresets(
+  timeoutPresets: CodexLocalAccessTimeoutPreset[],
+  activeTimeoutPresetId?: string,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_update_timeout_presets', {
+    timeoutPresets,
+    activeTimeoutPresetId: activeTimeoutPresetId ?? null,
+  });
 }
 
 export async function updateCodexLocalAccessUpstreamProxyConfig(

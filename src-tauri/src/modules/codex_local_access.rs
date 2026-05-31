@@ -13,10 +13,11 @@ use crate::models::codex_local_access::{
     CodexLocalAccessRequestKind, CodexLocalAccessRoutingStrategy, CodexLocalAccessScope,
     CodexLocalAccessState, CodexLocalAccessStats, CodexLocalAccessStatsWindow,
     CodexLocalAccessStickyBinding, CodexLocalAccessTestFailure, CodexLocalAccessTestResult,
-    CodexLocalAccessUsageEvent, CodexLocalAccessUsageEventPage, CodexLocalAccessUsageStats,
-    CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId,
-    CodexRuntimeAccountKind, CodexRuntimeIntegrationMode, CodexRuntimeModeState,
-    CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION, CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
+    CodexLocalAccessTimeoutPreset, CodexLocalAccessTimeouts, CodexLocalAccessUsageEvent,
+    CodexLocalAccessUsageEventPage, CodexLocalAccessUsageStats, CodexLocalApiFallbackMode,
+    CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
+    CodexRuntimeIntegrationMode, CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
+    CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
 };
 use crate::modules::atomic_write::write_string_atomic;
 use crate::modules::{
@@ -89,7 +90,8 @@ const MAX_HTTP_REQUEST_BYTES: usize = 256 * 1024 * 1024;
 const CODEX_LOCAL_ACCESS_TAKEOVER_BACKUP_VERSION: u32 = 1;
 const CODEX_PROFILE_AUTH_FILE: &str = "auth.json";
 const CODEX_PROFILE_CONFIG_FILE: &str = "config.toml";
-const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const REQUEST_READ_TIMEOUT: Duration = DEFAULT_REQUEST_READ_TIMEOUT;
 const MAX_INLINE_ACCOUNT_RETRY_WAIT: Duration = Duration::from_secs(3);
 const MAX_POOL_UNAVAILABLE_PRE_ADMISSION_WAIT: Duration = Duration::from_secs(3);
 const UPSTREAM_SEND_RETRY_ATTEMPTS: usize = 3;
@@ -100,9 +102,12 @@ const CODEX_RESPONSES_WEBSOCKET_BETA_HEADER_VALUE: &str = "responses_websockets=
 const SINGLE_ACCOUNT_STATUS_RETRY_BASE_DELAY: Duration = Duration::from_millis(300);
 const SINGLE_ACCOUNT_STATUS_RETRY_MAX_DELAY: Duration = Duration::from_millis(1500);
 const CODEX_WEBSOCKET_INITIAL_MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
-const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const UPSTREAM_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-const UPSTREAM_STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(180);
+const DEFAULT_UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_UPSTREAM_STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(180);
+const UPSTREAM_CONNECT_TIMEOUT: Duration = DEFAULT_UPSTREAM_CONNECT_TIMEOUT;
+const UPSTREAM_STREAM_IDLE_TIMEOUT: Duration = DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT;
+const UPSTREAM_STREAM_TOTAL_TIMEOUT: Duration = DEFAULT_UPSTREAM_STREAM_TOTAL_TIMEOUT;
 const STATS_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_RETRY_CREDENTIALS_PER_REQUEST: usize = 24;
 const MAX_USAGE_LIMIT_RESCUE_CREDENTIALS_PER_REQUEST: usize = 4;
@@ -112,6 +117,22 @@ const DEFAULT_SESSION_AFFINITY_TTL_MS: i64 = 60 * 60 * 1000;
 const MAX_RETRY_INTERVAL_MIN_MS: u64 = 0;
 const MAX_RETRY_INTERVAL_MAX_MS: u64 = 30 * 1000;
 const DEFAULT_MAX_RETRY_INTERVAL_MS: u64 = 3 * 1000;
+const LOCAL_ACCESS_TIMEOUT_MIN_MS: u64 = 1_000;
+const LOCAL_ACCESS_TIMEOUT_MAX_MS: u64 = 600_000;
+const LEGACY_STREAM_TOTAL_TIMEOUT_MAX_MS: u64 = 30 * 60 * 1000;
+const SIDECAR_STREAM_OPEN_ATTEMPTS_MIN: u8 = 1;
+const SIDECAR_STREAM_OPEN_ATTEMPTS_MAX: u8 = 3;
+const SIDECAR_STREAM_KEEPALIVE_MIN_SECONDS: u16 = 0;
+const SIDECAR_STREAM_KEEPALIVE_MAX_SECONDS: u16 = 300;
+const LOCAL_ACCESS_RETRY_ATTEMPTS_MIN: u8 = 0;
+const LOCAL_ACCESS_RETRY_ATTEMPTS_MAX: u8 = 5;
+const LOCAL_ACCESS_RETRY_DELAY_MIN_MS: u64 = 50;
+const LOCAL_ACCESS_RETRY_DELAY_MAX_MS: u64 = 10 * 1000;
+const WEBSOCKET_IDLE_TIMEOUT_MAX_MS: u64 = 30 * 60 * 1000;
+const BUILTIN_TIMEOUT_PRESET_LONG_WAIT_ID: &str = "long_wait";
+const BUILTIN_TIMEOUT_PRESET_SHORT_WAIT_ID: &str = "short_wait";
+const MAX_CUSTOM_TIMEOUT_PRESETS: usize = 20;
+const TIMEOUT_PRESET_NAME_MAX_CHARS: usize = 40;
 const RESPONSE_AFFINITY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const MAX_RESPONSE_AFFINITY_BINDINGS: usize = 4096;
 const REQUEST_AFFINITY_TTL_MS: i64 = 60 * 60 * 1000;
@@ -181,8 +202,6 @@ const CODEX_IMAGE_MODEL_ID: &str = "gpt-image-2";
 const CODEX_AUTO_REVIEW_MODEL_ID: &str = "codex-auto-review";
 const DEFAULT_IMAGES_MAIN_MODEL: &str = "gpt-5.4-mini";
 const MAX_MODEL_PRICE_USD_PER_MILLION: f64 = 1_000_000.0;
-const SIDECAR_STREAMING_KEEPALIVE_SECONDS: i32 = 15;
-const SIDECAR_STREAMING_BOOTSTRAP_RETRIES: i32 = 1;
 const CHAT_COMPLETIONS_PATH: &str = "/v1/chat/completions";
 const RESPONSES_PATH: &str = "/v1/responses";
 const RESPONSES_COMPACT_PATH: &str = "/v1/responses/compact";
@@ -269,12 +288,22 @@ struct ResponseCapture {
     response_id: Option<String>,
     response_completed_seen: bool,
     compaction_summary_seen: bool,
+    terminal_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResponseHeaderValue {
     name: &'static str,
     value: String,
+}
+
+#[derive(Debug, Clone)]
+struct UpstreamResponseFailedSignal {
+    event_type: String,
+    code: Option<String>,
+    error_type: Option<String>,
+    message: Option<String>,
+    raw: String,
 }
 
 #[derive(Debug, Clone)]
@@ -357,6 +386,7 @@ struct CachedPreparedAccount {
 struct UpstreamHttpClientSignature {
     proxy_source: UpstreamProxySource,
     proxy_url: Option<String>,
+    connect_timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -392,6 +422,7 @@ struct ProxyDispatchError {
     message: String,
     account_id: Option<String>,
     account_email: Option<String>,
+    error_category: Option<String>,
     retry_after: Option<Duration>,
     defer_until_pool_available: bool,
 }
@@ -566,6 +597,7 @@ struct ResponseUsageCollector {
     response_id: Option<String>,
     response_completed_seen: bool,
     compaction_summary_seen: bool,
+    terminal_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -742,6 +774,17 @@ fn gateway_lifecycle_lock() -> &'static TokioMutex<()> {
 
 fn upstream_http_client_cache() -> &'static Mutex<Option<CachedUpstreamHttpClient>> {
     UPSTREAM_HTTP_CLIENT.get_or_init(|| Mutex::new(None))
+}
+
+fn duration_to_millis(duration: Duration) -> u64 {
+    duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn duration_from_millis(value: u64, fallback: Duration) -> Duration {
+    if value == 0 {
+        return fallback;
+    }
+    Duration::from_millis(value)
 }
 
 fn upstream_env_proxy_url() -> Option<String> {
@@ -1209,6 +1252,7 @@ fn local_backpressure_error(config: &CodexLocalApiSafetyConfig) -> ProxyDispatch
         message: "本地接入队列等待超时，请稍后重试".to_string(),
         account_id: None,
         account_email: None,
+        error_category: Some("local_backpressure".to_string()),
         retry_after: Some(local_backpressure_retry_after(config)),
         defer_until_pool_available: false,
     }
@@ -1412,7 +1456,9 @@ fn reset_active_stream_leases_for_tests() {
 
 fn current_upstream_http_client_signature(
     upstream_proxy_url: Option<&str>,
+    connect_timeout: Duration,
 ) -> UpstreamHttpClientSignature {
+    let connect_timeout_ms = duration_to_millis(connect_timeout);
     if let Some(proxy_url) = upstream_proxy_url
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1420,6 +1466,7 @@ fn current_upstream_http_client_signature(
         return UpstreamHttpClientSignature {
             proxy_source: UpstreamProxySource::ApiService,
             proxy_url: Some(proxy_url.to_string()),
+            connect_timeout_ms,
         };
     }
 
@@ -1430,6 +1477,7 @@ fn current_upstream_http_client_signature(
             return UpstreamHttpClientSignature {
                 proxy_source: UpstreamProxySource::Global,
                 proxy_url: Some(proxy_url.to_string()),
+                connect_timeout_ms,
             };
         }
     }
@@ -1438,12 +1486,14 @@ fn current_upstream_http_client_signature(
         return UpstreamHttpClientSignature {
             proxy_source: UpstreamProxySource::SystemEnv,
             proxy_url: Some(proxy_url),
+            connect_timeout_ms,
         };
     }
 
     UpstreamHttpClientSignature {
         proxy_source: UpstreamProxySource::SystemAuto,
         proxy_url: None,
+        connect_timeout_ms,
     }
 }
 
@@ -1465,7 +1515,10 @@ fn redact_proxy_url_for_log(proxy_url: &str) -> String {
 fn current_upstream_proxy_diagnostics(
     upstream_proxy_url: Option<&str>,
 ) -> UpstreamProxyDiagnostics {
-    let signature = current_upstream_http_client_signature(upstream_proxy_url);
+    let signature = current_upstream_http_client_signature(
+        upstream_proxy_url,
+        DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
+    );
     UpstreamProxyDiagnostics {
         proxy_source: signature.proxy_source,
         proxy_url: signature.proxy_url.as_deref().map(redact_proxy_url_for_log),
@@ -1473,7 +1526,10 @@ fn current_upstream_proxy_diagnostics(
 }
 
 fn build_upstream_http_client(signature: &UpstreamHttpClientSignature) -> Result<Client, String> {
-    let mut builder = Client::builder().connect_timeout(UPSTREAM_CONNECT_TIMEOUT);
+    let mut builder = Client::builder().connect_timeout(duration_from_millis(
+        signature.connect_timeout_ms,
+        DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
+    ));
 
     if let Some(proxy_url) = signature.proxy_url.as_deref() {
         let proxy = Proxy::all(proxy_url).map_err(|e| format!("Codex 上游代理地址无效: {}", e))?;
@@ -1535,8 +1591,11 @@ fn log_sidecar_proxy_signature(signature: &UpstreamHttpClientSignature) {
     }
 }
 
-fn upstream_http_client(upstream_proxy_url: Option<&str>) -> Result<Client, String> {
-    let signature = current_upstream_http_client_signature(upstream_proxy_url);
+fn upstream_http_client(
+    upstream_proxy_url: Option<&str>,
+    connect_timeout: Duration,
+) -> Result<Client, String> {
+    let signature = current_upstream_http_client_signature(upstream_proxy_url, connect_timeout);
     let mut cache = upstream_http_client_cache()
         .lock()
         .map_err(|_| "Codex 上游 HTTP 客户端缓存已损坏".to_string())?;
@@ -2154,18 +2213,16 @@ fn supported_codex_model_ids() -> Vec<String> {
         })
         .unwrap_or_default();
 
-    if model_ids.is_empty() {
-        model_ids = DEFAULT_CODEX_MODELS
-            .iter()
-            .map(|model| (*model).to_string())
-            .collect();
-    }
-
     let mut seen_model_ids: HashSet<String> = model_ids
         .iter()
         .map(|model| model.trim().to_ascii_lowercase())
         .filter(|model| !model.is_empty())
         .collect();
+    for model in DEFAULT_CODEX_MODELS {
+        if seen_model_ids.insert((*model).to_ascii_lowercase()) {
+            model_ids.push((*model).to_string());
+        }
+    }
     if seen_model_ids.insert(CODEX_IMAGE_MODEL_ID.to_string()) {
         model_ids.push(CODEX_IMAGE_MODEL_ID.to_string());
     }
@@ -4442,6 +4499,12 @@ impl ChatCompletionStreamTransformer {
             return;
         };
 
+        if self.response_capture.terminal_error.is_none() {
+            if let Some(signal) = upstream_response_failed_signal(event_name.as_deref(), &event) {
+                self.response_capture.terminal_error =
+                    Some(format_upstream_response_failed_error(&signal));
+            }
+        }
         if let Some(usage) = extract_usage_capture(&event) {
             self.response_capture.usage = Some(usage);
         }
@@ -8383,6 +8446,38 @@ fn open_local_access_logs_db_once(path: &Path) -> Result<Connection, SqliteError
             ON request_logs(request_id, timestamp DESC);
         "#,
     )?;
+    conn.execute(
+        r#"
+        UPDATE request_logs
+        SET error_category = 'upstream_response_failed'
+        WHERE success = 0
+          AND error_category != 'upstream_response_failed'
+          AND (
+            lower(error_message) LIKE '%upstream_response_failed%'
+            OR lower(error_message) LIKE '%codex upstream response.failed%'
+            OR lower(error_message) LIKE '%last_event=response.failed%'
+          )
+        "#,
+        [],
+    )?;
+    conn.execute(
+        r#"
+        UPDATE request_logs
+        SET error_category = 'stream_incomplete'
+        WHERE success = 0
+          AND error_category != 'stream_incomplete'
+          AND error_category != 'upstream_response_failed'
+          AND (
+            lower(error_message) LIKE '%stream disconnected before completion%'
+            OR lower(error_message) LIKE '%error decoding response body%'
+            OR lower(error_message) LIKE '%closed before response.completed%'
+            OR lower(error_message) LIKE '%closed before response.done%'
+            OR lower(error_message) LIKE '%stream ended before completion%'
+            OR lower(error_message) LIKE '%incomplete_eof%'
+          )
+        "#,
+        [],
+    )?;
     Ok(conn)
 }
 
@@ -9806,8 +9901,10 @@ fn sidecar_codex_key_config_value(
 fn sidecar_effective_proxy_signature(
     collection: &CodexLocalAccessCollection,
 ) -> Result<UpstreamHttpClientSignature, String> {
-    let signature =
-        current_upstream_http_client_signature(collection.upstream_proxy_url.as_deref());
+    let signature = current_upstream_http_client_signature(
+        collection.upstream_proxy_url.as_deref(),
+        DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
+    );
     if let Some(proxy_url) = signature.proxy_url.as_deref() {
         Proxy::all(proxy_url).map_err(|e| match signature.proxy_source {
             UpstreamProxySource::ApiService => format!("API 代理地址无效: {}", e),
@@ -9873,8 +9970,43 @@ fn is_client_disconnect_error_message(message: &str) -> bool {
         || lower.contains("客户端在发送")
 }
 
+fn is_client_canceled_error_category(category: &str) -> bool {
+    category.trim().eq_ignore_ascii_case("client_canceled")
+}
+
+fn is_stream_incomplete_error_category(category: &str) -> bool {
+    category.trim().eq_ignore_ascii_case("stream_incomplete")
+}
+
+fn is_upstream_response_failed_error_category(category: &str) -> bool {
+    category
+        .trim()
+        .eq_ignore_ascii_case("upstream_response_failed")
+}
+
+fn is_upstream_response_failed_error_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("upstream_response_failed")
+        || lower.contains("codex upstream response.failed")
+        || lower.contains("last_event=response.failed")
+}
+
+fn is_stream_incomplete_error_message(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("stream disconnected before completion")
+        || lower.contains("error decoding response body")
+        || lower.contains("closed before response.completed")
+        || lower.contains("closed before response.done")
+        || lower.contains("stream ended before completion")
+        || lower.contains("incomplete_eof")
+}
+
 fn legacy_stream_error_category(message: &str) -> &'static str {
-    if message.contains("流式响应超时")
+    if is_upstream_response_failed_error_message(message) {
+        "upstream_response_failed"
+    } else if is_stream_incomplete_error_message(message) {
+        "stream_incomplete"
+    } else if message.contains("流式响应超时")
         || (message.contains("连续") && message.contains("未收到新数据"))
     {
         "upstream_stream_timeout"
@@ -9883,6 +10015,74 @@ fn legacy_stream_error_category(message: &str) -> &'static str {
     } else {
         "stream_write_failed"
     }
+}
+
+fn compact_json_for_log(value: &Value) -> String {
+    let mut text = serde_json::to_string(value).unwrap_or_else(|_| value.to_string());
+    const MAX_LEN: usize = 800;
+    if text.len() > MAX_LEN {
+        text.truncate(MAX_LEN);
+        text.push_str("...");
+    }
+    text
+}
+
+fn json_field_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(|item| {
+        item.as_str()
+            .map(str::to_string)
+            .or_else(|| item.as_i64().map(|number| number.to_string()))
+            .or_else(|| item.as_u64().map(|number| number.to_string()))
+            .or_else(|| item.as_f64().map(|number| number.to_string()))
+            .or_else(|| item.as_bool().map(|flag| flag.to_string()))
+    })
+}
+
+fn nested_error_object(value: &Value) -> Option<&Value> {
+    value
+        .get("response")
+        .and_then(|response| response.get("error"))
+        .or_else(|| value.get("error"))
+        .or_else(|| value.get("last_error"))
+}
+
+fn upstream_response_failed_signal(
+    event_name: Option<&str>,
+    value: &Value,
+) -> Option<UpstreamResponseFailedSignal> {
+    let value_type = value.get("type").and_then(Value::as_str);
+    let event_type = value_type.or(event_name).unwrap_or("").trim();
+    if event_type != "response.failed" && event_type != "error" {
+        return None;
+    }
+
+    let error_value = nested_error_object(value).unwrap_or(value);
+    let code = json_field_string(error_value, "code").or_else(|| json_field_string(value, "code"));
+    let error_type =
+        json_field_string(error_value, "type").or_else(|| json_field_string(value, "error_type"));
+    let message = json_field_string(error_value, "message")
+        .or_else(|| json_field_string(error_value, "detail"))
+        .or_else(|| json_field_string(value, "message"));
+    let raw = compact_json_for_log(error_value);
+
+    Some(UpstreamResponseFailedSignal {
+        event_type: event_type.to_string(),
+        code,
+        error_type,
+        message,
+        raw,
+    })
+}
+
+fn format_upstream_response_failed_error(signal: &UpstreamResponseFailedSignal) -> String {
+    format!(
+        "upstream_response_failed: Codex upstream {}: code={} type={} message={} raw={}",
+        signal.event_type,
+        signal.code.as_deref().unwrap_or("-"),
+        signal.error_type.as_deref().unwrap_or("-"),
+        signal.message.as_deref().unwrap_or("-"),
+        signal.raw
+    )
 }
 
 async fn start_legacy_gateway_locked(
@@ -10131,11 +10331,17 @@ async fn prepare_sidecar_launch_config(
         "request-retry".to_string(),
         json!(MAX_REQUEST_RETRY_ATTEMPTS as i32),
     );
+    let timeouts = collection_timeouts(collection);
     config.insert(
         "streaming".to_string(),
         json!({
-            "keepalive-seconds": SIDECAR_STREAMING_KEEPALIVE_SECONDS,
-            "bootstrap-retries": SIDECAR_STREAMING_BOOTSTRAP_RETRIES,
+            "keepalive-seconds": timeouts.sidecar_stream_keepalive_seconds,
+            "bootstrap-retries": timeouts.sidecar_streaming_bootstrap_retries,
+            "stream-open-timeout-ms": timeouts.sidecar_stream_open_timeout_ms,
+            "stream-idle-timeout-ms": timeouts.sidecar_stream_idle_timeout_ms,
+            "image-stream-open-timeout-ms": timeouts.sidecar_image_stream_open_timeout_ms,
+            "image-stream-idle-timeout-ms": timeouts.sidecar_image_stream_idle_timeout_ms,
+            "stream-open-max-attempts": timeouts.sidecar_stream_open_max_attempts,
         }),
     );
     config.insert(
@@ -10252,6 +10458,7 @@ fn sidecar_usage_event_is_client_canceled(event: &SidecarUsageEvent) -> bool {
                 || message.contains("client canceled")
                 || message.contains("client disconnected")
                 || message.contains("client closed")
+                || is_client_disconnect_error_message(&message)
         })
         .unwrap_or(false)
 }
@@ -10259,6 +10466,22 @@ fn sidecar_usage_event_is_client_canceled(event: &SidecarUsageEvent) -> bool {
 fn normalized_sidecar_error_category(event: &SidecarUsageEvent) -> Option<String> {
     if sidecar_usage_event_is_client_canceled(event) {
         return Some("client_canceled".to_string());
+    }
+    if event
+        .error_message
+        .as_deref()
+        .map(is_upstream_response_failed_error_message)
+        .unwrap_or(false)
+    {
+        return Some("upstream_response_failed".to_string());
+    }
+    if event
+        .error_message
+        .as_deref()
+        .map(is_stream_incomplete_error_message)
+        .unwrap_or(false)
+    {
+        return Some("stream_incomplete".to_string());
     }
     event
         .error_category
@@ -12099,6 +12322,214 @@ fn validate_upstream_proxy_config(
     Ok(normalized)
 }
 
+fn clamp_timeout_ms(value: u64, fallback: u64, max: u64) -> u64 {
+    let base = if value == 0 { fallback } else { value };
+    base.clamp(LOCAL_ACCESS_TIMEOUT_MIN_MS, max)
+}
+
+fn clamp_retry_delay_ms(value: u64, fallback: u64) -> u64 {
+    let base = if value == 0 { fallback } else { value };
+    base.clamp(
+        LOCAL_ACCESS_RETRY_DELAY_MIN_MS,
+        LOCAL_ACCESS_RETRY_DELAY_MAX_MS,
+    )
+}
+
+fn normalize_timeouts(timeouts: &mut CodexLocalAccessTimeouts) -> bool {
+    let original = timeouts.clone();
+    let defaults = CodexLocalAccessTimeouts::default();
+    timeouts.legacy_request_read_timeout_ms = clamp_timeout_ms(
+        timeouts.legacy_request_read_timeout_ms,
+        defaults.legacy_request_read_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.legacy_upstream_connect_timeout_ms = clamp_timeout_ms(
+        timeouts.legacy_upstream_connect_timeout_ms,
+        defaults.legacy_upstream_connect_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.legacy_stream_idle_timeout_ms = clamp_timeout_ms(
+        timeouts.legacy_stream_idle_timeout_ms,
+        defaults.legacy_stream_idle_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.legacy_stream_total_timeout_ms = clamp_timeout_ms(
+        timeouts.legacy_stream_total_timeout_ms,
+        defaults.legacy_stream_total_timeout_ms,
+        LEGACY_STREAM_TOTAL_TIMEOUT_MAX_MS,
+    );
+    if timeouts.legacy_stream_total_timeout_ms < timeouts.legacy_stream_idle_timeout_ms {
+        timeouts.legacy_stream_total_timeout_ms = timeouts.legacy_stream_idle_timeout_ms;
+    }
+    timeouts.sidecar_stream_open_timeout_ms = clamp_timeout_ms(
+        timeouts.sidecar_stream_open_timeout_ms,
+        defaults.sidecar_stream_open_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.sidecar_stream_idle_timeout_ms = clamp_timeout_ms(
+        timeouts.sidecar_stream_idle_timeout_ms,
+        defaults.sidecar_stream_idle_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.sidecar_image_stream_open_timeout_ms = clamp_timeout_ms(
+        timeouts.sidecar_image_stream_open_timeout_ms,
+        defaults.sidecar_image_stream_open_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.sidecar_image_stream_idle_timeout_ms = clamp_timeout_ms(
+        timeouts.sidecar_image_stream_idle_timeout_ms,
+        defaults.sidecar_image_stream_idle_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.sidecar_stream_open_max_attempts = timeouts.sidecar_stream_open_max_attempts.clamp(
+        SIDECAR_STREAM_OPEN_ATTEMPTS_MIN,
+        SIDECAR_STREAM_OPEN_ATTEMPTS_MAX,
+    );
+    timeouts.sidecar_stream_keepalive_seconds = timeouts.sidecar_stream_keepalive_seconds.clamp(
+        SIDECAR_STREAM_KEEPALIVE_MIN_SECONDS,
+        SIDECAR_STREAM_KEEPALIVE_MAX_SECONDS,
+    );
+    timeouts.websocket_connect_timeout_ms = clamp_timeout_ms(
+        timeouts.websocket_connect_timeout_ms,
+        defaults.websocket_connect_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.websocket_initial_message_timeout_ms = clamp_timeout_ms(
+        timeouts.websocket_initial_message_timeout_ms,
+        defaults.websocket_initial_message_timeout_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.websocket_idle_timeout_ms = clamp_timeout_ms(
+        timeouts.websocket_idle_timeout_ms,
+        defaults.websocket_idle_timeout_ms,
+        WEBSOCKET_IDLE_TIMEOUT_MAX_MS,
+    );
+    timeouts.websocket_heartbeat_interval_ms = clamp_timeout_ms(
+        timeouts.websocket_heartbeat_interval_ms,
+        defaults.websocket_heartbeat_interval_ms,
+        LOCAL_ACCESS_TIMEOUT_MAX_MS,
+    );
+    timeouts.upstream_send_retry_attempts = timeouts.upstream_send_retry_attempts.clamp(
+        LOCAL_ACCESS_RETRY_ATTEMPTS_MIN,
+        LOCAL_ACCESS_RETRY_ATTEMPTS_MAX,
+    );
+    timeouts.upstream_send_retry_base_delay_ms = clamp_retry_delay_ms(
+        timeouts.upstream_send_retry_base_delay_ms,
+        defaults.upstream_send_retry_base_delay_ms,
+    );
+    timeouts.upstream_send_retry_max_delay_ms = clamp_retry_delay_ms(
+        timeouts.upstream_send_retry_max_delay_ms,
+        defaults.upstream_send_retry_max_delay_ms,
+    );
+    if timeouts.upstream_send_retry_max_delay_ms < timeouts.upstream_send_retry_base_delay_ms {
+        timeouts.upstream_send_retry_max_delay_ms = timeouts.upstream_send_retry_base_delay_ms;
+    }
+    timeouts.single_account_status_retry_attempts =
+        timeouts.single_account_status_retry_attempts.clamp(
+            LOCAL_ACCESS_RETRY_ATTEMPTS_MIN,
+            LOCAL_ACCESS_RETRY_ATTEMPTS_MAX,
+        );
+    timeouts.single_account_status_retry_base_delay_ms = clamp_retry_delay_ms(
+        timeouts.single_account_status_retry_base_delay_ms,
+        defaults.single_account_status_retry_base_delay_ms,
+    );
+    timeouts.single_account_status_retry_max_delay_ms = clamp_retry_delay_ms(
+        timeouts.single_account_status_retry_max_delay_ms,
+        defaults.single_account_status_retry_max_delay_ms,
+    );
+    if timeouts.single_account_status_retry_max_delay_ms
+        < timeouts.single_account_status_retry_base_delay_ms
+    {
+        timeouts.single_account_status_retry_max_delay_ms =
+            timeouts.single_account_status_retry_base_delay_ms;
+    }
+    timeouts.sidecar_streaming_bootstrap_retries =
+        timeouts.sidecar_streaming_bootstrap_retries.clamp(
+            LOCAL_ACCESS_RETRY_ATTEMPTS_MIN,
+            LOCAL_ACCESS_RETRY_ATTEMPTS_MAX,
+        );
+    *timeouts != original
+}
+
+fn collection_timeouts(collection: &CodexLocalAccessCollection) -> CodexLocalAccessTimeouts {
+    let mut timeouts = collection.timeouts.clone();
+    normalize_timeouts(&mut timeouts);
+    timeouts
+}
+
+fn normalize_timeout_preset_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .take(TIMEOUT_PRESET_NAME_MAX_CHARS)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+fn normalize_timeout_preset_id(id: &str) -> Option<String> {
+    let normalized = id.trim();
+    if normalized.is_empty()
+        || normalized == BUILTIN_TIMEOUT_PRESET_LONG_WAIT_ID
+        || normalized == BUILTIN_TIMEOUT_PRESET_SHORT_WAIT_ID
+    {
+        return None;
+    }
+    Some(normalized.to_string())
+}
+
+fn normalize_timeout_presets(presets: &mut Vec<CodexLocalAccessTimeoutPreset>) -> bool {
+    let original = presets.clone();
+    let now = now_ms();
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+
+    for mut preset in std::mem::take(presets) {
+        if normalized.len() >= MAX_CUSTOM_TIMEOUT_PRESETS {
+            break;
+        }
+        let Some(id) = normalize_timeout_preset_id(&preset.id) else {
+            continue;
+        };
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let name = normalize_timeout_preset_name(&preset.name);
+        if name.is_empty() {
+            continue;
+        }
+        normalize_timeouts(&mut preset.timeouts);
+        preset.id = id;
+        preset.name = name;
+        if preset.created_at <= 0 {
+            preset.created_at = now;
+        }
+        if preset.updated_at <= 0 {
+            preset.updated_at = preset.created_at;
+        }
+        normalized.push(preset);
+    }
+
+    *presets = normalized;
+    *presets != original
+}
+
+fn normalize_active_timeout_preset_id(collection: &mut CodexLocalAccessCollection) -> bool {
+    let original = collection.active_timeout_preset_id.clone();
+    let current = collection.active_timeout_preset_id.trim();
+    let normalized = if current == BUILTIN_TIMEOUT_PRESET_SHORT_WAIT_ID
+        || collection
+            .timeout_presets
+            .iter()
+            .any(|preset| preset.id == current)
+    {
+        current.to_string()
+    } else {
+        BUILTIN_TIMEOUT_PRESET_LONG_WAIT_ID.to_string()
+    };
+    collection.active_timeout_preset_id = normalized;
+    collection.active_timeout_preset_id != original
+}
+
 fn sanitize_collection(
     collection: &mut CodexLocalAccessCollection,
 ) -> Result<(bool, HashSet<String>), String> {
@@ -12220,6 +12651,9 @@ fn sanitize_collection(
         collection.max_retry_interval_ms = normalized_max_retry_interval_ms;
         changed = true;
     }
+    changed |= normalize_timeouts(&mut collection.timeouts);
+    changed |= normalize_timeout_presets(&mut collection.timeout_presets);
+    changed |= normalize_active_timeout_preset_id(collection);
 
     Ok((changed, valid_account_ids))
 }
@@ -12257,6 +12691,9 @@ async fn ensure_runtime_loaded_without_start() -> Result<(), String> {
             session_affinity_ttl_ms: DEFAULT_SESSION_AFFINITY_TTL_MS,
             max_retry_credentials: 0,
             max_retry_interval_ms: DEFAULT_MAX_RETRY_INTERVAL_MS,
+            timeouts: CodexLocalAccessTimeouts::default(),
+            active_timeout_preset_id: "long_wait".to_string(),
+            timeout_presets: Vec::new(),
             disable_cooling: false,
             restrict_free_accounts: true,
             follow_current_account: false,
@@ -12718,6 +13155,22 @@ fn apply_usage_stats(
     } else {
         target.failure_count = target.failure_count.saturating_add(1);
     }
+    let normalized_error_category = error_category
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if matches!(normalized_error_category, Some(category) if is_client_canceled_error_category(category))
+    {
+        target.client_canceled_count = target.client_canceled_count.saturating_add(1);
+    }
+    if matches!(normalized_error_category, Some(category) if is_upstream_response_failed_error_category(category))
+    {
+        target.upstream_response_failed_count =
+            target.upstream_response_failed_count.saturating_add(1);
+    }
+    if matches!(normalized_error_category, Some(category) if is_stream_incomplete_error_category(category))
+    {
+        target.stream_incomplete_count = target.stream_incomplete_count.saturating_add(1);
+    }
     target.total_latency_ms = target.total_latency_ms.saturating_add(latency_ms);
     match request_kind {
         CodexLocalAccessRequestKind::Text => {
@@ -12735,9 +13188,7 @@ fn apply_usage_stats(
         CodexLocalAccessRequestKind::Other => {}
     }
     if matches!(
-        error_category
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
+        normalized_error_category,
         Some("image_generation_not_enabled" | "image_generation_disabled")
     ) {
         target.image_generation_capability_failure_count = target
@@ -13866,6 +14317,9 @@ pub async fn save_local_access_accounts(
                 session_affinity_ttl_ms: DEFAULT_SESSION_AFFINITY_TTL_MS,
                 max_retry_credentials: 0,
                 max_retry_interval_ms: DEFAULT_MAX_RETRY_INTERVAL_MS,
+                timeouts: CodexLocalAccessTimeouts::default(),
+                active_timeout_preset_id: BUILTIN_TIMEOUT_PRESET_LONG_WAIT_ID.to_string(),
+                timeout_presets: Vec::new(),
                 disable_cooling: false,
                 restrict_free_accounts: true,
                 follow_current_account: false,
@@ -14107,6 +14561,71 @@ pub async fn update_local_access_routing_options(
     }
 
     ensure_gateway_matches_runtime().await?;
+    snapshot_state().await
+}
+
+pub async fn update_local_access_timeouts(
+    timeouts: CodexLocalAccessTimeouts,
+    active_timeout_preset_id: Option<String>,
+) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded().await?;
+
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    };
+
+    let Some(mut collection) = maybe_collection else {
+        return Err("本地接入集合尚未创建".to_string());
+    };
+
+    collection.timeouts = timeouts;
+    normalize_timeouts(&mut collection.timeouts);
+    if let Some(preset_id) = active_timeout_preset_id {
+        collection.active_timeout_preset_id = preset_id;
+        normalize_active_timeout_preset_id(&mut collection);
+    }
+    collection.updated_at = now_ms();
+    save_collection_to_disk(&collection)?;
+
+    {
+        let mut runtime = gateway_runtime().lock().await;
+        sync_runtime_collection(&mut runtime, collection);
+    }
+
+    ensure_gateway_matches_runtime().await?;
+    snapshot_state().await
+}
+
+pub async fn update_local_access_timeout_presets(
+    timeout_presets: Vec<CodexLocalAccessTimeoutPreset>,
+    active_timeout_preset_id: Option<String>,
+) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded().await?;
+
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    };
+
+    let Some(mut collection) = maybe_collection else {
+        return Err("本地接入集合尚未创建".to_string());
+    };
+
+    collection.timeout_presets = timeout_presets;
+    normalize_timeout_presets(&mut collection.timeout_presets);
+    if let Some(preset_id) = active_timeout_preset_id {
+        collection.active_timeout_preset_id = preset_id;
+    }
+    normalize_active_timeout_preset_id(&mut collection);
+    collection.updated_at = now_ms();
+    save_collection_to_disk(&collection)?;
+
+    {
+        let mut runtime = gateway_runtime().lock().await;
+        sync_runtime_collection(&mut runtime, collection);
+    }
+
     snapshot_state().await
 }
 
@@ -14666,7 +15185,7 @@ pub async fn kill_local_access_port_processes() -> Result<CodexLocalAccessPortCl
 }
 
 pub async fn update_local_access_port(port: u16) -> Result<CodexLocalAccessState, String> {
-    ensure_runtime_loaded().await?;
+    ensure_runtime_loaded_without_start().await?;
 
     let maybe_collection = {
         let runtime = gateway_runtime().lock().await;
@@ -14859,6 +15378,7 @@ fn configured_request_body_limit_bytes() -> usize {
 async fn read_http_request<R>(
     stream: &mut R,
     max_request_bytes: usize,
+    request_read_timeout: Duration,
 ) -> Result<Vec<u8>, HttpRequestReadError>
 where
     R: AsyncRead + Unpin,
@@ -14870,7 +15390,7 @@ where
     let mut content_length = 0usize;
 
     loop {
-        let bytes_read = timeout(REQUEST_READ_TIMEOUT, stream.read(&mut chunk))
+        let bytes_read = timeout(request_read_timeout, stream.read(&mut chunk))
             .await
             .map_err(|_| HttpRequestReadError::other("读取请求超时"))?
             .map_err(|e| HttpRequestReadError::other(format!("读取请求失败: {}", e)))?;
@@ -15179,6 +15699,7 @@ impl ResponseUsageCollector {
             response_id: None,
             response_completed_seen: false,
             compaction_summary_seen: false,
+            terminal_error: None,
         }
     }
 
@@ -15202,6 +15723,7 @@ impl ResponseUsageCollector {
                 response_id: self.response_id,
                 response_completed_seen: self.response_completed_seen,
                 compaction_summary_seen: self.compaction_summary_seen,
+                terminal_error: self.terminal_error,
             }
         } else {
             let parsed = serde_json::from_slice::<Value>(&self.body).ok();
@@ -15280,6 +15802,12 @@ impl ResponseUsageCollector {
         }
 
         if let Ok(value) = serde_json::from_str::<Value>(&payload) {
+            if self.terminal_error.is_none() {
+                if let Some(signal) = upstream_response_failed_signal(event_name.as_deref(), &value)
+                {
+                    self.terminal_error = Some(format_upstream_response_failed_error(&signal));
+                }
+            }
             if let Some(usage) = extract_usage_capture(&value) {
                 self.usage = Some(usage);
             }
@@ -15291,6 +15819,7 @@ impl ResponseUsageCollector {
                 response_id: self.response_id.clone(),
                 response_completed_seen: self.response_completed_seen,
                 compaction_summary_seen: self.compaction_summary_seen,
+                terminal_error: self.terminal_error.clone(),
             };
             update_response_capture_trace(&mut response_capture, &value, event_name.as_deref());
             self.usage = response_capture.usage;
@@ -15370,317 +15899,6 @@ fn is_stream_request(headers: &HashMap<String, String>, body: &[u8]) -> bool {
         .ok()
         .and_then(|value| value.get("stream").and_then(Value::as_bool))
         .unwrap_or(false)
-}
-
-fn is_websocket_upgrade_request(headers: &HashMap<String, String>) -> bool {
-    let upgrade_to_websocket = headers
-        .get("upgrade")
-        .map(|value| value.trim().eq_ignore_ascii_case("websocket"))
-        .unwrap_or(false);
-    let connection_has_upgrade = headers
-        .get("connection")
-        .map(|value| {
-            value
-                .split(',')
-                .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
-        })
-        .unwrap_or(false);
-    let has_websocket_key = headers.contains_key("sec-websocket-key");
-
-    upgrade_to_websocket || (connection_has_upgrade && has_websocket_key)
-}
-
-fn is_responses_websocket_upgrade_request(request: &ParsedRequest) -> bool {
-    request.method.eq_ignore_ascii_case("GET")
-        && is_responses_request(&request.target)
-        && is_websocket_upgrade_request(&request.headers)
-}
-
-fn websocket_accept_value(sec_websocket_key: &str) -> String {
-    let mut hasher = Sha1::new();
-    hasher.update(sec_websocket_key.trim().as_bytes());
-    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-    general_purpose::STANDARD.encode(hasher.finalize())
-}
-
-fn build_upstream_websocket_url(account: &CodexAccount, target: &str) -> Result<String, String> {
-    let http_url = format!(
-        "{}{}",
-        account_upstream_base_url(account).trim_end_matches('/'),
-        if target.starts_with('/') {
-            target.to_string()
-        } else {
-            format!("/{}", target)
-        }
-    );
-    let mut parsed =
-        Url::parse(&http_url).map_err(|e| format!("上游 WebSocket URL 无效: {}", e))?;
-    let next_scheme = match parsed.scheme() {
-        "http" => "ws",
-        "https" => "wss",
-        other => return Err(format!("上游 WebSocket 不支持 {} 协议", other)),
-    };
-    parsed
-        .set_scheme(next_scheme)
-        .map_err(|_| "切换上游 WebSocket 协议失败".to_string())?;
-    Ok(parsed.to_string())
-}
-
-fn websocket_capture_from_message(message: &Message, capture: &mut ResponseCapture) {
-    let parsed = match message {
-        Message::Text(text) => serde_json::from_str::<Value>(&text.to_string()).ok(),
-        Message::Binary(bytes) => serde_json::from_slice::<Value>(bytes.as_ref()).ok(),
-        _ => None,
-    };
-    let Some(value) = parsed else {
-        return;
-    };
-    if let Some(usage) = extract_usage_capture(&value) {
-        capture.usage = Some(usage);
-    }
-    if capture.response_id.is_none() {
-        capture.response_id = extract_response_id(&value);
-    }
-}
-
-fn websocket_message_value(message: &Message) -> Option<Value> {
-    match message {
-        Message::Text(text) => serde_json::from_str::<Value>(&text.to_string()).ok(),
-        Message::Binary(bytes) => serde_json::from_slice::<Value>(bytes.as_ref()).ok(),
-        _ => None,
-    }
-}
-
-fn websocket_error_status(value: &Value) -> Option<u16> {
-    for key in ["status", "status_code"] {
-        if let Some(status) = value
-            .get(key)
-            .and_then(Value::as_u64)
-            .and_then(|status| u16::try_from(status).ok())
-            .filter(|status| *status > 0)
-        {
-            return Some(status);
-        }
-        if let Some(status) = value
-            .get(key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .and_then(|status| status.parse::<u16>().ok())
-            .filter(|status| *status > 0)
-        {
-            return Some(status);
-        }
-    }
-
-    None
-}
-
-fn build_websocket_error_body(value: &Value, status: u16) -> Value {
-    let mut out = Map::new();
-    out.insert("status".to_string(), json!(status));
-
-    if let Some(body) = value.get("body") {
-        out.insert("body".to_string(), body.clone());
-        if let Some(error) = body.get("error") {
-            out.insert("error".to_string(), error.clone());
-            return Value::Object(out);
-        }
-    }
-
-    if let Some(error) = value.get("error") {
-        out.insert("error".to_string(), error.clone());
-        return Value::Object(out);
-    }
-
-    out.insert(
-        "error".to_string(),
-        json!({
-            "type": "server_error",
-            "message": format!("HTTP {}", status),
-        }),
-    );
-    Value::Object(out)
-}
-
-fn retry_after_duration_from_value(value: &Value) -> Option<Duration> {
-    if let Some(seconds) = value.as_u64() {
-        return Some(Duration::from_secs(seconds));
-    }
-    value
-        .as_str()
-        .map(str::trim)
-        .and_then(|value| value.parse::<u64>().ok())
-        .map(Duration::from_secs)
-}
-
-fn parse_websocket_retry_after_header(value: &Value) -> Option<Duration> {
-    let headers = value.get("headers")?.as_object()?;
-    headers.iter().find_map(|(name, value)| {
-        if name.eq_ignore_ascii_case("retry-after") {
-            retry_after_duration_from_value(value)
-        } else {
-            None
-        }
-    })
-}
-
-fn websocket_error_matches(value: &Value, expected: &str) -> bool {
-    for path in [
-        &["error", "code"][..],
-        &["error", "type"][..],
-        &["body", "error", "code"][..],
-        &["body", "error", "type"][..],
-        &["code"][..],
-        &["error"][..],
-    ] {
-        if extract_body_string_path(value, path).as_deref() == Some(expected) {
-            return true;
-        }
-    }
-    false
-}
-
-fn parse_websocket_upstream_error(message: &Message) -> Option<WebSocketUpstreamError> {
-    let value = websocket_message_value(message)?;
-    if value.get("type").and_then(Value::as_str).map(str::trim) != Some("error") {
-        return None;
-    }
-
-    let status = websocket_error_status(&value)?;
-    let body_value = build_websocket_error_body(&value, status);
-    let body = serde_json::to_string(&body_value).unwrap_or_else(|_| value.to_string());
-    let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
-    let classified = classify_codex_upstream_error(status_code, None, &body);
-    let usage_retry_after = classified.retry_after;
-    let is_connection_limit = websocket_error_matches(&value, "websocket_connection_limit_reached");
-    let category = if is_connection_limit {
-        "websocket_connection_limit_reached"
-    } else if usage_retry_after.is_some() || websocket_error_matches(&value, "usage_limit_reached")
-    {
-        "usage_limit_reached"
-    } else {
-        classified.error_type.as_str()
-    }
-    .to_string();
-    let retry_after = usage_retry_after
-        .or_else(|| parse_websocket_retry_after_header(&value))
-        .or_else(|| is_connection_limit.then_some(Duration::ZERO));
-
-    Some(WebSocketUpstreamError {
-        status,
-        body,
-        category,
-        retry_after,
-    })
-}
-
-async fn bridge_websocket_streams(
-    downstream: WebSocketStream<TcpStream>,
-    mut upstream: WebSocketStream<MaybeTlsStream<TcpStream>>,
-    first_payload: Vec<u8>,
-) -> Result<WebSocketBridgeResult, String> {
-    let first_text = String::from_utf8(first_payload)
-        .map_err(|e| format!("WebSocket response.create 不是合法 UTF-8: {}", e))?;
-    upstream
-        .send(Message::Text(first_text.into()))
-        .await
-        .map_err(|e| format!("发送首个 WebSocket 上游消息失败: {}", e))?;
-
-    let (mut downstream_write, mut downstream_read) = downstream.split();
-    let (mut upstream_write, mut upstream_read) = upstream.split();
-    let mut capture = ResponseCapture::default();
-    let mut upstream_error = None;
-    let mut heartbeat = tokio::time::interval_at(
-        tokio::time::Instant::now() + CODEX_WEBSOCKET_HEARTBEAT_INTERVAL,
-        CODEX_WEBSOCKET_HEARTBEAT_INTERVAL,
-    );
-    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    loop {
-        tokio::select! {
-            _ = heartbeat.tick() => {
-                upstream_write
-                    .send(Message::Ping(Vec::new().into()))
-                    .await
-                    .map_err(|e| format!("发送 Codex 上游 WebSocket 心跳失败: {}", e))?;
-                upstream_write
-                    .flush()
-                    .await
-                    .map_err(|e| format!("刷新 Codex 上游 WebSocket 心跳失败: {}", e))?;
-            }
-            downstream_next = timeout(CODEX_WEBSOCKET_IDLE_TIMEOUT, downstream_read.next()) => {
-                let downstream_next = downstream_next
-                    .map_err(|_| "WebSocket 客户端空闲超时".to_string())?;
-                let Some(message_result) = downstream_next else {
-                    break;
-                };
-                let message = message_result
-                    .map_err(|e| format!("读取 WebSocket 客户端消息失败: {}", e))?;
-                let should_close = matches!(message, Message::Close(_));
-                upstream_write
-                    .send(message)
-                    .await
-                    .map_err(|e| format!("转发 WebSocket 客户端消息失败: {}", e))?;
-                if should_close {
-                    break;
-                }
-            }
-            upstream_next = timeout(CODEX_WEBSOCKET_IDLE_TIMEOUT, upstream_read.next()) => {
-                let upstream_next = upstream_next
-                    .map_err(|_| "Codex 上游 WebSocket 空闲超时".to_string())?;
-                let Some(message_result) = upstream_next else {
-                    break;
-                };
-                let message = message_result
-                    .map_err(|e| format!("读取 Codex 上游 WebSocket 消息失败: {}", e))?;
-                websocket_capture_from_message(&message, &mut capture);
-                let parsed_upstream_error = parse_websocket_upstream_error(&message);
-                let should_close = matches!(message, Message::Close(_));
-                downstream_write
-                    .send(message)
-                    .await
-                    .map_err(|e| format!("转发 Codex 上游 WebSocket 消息失败: {}", e))?;
-                if let Some(error) = parsed_upstream_error {
-                    upstream_error = Some(error);
-                    break;
-                }
-                if should_close {
-                    break;
-                }
-            }
-        }
-    }
-
-    Ok(WebSocketBridgeResult {
-        capture,
-        upstream_error,
-    })
-}
-
-fn websocket_connect_error_from_http_response(
-    status: StatusCode,
-    body: String,
-) -> WebSocketConnectError {
-    let classified = classify_codex_upstream_error(status, None, &body);
-    let category = if status == StatusCode::UNAUTHORIZED {
-        "auth_unavailable"
-    } else {
-        classified.error_type.as_str()
-    }
-    .to_string();
-    let message = if body.trim().is_empty() {
-        format!("Codex 上游 WebSocket 握手失败: HTTP {}", status.as_u16())
-    } else {
-        format!(
-            "Codex 上游 WebSocket 握手失败: {}",
-            extract_gateway_error_message(&body)
-        )
-    };
-    WebSocketConnectError {
-        status: Some(status.as_u16()),
-        message,
-        category,
-    }
 }
 
 fn resolve_upstream_account_id(account: &CodexAccount) -> Option<String> {
@@ -17071,6 +17289,9 @@ async fn finish_chunked_response(stream: &mut TcpStream) -> Result<(), String> {
 
 fn parse_responses_payload_from_upstream(body_bytes: &[u8]) -> Result<Value, String> {
     if let Ok(parsed) = serde_json::from_slice::<Value>(body_bytes) {
+        if let Some(signal) = upstream_response_failed_signal(None, &parsed) {
+            return Err(format_upstream_response_failed_error(&signal));
+        }
         return Ok(parsed);
     }
 
@@ -17079,9 +17300,9 @@ fn parse_responses_payload_from_upstream(body_bytes: &[u8]) -> Result<Value, Str
     let mut output_text = String::new();
     let mut output_items: Vec<Value> = Vec::new();
 
-    let mut process_frame = |frame: &[u8]| {
+    let mut process_frame = |frame: &[u8]| -> Result<(), String> {
         if frame.is_empty() {
-            return;
+            return Ok(());
         }
         let text = String::from_utf8_lossy(frame);
         let mut event_name: Option<String> = None;
@@ -17106,19 +17327,22 @@ fn parse_responses_payload_from_upstream(body_bytes: &[u8]) -> Result<Value, Str
         let payload = if data_lines.is_empty() {
             let trimmed = text.trim();
             if trimmed.is_empty() {
-                return;
+                return Ok(());
             }
             trimmed.to_string()
         } else {
             data_lines.join("\n")
         };
         if payload == "[DONE]" {
-            return;
+            return Ok(());
         }
 
         let Ok(value) = serde_json::from_str::<Value>(&payload) else {
-            return;
+            return Ok(());
         };
+        if let Some(signal) = upstream_response_failed_signal(event_name.as_deref(), &value) {
+            return Err(format_upstream_response_failed_error(&signal));
+        }
         match value
             .get("type")
             .and_then(Value::as_str)
@@ -17151,6 +17375,7 @@ fn parse_responses_payload_from_upstream(body_bytes: &[u8]) -> Result<Value, Str
             }
             _ => {}
         }
+        Ok(())
     };
 
     loop {
@@ -17159,10 +17384,10 @@ fn parse_responses_payload_from_upstream(body_bytes: &[u8]) -> Result<Value, Str
         };
         let frame = stream_buffer[..boundary_index].to_vec();
         stream_buffer.drain(..boundary_index + separator_len);
-        process_frame(&frame);
+        process_frame(&frame)?;
     }
     if !stream_buffer.is_empty() {
-        process_frame(&stream_buffer);
+        process_frame(&stream_buffer)?;
     }
 
     let Some(response_value) = completed_response else {
@@ -17464,6 +17689,12 @@ impl ImageStreamTransformer {
         let Ok(event) = serde_json::from_str::<Value>(&payload) else {
             return;
         };
+        if self.response_capture.terminal_error.is_none() {
+            if let Some(signal) = upstream_response_failed_signal(event_name.as_deref(), &event) {
+                self.response_capture.terminal_error =
+                    Some(format_upstream_response_failed_error(&signal));
+            }
+        }
         if let Some(usage) = extract_usage_capture(&event) {
             self.response_capture.usage = Some(usage);
         }
@@ -17552,6 +17783,7 @@ async fn write_chat_completions_compatible_response(
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
+    timeouts: &CodexLocalAccessTimeouts,
 ) -> Result<ResponseCapture, String> {
     let status = upstream.status();
     let status_text = status.canonical_reason().unwrap_or("OK");
@@ -17585,10 +17817,14 @@ async fn write_chat_completions_compatible_response(
         let stream_started_at = Instant::now();
         let mut first_chunk_logged = false;
         loop {
-            if stream_started_at.elapsed() > UPSTREAM_STREAM_TOTAL_TIMEOUT {
+            let stream_total_timeout = duration_from_millis(
+                timeouts.legacy_stream_total_timeout_ms,
+                DEFAULT_UPSTREAM_STREAM_TOTAL_TIMEOUT,
+            );
+            if stream_started_at.elapsed() > stream_total_timeout {
                 let message = format!(
                     "读取上游流式响应超时: 总时长超过 {} 秒",
-                    UPSTREAM_STREAM_TOTAL_TIMEOUT.as_secs()
+                    stream_total_timeout.as_secs()
                 );
                 legacy_debug_log(
                     debug_logs,
@@ -17603,12 +17839,16 @@ async fn write_chat_completions_compatible_response(
                 return Err(message);
             }
 
-            let next_chunk = tokio::time::timeout(UPSTREAM_STREAM_IDLE_TIMEOUT, body_stream.next())
+            let stream_idle_timeout = duration_from_millis(
+                timeouts.legacy_stream_idle_timeout_ms,
+                DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT,
+            );
+            let next_chunk = tokio::time::timeout(stream_idle_timeout, body_stream.next())
                 .await
                 .map_err(|_| {
                     let message = format!(
                         "读取上游流式响应超时: 连续 {} 秒未收到新数据",
-                        UPSTREAM_STREAM_IDLE_TIMEOUT.as_secs()
+                        stream_idle_timeout.as_secs()
                     );
                     legacy_debug_log(
                         debug_logs,
@@ -17682,6 +17922,29 @@ async fn write_chat_completions_compatible_response(
             );
         }
         finish_chunked_response(stream).await?;
+        if let Some(terminal_error) = response_capture.terminal_error.as_deref() {
+            legacy_debug_log(
+                debug_logs,
+                format!(
+                    "stream_upstream_failed method={} target={} status={} latency_ms={} detail={}",
+                    request.method,
+                    request.target,
+                    status.as_u16(),
+                    started_at.elapsed().as_millis(),
+                    escape_failure_detail(terminal_error)
+                ),
+            );
+            record_stream_terminal_error_audit_event(
+                audit_context,
+                status,
+                "text/event-stream; charset=utf-8",
+                "upstream_response_failed",
+                terminal_error,
+                &response_capture,
+                "response_failed_sse",
+            );
+            return Err(terminal_error.to_string());
+        }
         record_stream_audit_event(
             audit_context,
             status,
@@ -17764,6 +18027,7 @@ async fn write_images_compatible_response(
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
+    timeouts: &CodexLocalAccessTimeouts,
 ) -> Result<ResponseCapture, String> {
     let status = upstream.status();
     let status_text = status.canonical_reason().unwrap_or("OK");
@@ -17796,10 +18060,14 @@ async fn write_images_compatible_response(
         let stream_started_at = Instant::now();
         let mut first_chunk_logged = false;
         loop {
-            if stream_started_at.elapsed() > UPSTREAM_STREAM_TOTAL_TIMEOUT {
+            let stream_total_timeout = duration_from_millis(
+                timeouts.legacy_stream_total_timeout_ms,
+                DEFAULT_UPSTREAM_STREAM_TOTAL_TIMEOUT,
+            );
+            if stream_started_at.elapsed() > stream_total_timeout {
                 let message = format!(
                     "读取上游流式响应超时: 总时长超过 {} 秒",
-                    UPSTREAM_STREAM_TOTAL_TIMEOUT.as_secs()
+                    stream_total_timeout.as_secs()
                 );
                 legacy_debug_log(
                     debug_logs,
@@ -17814,12 +18082,16 @@ async fn write_images_compatible_response(
                 return Err(message);
             }
 
-            let next_chunk = tokio::time::timeout(UPSTREAM_STREAM_IDLE_TIMEOUT, body_stream.next())
+            let stream_idle_timeout = duration_from_millis(
+                timeouts.legacy_stream_idle_timeout_ms,
+                DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT,
+            );
+            let next_chunk = tokio::time::timeout(stream_idle_timeout, body_stream.next())
                 .await
                 .map_err(|_| {
                     let message = format!(
                         "读取上游流式响应超时: 连续 {} 秒未收到新数据",
-                        UPSTREAM_STREAM_IDLE_TIMEOUT.as_secs()
+                        stream_idle_timeout.as_secs()
                     );
                     legacy_debug_log(
                         debug_logs,
@@ -17893,6 +18165,29 @@ async fn write_images_compatible_response(
             );
         }
         finish_chunked_response(stream).await?;
+        if let Some(terminal_error) = response_capture.terminal_error.as_deref() {
+            legacy_debug_log(
+                debug_logs,
+                format!(
+                    "stream_upstream_failed method={} target={} status={} latency_ms={} detail={}",
+                    request.method,
+                    request.target,
+                    status.as_u16(),
+                    started_at.elapsed().as_millis(),
+                    escape_failure_detail(terminal_error)
+                ),
+            );
+            record_stream_terminal_error_audit_event(
+                audit_context,
+                status,
+                "text/event-stream; charset=utf-8",
+                "upstream_response_failed",
+                terminal_error,
+                &response_capture,
+                "response_failed_sse",
+            );
+            return Err(terminal_error.to_string());
+        }
         record_stream_audit_event(
             audit_context,
             status,
@@ -17972,6 +18267,7 @@ async fn write_gateway_response(
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
+    timeouts: &CodexLocalAccessTimeouts,
 ) -> Result<ResponseCapture, String> {
     match response_adapter {
         GatewayResponseAdapter::Passthrough { request_is_stream } => {
@@ -17984,6 +18280,7 @@ async fn write_gateway_response(
                 debug_logs,
                 request,
                 started_at,
+                timeouts,
             )
             .await
         }
@@ -18003,6 +18300,7 @@ async fn write_gateway_response(
                 debug_logs,
                 request,
                 started_at,
+                timeouts,
             )
             .await
         }
@@ -18022,6 +18320,7 @@ async fn write_gateway_response(
                 debug_logs,
                 request,
                 started_at,
+                timeouts,
             )
             .await
         }
@@ -18037,6 +18336,7 @@ async fn write_upstream_response(
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
+    timeouts: &CodexLocalAccessTimeouts,
 ) -> Result<ResponseCapture, String> {
     let status = upstream.status();
     let status_text = status.canonical_reason().unwrap_or("OK");
@@ -18062,6 +18362,7 @@ async fn write_upstream_response(
         debug_logs,
         request,
         started_at,
+        timeouts,
     )
     .await
 }
@@ -18074,6 +18375,7 @@ async fn write_upstream_response_body_chunks(
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
+    timeouts: &CodexLocalAccessTimeouts,
 ) -> Result<ResponseCapture, String> {
     let status = upstream.status();
     let headers = upstream.headers().clone();
@@ -18093,10 +18395,14 @@ async fn write_upstream_response_body_chunks(
     let stream_started_at = Instant::now();
     let mut first_chunk_logged = false;
     loop {
-        if is_stream && stream_started_at.elapsed() > UPSTREAM_STREAM_TOTAL_TIMEOUT {
+        let stream_total_timeout = duration_from_millis(
+            timeouts.legacy_stream_total_timeout_ms,
+            DEFAULT_UPSTREAM_STREAM_TOTAL_TIMEOUT,
+        );
+        if stream_started_at.elapsed() > stream_total_timeout {
             let message = format!(
                 "读取上游流式响应超时: 总时长超过 {} 秒",
-                UPSTREAM_STREAM_TOTAL_TIMEOUT.as_secs()
+                stream_total_timeout.as_secs()
             );
             legacy_debug_log(
                 debug_logs,
@@ -18110,29 +18416,29 @@ async fn write_upstream_response_body_chunks(
             );
             return Err(message);
         }
-        let next_chunk = if is_stream {
-            tokio::time::timeout(UPSTREAM_STREAM_IDLE_TIMEOUT, body_stream.next())
-                .await
-                .map_err(|_| {
-                    let message = format!(
-                        "读取上游流式响应超时: 连续 {} 秒未收到新数据",
-                        UPSTREAM_STREAM_IDLE_TIMEOUT.as_secs()
-                    );
-                    legacy_debug_log(
-                        debug_logs,
-                        format!(
-                            "stream_idle_timeout method={} target={} latency_ms={} detail={}",
-                            request.method,
-                            request.target,
-                            started_at.elapsed().as_millis(),
-                            message
-                        ),
-                    );
-                    message
-                })?
-        } else {
-            body_stream.next().await
-        };
+        let stream_idle_timeout = duration_from_millis(
+            timeouts.legacy_stream_idle_timeout_ms,
+            DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT,
+        );
+        let next_chunk = tokio::time::timeout(stream_idle_timeout, body_stream.next())
+            .await
+            .map_err(|_| {
+                let message = format!(
+                    "读取上游流式响应超时: 连续 {} 秒未收到新数据",
+                    stream_idle_timeout.as_secs()
+                );
+                legacy_debug_log(
+                    debug_logs && is_stream,
+                    format!(
+                        "stream_idle_timeout method={} target={} latency_ms={} detail={}",
+                        request.method,
+                        request.target,
+                        started_at.elapsed().as_millis(),
+                        message
+                    ),
+                );
+                message
+            })?;
         let Some(chunk_result) = next_chunk else {
             break;
         };
@@ -18241,6 +18547,29 @@ async fn write_upstream_response_body_chunks(
     finish_chunked_response(stream).await?;
     record_stream_audit_event(audit_context, status, "finished", "ok", content_type);
     let response_capture = usage_collector.finish();
+    if let Some(terminal_error) = response_capture.terminal_error.as_deref() {
+        legacy_debug_log(
+            debug_logs && is_stream,
+            format!(
+                "stream_upstream_failed method={} target={} status={} latency_ms={} detail={}",
+                request.method,
+                request.target,
+                status.as_u16(),
+                started_at.elapsed().as_millis(),
+                escape_failure_detail(terminal_error)
+            ),
+        );
+        record_stream_terminal_error_audit_event(
+            audit_context,
+            status,
+            content_type,
+            "upstream_response_failed",
+            terminal_error,
+            &response_capture,
+            "response_failed_sse",
+        );
+        return Err(terminal_error.to_string());
+    }
     record_stream_terminal_audit_event(
         audit_context,
         status,
@@ -18293,15 +18622,17 @@ fn format_upstream_network_error(error: &reqwest::Error) -> String {
     )
 }
 
-fn upstream_send_retry_delay(retry_attempt: usize) -> Duration {
+fn backoff_retry_delay(retry_attempt: usize, base_delay_ms: u64, max_delay_ms: u64) -> Duration {
     let multiplier = match retry_attempt {
         0 | 1 => 1u32,
         2 => 2u32,
         _ => 4u32,
     };
-    let delay = UPSTREAM_SEND_RETRY_BASE_DELAY.saturating_mul(multiplier);
-    if delay > UPSTREAM_SEND_RETRY_MAX_DELAY {
-        UPSTREAM_SEND_RETRY_MAX_DELAY
+    let base = Duration::from_millis(base_delay_ms);
+    let max = Duration::from_millis(max_delay_ms);
+    let delay = base.saturating_mul(multiplier);
+    if delay > max {
+        max
     } else {
         delay
     }
@@ -18418,6 +18749,8 @@ async fn send_upstream_request(
     body: &[u8],
     account: &CodexAccount,
     upstream_proxy_url: Option<&str>,
+    connect_timeout: Duration,
+    timeouts: &CodexLocalAccessTimeouts,
     image_generation_mode: CodexLocalAccessImageGenerationMode,
     request_kind: CodexLocalAccessRequestKind,
 ) -> Result<reqwest::Response, String> {
@@ -18432,9 +18765,16 @@ async fn send_upstream_request(
     let url = if use_api_key_upstream {
         build_api_key_upstream_url(account, target)?
     } else {
-        format!("{}{}", UPSTREAM_CODEX_BASE_URL, target)
+        build_upstream_url(account, target)?
     };
-    let client = upstream_http_client(upstream_proxy_url)?;
+    let upstream_token = if use_api_key_upstream {
+        api_key
+            .map(str::to_string)
+            .ok_or_else(|| "API Key 账号缺少上游 API Key".to_string())?
+    } else {
+        account_upstream_token(account)?
+    };
+    let client = upstream_http_client(upstream_proxy_url, connect_timeout)?;
     let upstream_body = build_account_scoped_upstream_body(
         target,
         body,
@@ -18442,7 +18782,8 @@ async fn send_upstream_request(
         image_generation_mode,
         request_kind,
     )?;
-    for retry_attempt in 0..=UPSTREAM_SEND_RETRY_ATTEMPTS {
+    let max_send_retries = timeouts.upstream_send_retry_attempts as usize;
+    for retry_attempt in 0..=max_send_retries {
         let mut request = client.request(method.clone(), &url);
 
         for (name, value) in headers {
@@ -18470,17 +18811,7 @@ async fn send_upstream_request(
             request = request.header(header_name, header_value);
         }
 
-        if use_api_key_upstream {
-            let Some(api_key) = api_key else {
-                return Err("API Key 账号缺少 openai_api_key".to_string());
-            };
-            request = request.header(AUTHORIZATION, format!("Bearer {}", api_key));
-        } else {
-            request = request.header(
-                AUTHORIZATION,
-                format!("Bearer {}", account.tokens.access_token.trim()),
-            );
-        }
+        request = request.header(AUTHORIZATION, format!("Bearer {}", upstream_token));
         if !headers.contains_key("user-agent") {
             request = request.header(USER_AGENT, DEFAULT_CODEX_USER_AGENT);
         }
@@ -18513,12 +18844,17 @@ async fn send_upstream_request(
         match request.send().await {
             Ok(response) => return Ok(response),
             Err(error) => {
-                let should_retry = retry_attempt < UPSTREAM_SEND_RETRY_ATTEMPTS
-                    && should_retry_upstream_send_error(&error);
+                let should_retry =
+                    retry_attempt < max_send_retries && should_retry_upstream_send_error(&error);
                 if !should_retry {
                     return Err(format_upstream_network_error(&error));
                 }
-                tokio::time::sleep(upstream_send_retry_delay(retry_attempt + 1)).await;
+                tokio::time::sleep(backoff_retry_delay(
+                    retry_attempt + 1,
+                    timeouts.upstream_send_retry_base_delay_ms,
+                    timeouts.upstream_send_retry_max_delay_ms,
+                ))
+                .await;
             }
         }
     }
@@ -18539,9 +18875,15 @@ async fn proxy_request_with_account_pool(
             message: err,
             account_id: None,
             account_email: None,
+            error_category: Some("bad_request".to_string()),
             retry_after: None,
             defer_until_pool_available: false,
         })?;
+    let timeouts = collection_timeouts(collection);
+    let upstream_connect_timeout = duration_from_millis(
+        timeouts.legacy_upstream_connect_timeout_ms,
+        DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
+    );
     let routing_hint = build_request_routing_hint(request);
     let mut health_registry =
         load_health_registry_from_disk().map_err(|err| ProxyDispatchError {
@@ -18549,6 +18891,7 @@ async fn proxy_request_with_account_pool(
             message: format!("API 服务健康状态不可用，请手动检查后重试: {}", err),
             account_id: None,
             account_email: None,
+            error_category: Some("health_registry_unavailable".to_string()),
             retry_after: None,
             defer_until_pool_available: false,
         })?;
@@ -18624,6 +18967,7 @@ async fn proxy_request_with_account_pool(
             message: "本地接入集合暂无账号".to_string(),
             account_id: None,
             account_email: None,
+            error_category: Some("no_accounts".to_string()),
             retry_after: None,
             defer_until_pool_available: false,
         });
@@ -18865,6 +19209,8 @@ async fn proxy_request_with_account_pool(
                     &request.body,
                     &account,
                     collection.upstream_proxy_url.as_deref(),
+                    upstream_connect_timeout,
+                    &timeouts,
                     collection.image_generation_mode,
                     request_kind,
                 )
@@ -19028,6 +19374,8 @@ async fn proxy_request_with_account_pool(
                                 &request.body,
                                 &account,
                                 collection.upstream_proxy_url.as_deref(),
+                                upstream_connect_timeout,
+                                &timeouts,
                                 collection.image_generation_mode,
                                 request_kind,
                             )
@@ -19112,6 +19460,7 @@ async fn proxy_request_with_account_pool(
                                     message: auth_failure.safe_message,
                                     account_id: Some(account.id.clone()),
                                     account_email: Some(account.email.clone()),
+                                    error_category: Some("auth_unavailable".to_string()),
                                     retry_after: None,
                                     defer_until_pool_available: false,
                                 });
@@ -19141,6 +19490,7 @@ async fn proxy_request_with_account_pool(
                                 message: auth_failure.safe_message,
                                 account_id: Some(account.id.clone()),
                                 account_email: Some(account.email.clone()),
+                                error_category: Some("auth_refresh_failed".to_string()),
                                 retry_after: None,
                                 defer_until_pool_available: false,
                             });
@@ -19285,12 +19635,16 @@ async fn proxy_request_with_account_pool(
                 }
 
                 let can_retry_single_account = total == 1
-                    && single_account_status_retry_attempt < max_retry_attempts
+                    && single_account_status_retry_attempt
+                        < max_retry_attempts
+                            .min(timeouts.single_account_status_retry_attempts as usize)
                     && should_retry_single_account_upstream_status(status);
                 if can_retry_single_account {
                     single_account_status_retry_attempt += 1;
-                    tokio::time::sleep(single_account_status_retry_delay(
+                    tokio::time::sleep(backoff_retry_delay(
                         single_account_status_retry_attempt,
+                        timeouts.single_account_status_retry_base_delay_ms,
+                        timeouts.single_account_status_retry_max_delay_ms,
                     ))
                     .await;
                     continue;
@@ -19416,6 +19770,7 @@ async fn proxy_request_with_account_pool(
                             message,
                             account_id: Some(account.id.clone()),
                             account_email: Some(account.email.clone()),
+                            error_category: Some(classified.error_type.as_str().to_string()),
                             retry_after: classified.retry_after,
                             defer_until_pool_available: false,
                         });
@@ -19437,6 +19792,7 @@ async fn proxy_request_with_account_pool(
                     message,
                     account_id: Some(account.id.clone()),
                     account_email: Some(account.email.clone()),
+                    error_category: Some(classified.error_type.as_str().to_string()),
                     retry_after: None,
                     defer_until_pool_available: false,
                 });
@@ -19468,6 +19824,11 @@ async fn proxy_request_with_account_pool(
                 },
                 account_id: affinity_account_id.clone(),
                 account_email: None,
+                error_category: if use_pool_unavailable_summary {
+                    Some("pool_unavailable".to_string())
+                } else {
+                    Some("cooldown_unavailable".to_string())
+                },
                 retry_after: Some(wait),
                 defer_until_pool_available: true,
             });
@@ -19517,10 +19878,1240 @@ async fn proxy_request_with_account_pool(
         },
         account_id: last_account_id,
         account_email: last_account_email,
+        error_category: if use_pool_unavailable_summary {
+            Some("pool_unavailable".to_string())
+        } else {
+            last_error_category
+        },
         retry_after: earliest_cooldown_wait.or(pool_retry_after),
         defer_until_pool_available: use_pool_unavailable_summary
             && should_defer_pool_unavailable(&pool_summary),
     })
+}
+
+fn is_websocket_upgrade_request(request: &ParsedRequest) -> bool {
+    let upgrade = header_value(&request.headers, "upgrade")
+        .map(|value| value.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+    let connection = header_value(&request.headers, "connection")
+        .map(|value| {
+            value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("upgrade"))
+        })
+        .unwrap_or(false);
+    upgrade && connection && header_value(&request.headers, "sec-websocket-key").is_some()
+}
+
+fn is_responses_websocket_upgrade_request(request: &ParsedRequest) -> bool {
+    request.method.eq_ignore_ascii_case("GET")
+        && is_responses_request(&request.target)
+        && is_websocket_upgrade_request(request)
+}
+
+fn websocket_accept_value(sec_websocket_key: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(sec_websocket_key.trim().as_bytes());
+    hasher.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    general_purpose::STANDARD.encode(hasher.finalize())
+}
+
+async fn accept_downstream_websocket(
+    mut stream: TcpStream,
+    request: &ParsedRequest,
+) -> Result<WebSocketStream<TcpStream>, String> {
+    let sec_key = header_value(&request.headers, "sec-websocket-key")
+        .ok_or_else(|| "WebSocket 握手缺少 Sec-WebSocket-Key".to_string())?;
+    let accept_value = websocket_accept_value(sec_key);
+    let response = format!(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
+        accept_value
+    );
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|e| format!("写入 WebSocket 握手响应失败: {}", e))?;
+    Ok(WebSocketStream::from_raw_socket(stream, Role::Server, None).await)
+}
+
+async fn read_initial_websocket_payload(
+    downstream: &mut WebSocketStream<TcpStream>,
+    initial_message_timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let deadline = Instant::now() + initial_message_timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("等待 WebSocket 首个 response.create 消息超时".to_string());
+        }
+        let message = timeout(remaining, downstream.next())
+            .await
+            .map_err(|_| "等待 WebSocket 首个 response.create 消息超时".to_string())?
+            .ok_or_else(|| "客户端在发送首个 WebSocket 消息前已断开".to_string())?
+            .map_err(|e| format!("读取 WebSocket 首个消息失败: {}", e))?;
+
+        match message {
+            Message::Text(text) => return Ok(text.to_string().into_bytes()),
+            Message::Binary(bytes) => return Ok(bytes.to_vec()),
+            Message::Ping(bytes) => {
+                downstream
+                    .send(Message::Pong(bytes))
+                    .await
+                    .map_err(|e| format!("回复 WebSocket Ping 失败: {}", e))?;
+            }
+            Message::Pong(_) => {}
+            Message::Close(frame) => {
+                let _ = downstream.send(Message::Close(frame)).await;
+                return Err("客户端在发送首个 WebSocket 消息前已关闭连接".to_string());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn prepare_websocket_initial_request(
+    request: &mut ParsedRequest,
+    api_key: &ResolvedLocalApiKey,
+) -> Result<(), String> {
+    let mut body_value = parse_request_body_json(&request.body)
+        .ok_or_else(|| "WebSocket response.create 消息必须是合法 JSON".to_string())?;
+    rewrite_request_model_alias_value(&mut body_value);
+    codex_protocol::normalize_responses_body_for_codex(&mut body_value);
+    let body_obj = body_value
+        .as_object_mut()
+        .ok_or_else(|| "WebSocket response.create 消息必须是 JSON 对象".to_string())?;
+    body_obj.insert(
+        "type".to_string(),
+        Value::String("response.create".to_string()),
+    );
+    request.body = serde_json::to_vec(&body_value)
+        .map_err(|e| format!("序列化 WebSocket response.create 消息失败: {}", e))?;
+    request
+        .headers
+        .insert("content-type".to_string(), "application/json".to_string());
+    align_codex_prompt_cache(request, api_key)?;
+    apply_codex_official_headers(request);
+    Ok(())
+}
+
+fn build_upstream_websocket_url(account: &CodexAccount, target: &str) -> Result<String, String> {
+    let http_url = build_upstream_url(account, target)?;
+    let mut parsed =
+        Url::parse(&http_url).map_err(|e| format!("上游 WebSocket URL 无效: {}", e))?;
+    let next_scheme = match parsed.scheme() {
+        "http" => "ws",
+        "https" => "wss",
+        other => return Err(format!("上游 WebSocket 不支持 {} 协议", other)),
+    };
+    parsed
+        .set_scheme(next_scheme)
+        .map_err(|_| "切换上游 WebSocket 协议失败".to_string())?;
+    Ok(parsed.to_string())
+}
+
+fn should_skip_websocket_upstream_header(name: &str) -> bool {
+    matches!(
+        name,
+        "authorization"
+            | "host"
+            | "content-length"
+            | "connection"
+            | "upgrade"
+            | "sec-websocket-key"
+            | "sec-websocket-version"
+            | "sec-websocket-protocol"
+            | "sec-websocket-extensions"
+            | "accept-encoding"
+            | "proxy-connection"
+            | "x-api-key"
+            | "x-agtools-local-request-kind"
+    )
+}
+
+fn websocket_header_value(value: impl Into<String>) -> Result<WsHeaderValue, String> {
+    WsHeaderValue::from_str(&value.into()).map_err(|e| format!("无效 WebSocket 请求头值: {}", e))
+}
+
+fn websocket_target_host_port(request: &WsClientRequest) -> Result<(String, u16), String> {
+    let uri = request.uri();
+    let host = uri
+        .host()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "上游 WebSocket URL 缺少 Host".to_string())?
+        .to_string();
+    let port = uri
+        .port_u16()
+        .or_else(|| match uri.scheme_str() {
+            Some("wss") => Some(443),
+            Some("ws") => Some(80),
+            _ => None,
+        })
+        .ok_or_else(|| "上游 WebSocket URL 缺少端口".to_string())?;
+    Ok((host, port))
+}
+
+async fn tcp_connect_with_timeout(
+    addr: &str,
+    label: &str,
+    connect_timeout: Duration,
+) -> Result<TcpStream, String> {
+    timeout(connect_timeout, TcpStream::connect(addr))
+        .await
+        .map_err(|_| format!("连接 {} 超时", label))?
+        .map_err(|e| format!("连接 {} 失败: {}", label, e))
+}
+
+fn decode_proxy_credential(value: &str) -> String {
+    urlencoding::decode(value)
+        .map(Cow::into_owned)
+        .unwrap_or_else(|_| value.to_string())
+}
+
+fn proxy_authorization_header(proxy_url: &Url) -> Option<String> {
+    if proxy_url.username().is_empty() {
+        return None;
+    }
+    let username = decode_proxy_credential(proxy_url.username());
+    let password = proxy_url
+        .password()
+        .map(decode_proxy_credential)
+        .unwrap_or_default();
+    let credential = general_purpose::STANDARD.encode(format!("{}:{}", username, password));
+    Some(format!("Proxy-Authorization: Basic {}\r\n", credential))
+}
+
+async fn connect_http_proxy_tunnel(
+    proxy_url: &Url,
+    target_host: &str,
+    target_port: u16,
+    connect_timeout: Duration,
+) -> Result<TcpStream, String> {
+    let proxy_host = proxy_url
+        .host_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "WebSocket 上游代理地址缺少 Host".to_string())?;
+    let proxy_port = proxy_url
+        .port_or_known_default()
+        .ok_or_else(|| "WebSocket 上游代理地址缺少端口".to_string())?;
+    let proxy_addr = format!("{}:{}", proxy_host, proxy_port);
+    let mut stream =
+        tcp_connect_with_timeout(&proxy_addr, "WebSocket HTTP 代理", connect_timeout).await?;
+    let target_addr = format!("{}:{}", target_host, target_port);
+    let auth_header = proxy_authorization_header(proxy_url).unwrap_or_default();
+    let request = format!(
+        "CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\nProxy-Connection: Keep-Alive\r\n{auth_header}\r\n"
+    );
+    timeout(connect_timeout, stream.write_all(request.as_bytes()))
+        .await
+        .map_err(|_| "发送 WebSocket 代理 CONNECT 请求超时".to_string())?
+        .map_err(|e| format!("发送 WebSocket 代理 CONNECT 请求失败: {}", e))?;
+
+    let mut response = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    loop {
+        if response.len() > CODEX_WEBSOCKET_PROXY_CONNECT_MAX_BYTES {
+            return Err("WebSocket 代理 CONNECT 响应过大".to_string());
+        }
+        let read = timeout(connect_timeout, stream.read(&mut chunk))
+            .await
+            .map_err(|_| "读取 WebSocket 代理 CONNECT 响应超时".to_string())?
+            .map_err(|e| format!("读取 WebSocket 代理 CONNECT 响应失败: {}", e))?;
+        if read == 0 {
+            return Err("WebSocket 代理在 CONNECT 完成前关闭连接".to_string());
+        }
+        response.extend_from_slice(&chunk[..read]);
+        if let Some(header_end) = find_header_end(&response) {
+            let header_text = String::from_utf8_lossy(&response[..header_end]);
+            let status_line = header_text
+                .lines()
+                .next()
+                .ok_or_else(|| "WebSocket 代理 CONNECT 响应为空".to_string())?;
+            let status = status_line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|value| value.parse::<u16>().ok())
+                .ok_or_else(|| format!("WebSocket 代理 CONNECT 响应状态无效: {}", status_line))?;
+            if (200..300).contains(&status) {
+                return Ok(stream);
+            }
+            return Err(format!("WebSocket 代理 CONNECT 失败: HTTP {}", status));
+        }
+    }
+}
+
+async fn socks5_read_exact(
+    stream: &mut TcpStream,
+    buffer: &mut [u8],
+    connect_timeout: Duration,
+) -> Result<(), String> {
+    timeout(connect_timeout, stream.read_exact(buffer))
+        .await
+        .map_err(|_| "读取 WebSocket SOCKS5 代理响应超时".to_string())?
+        .map_err(|e| format!("读取 WebSocket SOCKS5 代理响应失败: {}", e))?;
+    Ok(())
+}
+
+async fn connect_socks5_proxy_tunnel(
+    proxy_url: &Url,
+    target_host: &str,
+    target_port: u16,
+    connect_timeout: Duration,
+) -> Result<TcpStream, String> {
+    let proxy_host = proxy_url
+        .host_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "WebSocket SOCKS5 代理地址缺少 Host".to_string())?;
+    let proxy_port = proxy_url
+        .port_or_known_default()
+        .ok_or_else(|| "WebSocket SOCKS5 代理地址缺少端口".to_string())?;
+    let proxy_addr = format!("{}:{}", proxy_host, proxy_port);
+    let mut stream =
+        tcp_connect_with_timeout(&proxy_addr, "WebSocket SOCKS5 代理", connect_timeout).await?;
+
+    let username = decode_proxy_credential(proxy_url.username());
+    let password = proxy_url
+        .password()
+        .map(decode_proxy_credential)
+        .unwrap_or_default();
+    let use_auth = !username.is_empty();
+    let greeting: &[u8] = if use_auth {
+        &[0x05, 0x02, 0x00, 0x02]
+    } else {
+        &[0x05, 0x01, 0x00]
+    };
+    timeout(connect_timeout, stream.write_all(greeting))
+        .await
+        .map_err(|_| "发送 WebSocket SOCKS5 握手超时".to_string())?
+        .map_err(|e| format!("发送 WebSocket SOCKS5 握手失败: {}", e))?;
+
+    let mut method_response = [0u8; 2];
+    socks5_read_exact(&mut stream, &mut method_response, connect_timeout).await?;
+    if method_response[0] != 0x05 {
+        return Err("WebSocket SOCKS5 代理响应版本无效".to_string());
+    }
+    if method_response[1] == 0xff {
+        return Err("WebSocket SOCKS5 代理不接受当前认证方式".to_string());
+    }
+    if method_response[1] == 0x02 {
+        let username_bytes = username.as_bytes();
+        let password_bytes = password.as_bytes();
+        if username_bytes.len() > u8::MAX as usize || password_bytes.len() > u8::MAX as usize {
+            return Err("WebSocket SOCKS5 代理用户名或密码过长".to_string());
+        }
+        let mut auth_request = Vec::with_capacity(3 + username_bytes.len() + password_bytes.len());
+        auth_request.push(0x01);
+        auth_request.push(username_bytes.len() as u8);
+        auth_request.extend_from_slice(username_bytes);
+        auth_request.push(password_bytes.len() as u8);
+        auth_request.extend_from_slice(password_bytes);
+        timeout(connect_timeout, stream.write_all(&auth_request))
+            .await
+            .map_err(|_| "发送 WebSocket SOCKS5 认证超时".to_string())?
+            .map_err(|e| format!("发送 WebSocket SOCKS5 认证失败: {}", e))?;
+        let mut auth_response = [0u8; 2];
+        socks5_read_exact(&mut stream, &mut auth_response, connect_timeout).await?;
+        if auth_response != [0x01, 0x00] {
+            return Err("WebSocket SOCKS5 代理认证失败".to_string());
+        }
+    } else if method_response[1] != 0x00 {
+        return Err(format!(
+            "WebSocket SOCKS5 代理返回不支持的认证方式: {}",
+            method_response[1]
+        ));
+    }
+
+    let target_host_bytes = target_host.as_bytes();
+    if target_host_bytes.len() > u8::MAX as usize {
+        return Err("WebSocket SOCKS5 目标 Host 过长".to_string());
+    }
+    let mut connect_request = Vec::with_capacity(7 + target_host_bytes.len());
+    connect_request.extend_from_slice(&[0x05, 0x01, 0x00, 0x03, target_host_bytes.len() as u8]);
+    connect_request.extend_from_slice(target_host_bytes);
+    connect_request.extend_from_slice(&target_port.to_be_bytes());
+    timeout(connect_timeout, stream.write_all(&connect_request))
+        .await
+        .map_err(|_| "发送 WebSocket SOCKS5 CONNECT 请求超时".to_string())?
+        .map_err(|e| format!("发送 WebSocket SOCKS5 CONNECT 请求失败: {}", e))?;
+
+    let mut reply_header = [0u8; 4];
+    socks5_read_exact(&mut stream, &mut reply_header, connect_timeout).await?;
+    if reply_header[0] != 0x05 {
+        return Err("WebSocket SOCKS5 CONNECT 响应版本无效".to_string());
+    }
+    if reply_header[1] != 0x00 {
+        return Err(format!(
+            "WebSocket SOCKS5 CONNECT 失败，状态码 {}",
+            reply_header[1]
+        ));
+    }
+    let addr_len = match reply_header[3] {
+        0x01 => 4,
+        0x03 => {
+            let mut len = [0u8; 1];
+            socks5_read_exact(&mut stream, &mut len, connect_timeout).await?;
+            len[0] as usize
+        }
+        0x04 => 16,
+        other => return Err(format!("WebSocket SOCKS5 CONNECT 地址类型无效: {}", other)),
+    };
+    let mut bound_addr = vec![0u8; addr_len + 2];
+    socks5_read_exact(&mut stream, &mut bound_addr, connect_timeout).await?;
+    Ok(stream)
+}
+
+async fn connect_upstream_websocket_socket(
+    request: &WsClientRequest,
+    upstream_proxy_url: Option<&str>,
+    connect_timeout: Duration,
+) -> Result<TcpStream, String> {
+    let (target_host, target_port) = websocket_target_host_port(request)?;
+    let signature = current_upstream_http_client_signature(upstream_proxy_url, connect_timeout);
+    let Some(proxy_url) = signature.proxy_url.as_deref() else {
+        return tcp_connect_with_timeout(
+            &format!("{}:{}", target_host, target_port),
+            "Codex 上游 WebSocket",
+            connect_timeout,
+        )
+        .await;
+    };
+    let proxy_url =
+        Url::parse(proxy_url).map_err(|e| format!("WebSocket 上游代理地址无效: {}", e))?;
+    match proxy_url.scheme() {
+        "http" => {
+            connect_http_proxy_tunnel(&proxy_url, &target_host, target_port, connect_timeout).await
+        }
+        "socks5" | "socks5h" => {
+            connect_socks5_proxy_tunnel(&proxy_url, &target_host, target_port, connect_timeout)
+                .await
+        }
+        "https" => {
+            Err("WebSocket 上游代理暂不支持 https 代理，请改用 http 或 socks5 代理地址".to_string())
+        }
+        other => Err(format!("WebSocket 上游代理不支持 {} 协议", other)),
+    }
+}
+
+impl WebSocketConnectError {
+    fn upstream(message: String) -> Self {
+        Self {
+            status: None,
+            message,
+            category: "upstream_websocket".to_string(),
+        }
+    }
+}
+
+fn websocket_connect_error_from_http_response(
+    status: StatusCode,
+    body: String,
+) -> WebSocketConnectError {
+    let classified = classify_codex_upstream_error(status, None, &body);
+    let category = if status == StatusCode::UNAUTHORIZED {
+        "auth_unavailable"
+    } else {
+        classified.error_type.as_str()
+    }
+    .to_string();
+    let message = if body.trim().is_empty() {
+        format!("Codex 上游 WebSocket 握手失败: HTTP {}", status.as_u16())
+    } else {
+        format!(
+            "Codex 上游 WebSocket 握手失败: {}",
+            extract_gateway_error_message(&body)
+        )
+    };
+    WebSocketConnectError {
+        status: Some(status.as_u16()),
+        message,
+        category,
+    }
+}
+
+fn websocket_connect_error_from_tungstenite(error: WsError) -> WebSocketConnectError {
+    match error {
+        WsError::Http(response) => {
+            let status =
+                StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let body = response
+                .body()
+                .as_deref()
+                .map(String::from_utf8_lossy)
+                .map(Cow::into_owned)
+                .unwrap_or_default();
+            websocket_connect_error_from_http_response(status, body)
+        }
+        other => {
+            WebSocketConnectError::upstream(format!("连接 Codex 上游 WebSocket 失败: {}", other))
+        }
+    }
+}
+
+async fn connect_upstream_websocket_request(
+    request: WsClientRequest,
+    upstream_proxy_url: Option<&str>,
+    connect_timeout: Duration,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, WebSocketConnectError> {
+    let socket = connect_upstream_websocket_socket(&request, upstream_proxy_url, connect_timeout)
+        .await
+        .map_err(WebSocketConnectError::upstream)?;
+    let (upstream, _) = client_async_tls_with_config(request, socket, None, None)
+        .await
+        .map_err(websocket_connect_error_from_tungstenite)?;
+    Ok(upstream)
+}
+
+async fn connect_upstream_websocket(
+    request: &ParsedRequest,
+    account: &CodexAccount,
+    upstream_target: &str,
+    upstream_proxy_url: Option<&str>,
+    connect_timeout: Duration,
+) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, WebSocketConnectError> {
+    let ws_url = build_upstream_websocket_url(account, upstream_target)
+        .map_err(WebSocketConnectError::upstream)?;
+    let upstream_token =
+        account_upstream_token(account).map_err(WebSocketConnectError::upstream)?;
+    let mut upstream_request = ws_url.as_str().into_client_request().map_err(|e| {
+        WebSocketConnectError::upstream(format!("创建上游 WebSocket 请求失败: {}", e))
+    })?;
+
+    for (name, value) in &request.headers {
+        if should_skip_websocket_upstream_header(name.as_str()) {
+            continue;
+        }
+        let header_name = WsHeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+            WebSocketConnectError::upstream(format!("无效 WebSocket 请求头 {}: {}", name, e))
+        })?;
+        let header_value =
+            websocket_header_value(value.clone()).map_err(WebSocketConnectError::upstream)?;
+        upstream_request
+            .headers_mut()
+            .insert(header_name, header_value);
+    }
+
+    upstream_request.headers_mut().insert(
+        "Authorization",
+        websocket_header_value(format!("Bearer {}", upstream_token))
+            .map_err(WebSocketConnectError::upstream)?,
+    );
+    if !account.is_api_key_auth() && header_value(&request.headers, "user-agent").is_none() {
+        upstream_request.headers_mut().insert(
+            "User-Agent",
+            websocket_header_value(DEFAULT_CODEX_USER_AGENT)
+                .map_err(WebSocketConnectError::upstream)?,
+        );
+    }
+    if !account.is_api_key_auth() && header_value(&request.headers, "originator").is_none() {
+        upstream_request.headers_mut().insert(
+            "Originator",
+            websocket_header_value(DEFAULT_CODEX_ORIGINATOR)
+                .map_err(WebSocketConnectError::upstream)?,
+        );
+    }
+    let beta_header = header_value(&request.headers, "openai-beta").unwrap_or_default();
+    if !beta_header.contains("responses_websockets=") {
+        upstream_request.headers_mut().insert(
+            "OpenAI-Beta",
+            websocket_header_value(CODEX_RESPONSES_WEBSOCKET_BETA_HEADER_VALUE)
+                .map_err(WebSocketConnectError::upstream)?,
+        );
+    }
+    if !account.is_api_key_auth() {
+        if let Some(account_id) = resolve_upstream_account_id(account) {
+            upstream_request.headers_mut().insert(
+                "ChatGPT-Account-Id",
+                websocket_header_value(account_id).map_err(WebSocketConnectError::upstream)?,
+            );
+        }
+    }
+
+    connect_upstream_websocket_request(upstream_request, upstream_proxy_url, connect_timeout).await
+}
+
+async fn proxy_websocket_with_account_pool(
+    request: &ParsedRequest,
+    collection: &CodexLocalAccessCollection,
+    request_kind: CodexLocalAccessRequestKind,
+) -> Result<WebSocketDispatchSuccess, ProxyDispatchError> {
+    if collection.account_ids.is_empty() {
+        return Err(ProxyDispatchError {
+            status: 503,
+            message: "本地接入集合暂无账号".to_string(),
+            account_id: None,
+            account_email: None,
+            error_category: Some("no_accounts".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
+        });
+    }
+
+    let upstream_target =
+        resolve_upstream_target(&request.target).map_err(|err| ProxyDispatchError {
+            status: 400,
+            message: err,
+            account_id: None,
+            account_email: None,
+            error_category: Some("bad_request".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
+        })?;
+    let timeouts = collection_timeouts(collection);
+    let websocket_connect_timeout = duration_from_millis(
+        timeouts.websocket_connect_timeout_ms,
+        CODEX_WEBSOCKET_CONNECT_TIMEOUT,
+    );
+    let routing_hint = build_request_routing_hint(request);
+    let total = collection.account_ids.len();
+    let configured_max_credentials = collection.max_retry_credentials as usize;
+    let max_credential_attempts = if configured_max_credentials == 0 {
+        total
+    } else {
+        configured_max_credentials.min(total)
+    }
+    .min(MAX_RETRY_CREDENTIALS_PER_REQUEST)
+    .max(1);
+    let start = GATEWAY_ROUND_ROBIN_CURSOR.fetch_add(1, Ordering::Relaxed);
+    let session_affinity_key = routing_hint
+        .session_affinity_key
+        .as_deref()
+        .filter(|_| collection.session_affinity)
+        .map(session_affinity_binding_key);
+    let affinity_account_id = if let Some(session_key) = session_affinity_key.as_deref() {
+        resolve_affinity_account(session_key).await
+    } else {
+        None
+    };
+    let ordered_account_ids =
+        if collection.routing_strategy == CodexLocalAccessRoutingStrategy::Custom {
+            collection.account_ids.clone()
+        } else {
+            build_ordered_account_ids(
+                &collection.account_ids,
+                start,
+                affinity_account_id.as_deref(),
+            )
+        };
+    let strategy_account_ids = pin_account_to_front(
+        apply_routing_strategy(
+            &ordered_account_ids,
+            collection.routing_strategy,
+            &collection.custom_routing_rules,
+            start,
+        ),
+        affinity_account_id.as_deref(),
+    );
+
+    let mut attempts = 0usize;
+    let mut last_status = StatusCode::BAD_GATEWAY.as_u16();
+    let mut last_error = "本地接入集合暂无可用账号".to_string();
+    let mut last_error_category: Option<String> = None;
+    let mut last_account_id: Option<String> = None;
+    let mut last_account_email: Option<String> = None;
+
+    for account_id in strategy_account_ids {
+        if attempts >= max_credential_attempts {
+            break;
+        }
+        if !collection.disable_cooling {
+            if get_model_cooldown_wait(&account_id, &routing_hint.model_key)
+                .await
+                .is_some()
+            {
+                continue;
+            }
+        }
+        attempts += 1;
+
+        let mut account = match get_prepared_account(&account_id).await {
+            Ok(account) => account,
+            Err(err) => {
+                invalidate_prepared_account(&account_id).await;
+                last_status = StatusCode::BAD_GATEWAY.as_u16();
+                last_error = err;
+                last_error_category = Some("account_prepare_failed".to_string());
+                continue;
+            }
+        };
+        if collection.restrict_free_accounts && is_free_plan_type(account.plan_type.as_deref()) {
+            mark_account_failure(
+                &account,
+                None,
+                Some("free_account_restricted"),
+                "Free 账号不支持加入本地接入",
+                request_kind,
+            )
+            .await;
+            last_error = "Free 账号不支持加入本地接入".to_string();
+            last_error_category = Some("free_account_restricted".to_string());
+            continue;
+        }
+
+        last_account_id = Some(account.id.clone());
+        last_account_email = Some(account.email.clone());
+
+        match connect_upstream_websocket(
+            request,
+            &account,
+            &upstream_target,
+            collection.upstream_proxy_url.as_deref(),
+            websocket_connect_timeout,
+        )
+        .await
+        {
+            Ok(upstream) => {
+                return Ok(WebSocketDispatchSuccess {
+                    upstream,
+                    account_id: account.id.clone(),
+                    account_email: account.email.clone(),
+                    account,
+                });
+            }
+            Err(err) => {
+                let status = err.status.unwrap_or(StatusCode::BAD_GATEWAY.as_u16());
+                if status == StatusCode::UNAUTHORIZED.as_u16() && account.is_api_key_auth() {
+                    invalidate_prepared_account(&account_id).await;
+                    mark_account_failure(
+                        &account,
+                        Some(status),
+                        Some("auth_unavailable"),
+                        "API Key 账号上游 WebSocket 鉴权失败",
+                        request_kind,
+                    )
+                    .await;
+                    last_status = status;
+                    last_error = format!("API Key 账号 {} 上游 WebSocket 鉴权失败", account.email);
+                    last_error_category = Some("auth_unavailable".to_string());
+                    continue;
+                }
+
+                if status == StatusCode::UNAUTHORIZED.as_u16()
+                    && !account_has_refresh_token(&account)
+                {
+                    invalidate_prepared_account(&account_id).await;
+                    mark_account_failure(
+                        &account,
+                        Some(status),
+                        Some("auth_unavailable"),
+                        "access-token-only 账号的 WebSocket access_token 已被上游拒绝",
+                        request_kind,
+                    )
+                    .await;
+                    last_status = status;
+                    last_error = format!(
+                        "账号 {} 当前 WebSocket access_token 已被上游拒绝",
+                        account.email
+                    );
+                    last_error_category = Some("auth_unavailable".to_string());
+                    continue;
+                }
+
+                if status == StatusCode::UNAUTHORIZED.as_u16() {
+                    match force_refresh_gateway_account(&account_id).await {
+                        Ok(refreshed_account) => {
+                            account = refreshed_account;
+                            match connect_upstream_websocket(
+                                request,
+                                &account,
+                                &upstream_target,
+                                collection.upstream_proxy_url.as_deref(),
+                                websocket_connect_timeout,
+                            )
+                            .await
+                            {
+                                Ok(upstream) => {
+                                    return Ok(WebSocketDispatchSuccess {
+                                        upstream,
+                                        account_id: account.id.clone(),
+                                        account_email: account.email.clone(),
+                                        account,
+                                    });
+                                }
+                                Err(retry_err) => {
+                                    let retry_status = retry_err
+                                        .status
+                                        .unwrap_or(StatusCode::BAD_GATEWAY.as_u16());
+                                    let retry_category =
+                                        if retry_status == StatusCode::UNAUTHORIZED.as_u16() {
+                                            "auth_unavailable"
+                                        } else {
+                                            retry_err.category.as_str()
+                                        };
+                                    if retry_status == StatusCode::UNAUTHORIZED.as_u16() {
+                                        invalidate_prepared_account(&account_id).await;
+                                    }
+                                    mark_account_failure(
+                                        &account,
+                                        Some(retry_status),
+                                        Some(retry_category),
+                                        &retry_err.message,
+                                        request_kind,
+                                    )
+                                    .await;
+                                    last_status = retry_status;
+                                    last_error =
+                                        if retry_status == StatusCode::UNAUTHORIZED.as_u16() {
+                                            format!("账号 {} WebSocket 鉴权失败", account.email)
+                                        } else {
+                                            retry_err.message
+                                        };
+                                    last_error_category = Some(retry_category.to_string());
+                                }
+                            }
+                        }
+                        Err(refresh_err) => {
+                            invalidate_prepared_account(&account_id).await;
+                            mark_account_failure(
+                                &account,
+                                Some(status),
+                                Some("auth_refresh_failed"),
+                                &refresh_err,
+                                request_kind,
+                            )
+                            .await;
+                            last_status = status;
+                            last_error = refresh_err;
+                            last_error_category = Some("auth_refresh_failed".to_string());
+                        }
+                    }
+                    continue;
+                }
+
+                mark_account_failure(
+                    &account,
+                    Some(status),
+                    Some(err.category.as_str()),
+                    &err.message,
+                    request_kind,
+                )
+                .await;
+                last_status = status;
+                last_error = err.message;
+                last_error_category = Some(err.category);
+            }
+        }
+    }
+
+    Err(ProxyDispatchError {
+        status: last_status,
+        message: last_error,
+        account_id: last_account_id,
+        account_email: last_account_email,
+        error_category: last_error_category,
+        retry_after: None,
+        defer_until_pool_available: false,
+    })
+}
+
+fn websocket_capture_from_message(message: &Message, capture: &mut ResponseCapture) {
+    let parsed = match message {
+        Message::Text(text) => serde_json::from_str::<Value>(&text.to_string()).ok(),
+        Message::Binary(bytes) => serde_json::from_slice::<Value>(bytes.as_ref()).ok(),
+        _ => None,
+    };
+    let Some(value) = parsed else {
+        return;
+    };
+    if let Some(usage) = extract_usage_capture(&value) {
+        capture.usage = Some(usage);
+    }
+    if capture.response_id.is_none() {
+        capture.response_id = extract_response_id(&value);
+    }
+}
+
+fn websocket_message_value(message: &Message) -> Option<Value> {
+    match message {
+        Message::Text(text) => serde_json::from_str::<Value>(&text.to_string()).ok(),
+        Message::Binary(bytes) => serde_json::from_slice::<Value>(bytes.as_ref()).ok(),
+        _ => None,
+    }
+}
+
+fn websocket_error_status(value: &Value) -> Option<u16> {
+    for key in ["status", "status_code"] {
+        if let Some(status) = value
+            .get(key)
+            .and_then(Value::as_u64)
+            .and_then(|status| u16::try_from(status).ok())
+            .filter(|status| *status > 0)
+        {
+            return Some(status);
+        }
+        if let Some(status) = value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .and_then(|status| status.parse::<u16>().ok())
+            .filter(|status| *status > 0)
+        {
+            return Some(status);
+        }
+    }
+
+    None
+}
+
+fn build_websocket_error_body(value: &Value, status: u16) -> Value {
+    let mut out = Map::new();
+    out.insert("status".to_string(), json!(status));
+
+    if let Some(body) = value.get("body") {
+        out.insert("body".to_string(), body.clone());
+        if let Some(error) = body.get("error") {
+            out.insert("error".to_string(), error.clone());
+            return Value::Object(out);
+        }
+    }
+
+    if let Some(error) = value.get("error") {
+        out.insert("error".to_string(), error.clone());
+        return Value::Object(out);
+    }
+
+    out.insert(
+        "error".to_string(),
+        json!({
+            "type": "server_error",
+            "message": format!("HTTP {}", status),
+        }),
+    );
+    Value::Object(out)
+}
+
+fn retry_after_duration_from_value(value: &Value) -> Option<Duration> {
+    if let Some(seconds) = value.as_u64() {
+        return Some(Duration::from_secs(seconds));
+    }
+    value
+        .as_str()
+        .map(str::trim)
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+fn parse_websocket_retry_after_header(value: &Value) -> Option<Duration> {
+    let headers = value.get("headers")?.as_object()?;
+    headers.iter().find_map(|(name, value)| {
+        if name.eq_ignore_ascii_case("retry-after") {
+            retry_after_duration_from_value(value)
+        } else {
+            None
+        }
+    })
+}
+
+fn websocket_error_matches(value: &Value, expected: &str) -> bool {
+    for path in [
+        &["error", "code"][..],
+        &["error", "type"][..],
+        &["body", "error", "code"][..],
+        &["body", "error", "type"][..],
+        &["code"][..],
+        &["error"][..],
+    ] {
+        if extract_body_string_path(value, path).as_deref() == Some(expected) {
+            return true;
+        }
+    }
+    false
+}
+
+fn parse_websocket_upstream_error(message: &Message) -> Option<WebSocketUpstreamError> {
+    let value = websocket_message_value(message)?;
+    if value.get("type").and_then(Value::as_str).map(str::trim) != Some("error") {
+        return None;
+    }
+
+    let status = websocket_error_status(&value)?;
+    let body_value = build_websocket_error_body(&value, status);
+    let body = serde_json::to_string(&body_value).unwrap_or_else(|_| value.to_string());
+    let status_code = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    let usage_retry_after = parse_codex_retry_after(status_code, &body);
+    let is_connection_limit = websocket_error_matches(&value, "websocket_connection_limit_reached");
+    let category = if is_connection_limit {
+        "websocket_connection_limit_reached"
+    } else if usage_retry_after.is_some() || websocket_error_matches(&value, "usage_limit_reached")
+    {
+        "usage_limit_reached"
+    } else {
+        classify_upstream_error_category(status_code, &body).unwrap_or("upstream_websocket_error")
+    }
+    .to_string();
+    let retry_after = usage_retry_after
+        .or_else(|| parse_websocket_retry_after_header(&value))
+        .or_else(|| is_connection_limit.then_some(Duration::ZERO));
+
+    Some(WebSocketUpstreamError {
+        status,
+        body,
+        category,
+        retry_after,
+    })
+}
+
+async fn bridge_websocket_streams(
+    downstream: WebSocketStream<TcpStream>,
+    mut upstream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    first_payload: Vec<u8>,
+    timeouts: CodexLocalAccessTimeouts,
+) -> Result<WebSocketBridgeResult, String> {
+    let first_text = String::from_utf8(first_payload)
+        .map_err(|e| format!("WebSocket response.create 不是合法 UTF-8: {}", e))?;
+    upstream
+        .send(Message::Text(first_text.into()))
+        .await
+        .map_err(|e| format!("发送首个 WebSocket 上游消息失败: {}", e))?;
+
+    let (mut downstream_write, mut downstream_read) = downstream.split();
+    let (mut upstream_write, mut upstream_read) = upstream.split();
+    let mut capture = ResponseCapture::default();
+    let mut upstream_error = None;
+    let heartbeat_interval = duration_from_millis(
+        timeouts.websocket_heartbeat_interval_ms,
+        CODEX_WEBSOCKET_HEARTBEAT_INTERVAL,
+    );
+    let idle_timeout = duration_from_millis(
+        timeouts.websocket_idle_timeout_ms,
+        CODEX_WEBSOCKET_IDLE_TIMEOUT,
+    );
+    let mut heartbeat = tokio::time::interval_at(
+        tokio::time::Instant::now() + heartbeat_interval,
+        heartbeat_interval,
+    );
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                upstream_write
+                    .send(Message::Ping(Vec::new().into()))
+                    .await
+                    .map_err(|e| format!("发送 Codex 上游 WebSocket 心跳失败: {}", e))?;
+                upstream_write
+                    .flush()
+                    .await
+                    .map_err(|e| format!("刷新 Codex 上游 WebSocket 心跳失败: {}", e))?;
+            }
+            downstream_next = timeout(idle_timeout, downstream_read.next()) => {
+                let downstream_next = downstream_next
+                    .map_err(|_| "WebSocket 客户端空闲超时".to_string())?;
+                let Some(message_result) = downstream_next else {
+                    break;
+                };
+                let message = message_result
+                    .map_err(|e| format!("读取 WebSocket 客户端消息失败: {}", e))?;
+                let should_close = matches!(message, Message::Close(_));
+                upstream_write
+                    .send(message)
+                    .await
+                    .map_err(|e| format!("转发 WebSocket 客户端消息失败: {}", e))?;
+                if should_close {
+                    break;
+                }
+            }
+            upstream_next = timeout(idle_timeout, upstream_read.next()) => {
+                let upstream_next = upstream_next
+                    .map_err(|_| "Codex 上游 WebSocket 空闲超时".to_string())?;
+                let Some(message_result) = upstream_next else {
+                    break;
+                };
+                let message = message_result
+                    .map_err(|e| format!("读取 Codex 上游 WebSocket 消息失败: {}", e))?;
+                websocket_capture_from_message(&message, &mut capture);
+                let parsed_upstream_error = parse_websocket_upstream_error(&message);
+                let should_close = matches!(message, Message::Close(_));
+                downstream_write
+                    .send(message)
+                    .await
+                    .map_err(|e| format!("转发 Codex 上游 WebSocket 消息失败: {}", e))?;
+                if let Some(error) = parsed_upstream_error {
+                    upstream_error = Some(error);
+                    break;
+                }
+                if should_close {
+                    break;
+                }
+            }
+        }
+    }
+
+    Ok(WebSocketBridgeResult {
+        capture,
+        upstream_error,
+    })
+}
+
+async fn handle_websocket_connection(
+    stream: TcpStream,
+    addr: std::net::SocketAddr,
+    mut parsed: ParsedRequest,
+    collection: CodexLocalAccessCollection,
+    resolved_api_key: ResolvedLocalApiKey,
+) -> Result<(), String> {
+    let started_at = Instant::now();
+    let timeouts = collection_timeouts(&collection);
+    let mut downstream = accept_downstream_websocket(stream, &parsed).await?;
+    let initial_message_timeout = duration_from_millis(
+        timeouts.websocket_initial_message_timeout_ms,
+        CODEX_WEBSOCKET_INITIAL_MESSAGE_TIMEOUT,
+    );
+    let initial_payload =
+        match read_initial_websocket_payload(&mut downstream, initial_message_timeout).await {
+            Ok(payload) => payload,
+            Err(err) => {
+                let _ = downstream.send(Message::Close(None)).await;
+                return Err(err);
+            }
+        };
+    parsed.body = initial_payload;
+    prepare_websocket_initial_request(&mut parsed, &resolved_api_key)?;
+    let stats_context = RequestStatsContext {
+        request_kind: CodexLocalAccessRequestKind::Text,
+        model_id: stats_model_id_for_request_kind(&parsed.body, CodexLocalAccessRequestKind::Text),
+        api_key_id: resolved_api_key.id.clone(),
+        api_key_label: resolved_api_key.label.clone(),
+    };
+    let routing_hint = build_request_routing_hint(&parsed);
+
+    match proxy_websocket_with_account_pool(&parsed, &collection, stats_context.request_kind).await
+    {
+        Ok(success) => {
+            let account_id = success.account_id.clone();
+            let account_email = success.account_email.clone();
+            let account = success.account.clone();
+            let bridge_result = bridge_websocket_streams(
+                downstream,
+                success.upstream,
+                parsed.body.clone(),
+                timeouts.clone(),
+            )
+            .await?;
+            if let Some(upstream_error) = bridge_result.upstream_error {
+                mark_account_failure(
+                    &account,
+                    Some(upstream_error.status),
+                    Some(upstream_error.category.as_str()),
+                    upstream_error.body.as_str(),
+                    stats_context.request_kind,
+                )
+                .await;
+                if !collection.disable_cooling {
+                    if let Some(retry_after) = upstream_error.retry_after {
+                        set_model_cooldown(
+                            &account_id,
+                            &routing_hint.model_key,
+                            retry_after,
+                            upstream_error.category.as_str(),
+                        )
+                        .await;
+                    }
+                }
+
+                let latency_ms = started_at.elapsed().as_millis() as u64;
+                log_codex_api_failure(
+                    Some(&addr),
+                    Some(&parsed),
+                    Some(upstream_error.status),
+                    Some(account_id.as_str()),
+                    Some(account_email.as_str()),
+                    Some(latency_ms),
+                    upstream_error.body.as_str(),
+                );
+                if let Err(err) = record_request_stats(
+                    Some(account_id.as_str()),
+                    Some(account_email.as_str()),
+                    Some(stats_context.api_key_id.as_str()),
+                    Some(stats_context.api_key_label.as_str()),
+                    Some(stats_context.model_id.as_str()),
+                    stats_context.request_kind,
+                    false,
+                    Some(upstream_error.category.as_str()),
+                    latency_ms,
+                    bridge_result.capture.usage,
+                )
+                .await
+                {
+                    logger::log_codex_api_warn(&format!(
+                        "[CodexLocalAccess] 写入 WebSocket 上游失败统计失败: {}",
+                        err
+                    ));
+                }
+                return Ok(());
+            }
+
+            clear_model_cooldown(&account_id, &routing_hint.model_key).await;
+            mark_account_success(&account, stats_context.request_kind).await;
+            if let Some(response_id) = bridge_result.capture.response_id.as_deref() {
+                bind_response_affinity(response_id, &account_id).await;
+            }
+            if collection.session_affinity {
+                let session_key = routing_hint
+                    .session_affinity_key
+                    .clone()
+                    .map(|key| session_affinity_binding_key(&key));
+                if let Some(session_key) = session_key.as_deref() {
+                    bind_response_affinity(session_key, &account_id).await;
+                }
+            }
+            let latency_ms = started_at.elapsed().as_millis() as u64;
+            if let Err(err) = record_request_stats(
+                Some(account_id.as_str()),
+                Some(account_email.as_str()),
+                Some(stats_context.api_key_id.as_str()),
+                Some(stats_context.api_key_label.as_str()),
+                Some(stats_context.model_id.as_str()),
+                stats_context.request_kind,
+                true,
+                None,
+                latency_ms,
+                bridge_result.capture.usage,
+            )
+            .await
+            {
+                logger::log_codex_api_warn(&format!(
+                    "[CodexLocalAccess] 写入 WebSocket 请求统计失败: {}",
+                    err
+                ));
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let latency_ms = started_at.elapsed().as_millis() as u64;
+            log_codex_api_failure(
+                Some(&addr),
+                Some(&parsed),
+                Some(error.status),
+                error.account_id.as_deref(),
+                error.account_email.as_deref(),
+                Some(latency_ms),
+                error.message.as_str(),
+            );
+            let _ = downstream.send(Message::Close(None)).await;
+            if let Err(err) = record_request_stats(
+                error.account_id.as_deref(),
+                error.account_email.as_deref(),
+                Some(stats_context.api_key_id.as_str()),
+                Some(stats_context.api_key_label.as_str()),
+                Some(stats_context.model_id.as_str()),
+                stats_context.request_kind,
+                false,
+                error.error_category.as_deref(),
+                latency_ms,
+                None,
+            )
+            .await
+            {
+                logger::log_codex_api_warn(&format!(
+                    "[CodexLocalAccess] 写入 WebSocket 失败统计失败: {}",
+                    err
+                ));
+            }
+            Err(error.message)
+        }
+    }
 }
 
 async fn pool_unavailable_from_snapshot(
@@ -19560,6 +21151,7 @@ async fn pool_unavailable_from_snapshot(
         message: build_pool_unavailable_message(&routing_hint.model_key, &pool_summary),
         account_id: None,
         account_email: None,
+        error_category: Some("pool_unavailable".to_string()),
         retry_after: pool_summary.nearest_wait,
         defer_until_pool_available,
     })
@@ -20016,7 +21608,6 @@ async fn write_in_band_pool_unavailable_response(
         }),
         detail,
     );
-
     match response_adapter {
         GatewayResponseAdapter::Passthrough {
             request_is_stream: true,
@@ -20113,10 +21704,13 @@ async fn write_proxy_dispatch_error_response(
         message,
         account_id,
         account_email,
+        error_category,
         retry_after,
         defer_until_pool_available: _,
     } = error;
-    let error_category = proxy_dispatch_final_error_type(request, status, message.as_str());
+    let error_category = error_category.unwrap_or_else(|| {
+        proxy_dispatch_final_error_type(request, status, message.as_str()).to_string()
+    });
     log_codex_api_failure(
         Some(addr),
         Some(request),
@@ -20138,7 +21732,7 @@ async fn write_proxy_dispatch_error_response(
         &context,
         "final_response",
         Some(status),
-        Some(error_category),
+        Some(error_category.as_str()),
         None,
         Some("error"),
         detail,
@@ -20170,7 +21764,7 @@ async fn write_proxy_dispatch_error_response(
         Some(stats_context.model_id.as_str()),
         stats_context.request_kind,
         false,
-        Some(error_category),
+        Some(error_category.as_str()),
         latency_ms,
         None,
     )
@@ -20186,7 +21780,27 @@ async fn handle_connection(
     addr: std::net::SocketAddr,
 ) -> Result<(), String> {
     let request_body_limit_bytes = configured_request_body_limit_bytes();
-    let raw_request = match read_http_request(&mut stream, request_body_limit_bytes).await {
+    let request_read_timeout = {
+        let runtime = gateway_runtime().lock().await;
+        runtime
+            .collection
+            .as_ref()
+            .map(collection_timeouts)
+            .map(|timeouts| {
+                duration_from_millis(
+                    timeouts.legacy_request_read_timeout_ms,
+                    DEFAULT_REQUEST_READ_TIMEOUT,
+                )
+            })
+            .unwrap_or(DEFAULT_REQUEST_READ_TIMEOUT)
+    };
+    let raw_request = match read_http_request(
+        &mut stream,
+        request_body_limit_bytes,
+        request_read_timeout,
+    )
+    .await
+    {
         Ok(raw_request) => raw_request,
         Err(error @ HttpRequestReadError::RequestTooLarge { .. }) => {
             logger::log_codex_api_warn(&build_codex_api_failure_log(
@@ -20350,7 +21964,7 @@ async fn handle_connection(
     };
     touch_local_access_api_key(&resolved_api_key.id).await;
 
-    if is_websocket_upgrade_request(&parsed.headers) {
+    if is_websocket_upgrade_request(&parsed) {
         if !is_backend_codex_responses_websocket_request(&parsed.target)
             && !is_responses_request(&parsed.target)
         {
@@ -20368,19 +21982,8 @@ async fn handle_connection(
             .await?;
             return Ok(());
         }
-        write_json_error_response(
-            &mut stream,
-            Some(&addr),
-            Some(&parsed),
-            StatusCode::BAD_REQUEST.as_u16(),
-            "Bad Request",
-            "Responses WebSocket is not supported by Cockpit local API service; retry with HTTP/SSE fallback",
-            None,
-            None,
-            None,
-        )
-        .await?;
-        return Ok(());
+        return handle_websocket_connection(stream, addr, parsed, collection, resolved_api_key)
+            .await;
     }
 
     if is_local_models_request(&parsed.target) {
@@ -20690,6 +22293,7 @@ async fn handle_connection(
                             message: "本地接入请求排队超出本次请求超时预算，请稍后重试".to_string(),
                             account_id: None,
                             account_email: None,
+                            error_category: Some("local_backpressure_timeout".to_string()),
                             retry_after: Some(Duration::from_secs(1)),
                             defer_until_pool_available: false,
                         });
@@ -20736,6 +22340,7 @@ async fn handle_connection(
             message: "本地接入请求超时，请稍后重试".to_string(),
             account_id: None,
             account_email: None,
+            error_category: Some("local_request_timeout".to_string()),
             retry_after: Some(Duration::from_secs(1)),
             defer_until_pool_available: false,
         }),
@@ -20769,6 +22374,7 @@ async fn handle_connection(
                 &success.account_id,
                 &prepared_request,
             );
+            let timeouts = collection_timeouts(&collection);
             let response_capture = match write_gateway_response(
                 &mut stream,
                 success.upstream,
@@ -20778,6 +22384,7 @@ async fn handle_connection(
                 collection.debug_logs,
                 &prepared_request,
                 started_at,
+                &timeouts,
             )
             .await
             {
@@ -20945,21 +22552,22 @@ mod tests {
         inspect_local_access_profile_config, is_codex_local_access_auth_text,
         is_image_generation_capability_error, is_local_access_eligible_account,
         is_responses_completion_event, is_responses_websocket_upgrade_request,
-        is_websocket_upgrade_request, json_response_with_retry_after,
+        is_stream_incomplete_error_message, is_upstream_response_failed_error_message,
+        is_websocket_upgrade_request, json_response_with_retry_after, legacy_stream_error_category,
         load_health_registry_from_path, load_runtime_mode_state,
         local_api_safety_config_for_preset, local_backpressure_wait_duration, model_pricing,
         next_routing_start_index, normalize_custom_routing_rules, normalize_health_registry,
-        normalize_local_api_safety_config, now_ms, official_codex_sticky_routing_boundary,
-        parse_codex_retry_after, parse_http_request, parse_responses_payload_from_upstream,
-        parse_retry_after_header_value, parse_websocket_upstream_error,
-        pause_health_registry_account, pin_process_sticky_account, pool_wait_fits_request_budget,
-        prepare_gateway_request, profile_base_url_matches, proxy_dispatch_final_error_detail,
-        proxy_dispatch_final_error_type, proxy_request_with_account_pool,
-        prune_process_sticky_binding, record_manual_pause_audit_event,
-        record_manual_recovery_audit_event, recover_health_registry_account,
-        recover_invalid_stats_file, remove_codex_local_access_config,
-        request_affinity_account_from_registry, request_affinity_key,
-        request_lineage_id_with_source, reset_active_stream_leases_for_tests,
+        normalize_local_api_safety_config, normalized_sidecar_error_category, now_ms,
+        official_codex_sticky_routing_boundary, parse_codex_retry_after, parse_http_request,
+        parse_responses_payload_from_upstream, parse_retry_after_header_value,
+        parse_websocket_upstream_error, pause_health_registry_account, pin_process_sticky_account,
+        pool_wait_fits_request_budget, prepare_gateway_request, profile_base_url_matches,
+        proxy_dispatch_final_error_detail, proxy_dispatch_final_error_type,
+        proxy_request_with_account_pool, prune_process_sticky_binding,
+        record_manual_pause_audit_event, record_manual_recovery_audit_event,
+        recover_health_registry_account, recover_invalid_stats_file,
+        remove_codex_local_access_config, request_affinity_account_from_registry,
+        request_affinity_key, request_lineage_id_with_source, reset_active_stream_leases_for_tests,
         reset_local_api_backpressure_for_tests, resolve_plan_rank, resolve_supported_model_alias,
         resolve_upstream_target, retry_failover_account_attempt_limit, retry_failover_max_retries,
         save_health_registry_to_path, selector_audit_detail, selector_selected_reason,
@@ -20979,12 +22587,11 @@ mod tests {
         AuditContext, AuditTrailStatus, CodexLocalAccessErrorType, GatewayResponseAdapter,
         LocalApiBackpressureState, OfficialCodexStickyRoutingBoundary, ParsedRequest,
         ProxyDispatchError, ResolvedLocalApiKey, ResponseUsageCollector, RoutingCandidate,
-        RuntimeProjectionContinuityRisk, StreamWriteState, UpstreamHttpClientSignature,
-        UpstreamProxySource, UsageCapture, CODEX_AUTO_REVIEW_MODEL_ID,
+        RuntimeProjectionContinuityRisk, SidecarUsageDetails, SidecarUsageEvent, StreamWriteState,
+        UpstreamHttpClientSignature, UpstreamProxySource, UsageCapture, CODEX_AUTO_REVIEW_MODEL_ID,
         CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID, CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME,
-        DAY_WINDOW_MS, DEFAULT_MAX_RETRY_INTERVAL_MS, DEFAULT_SESSION_AFFINITY_TTL_MS,
-        MAX_HTTP_REQUEST_BYTES, PREFERRED_CODEX_LOCAL_ACCESS_PORTS, X_CODEX_TURN_METADATA_HEADER,
-        X_CODEX_TURN_STATE_HEADER,
+        DAY_WINDOW_MS, MAX_HTTP_REQUEST_BYTES, PREFERRED_CODEX_LOCAL_ACCESS_PORTS,
+        X_CODEX_TURN_METADATA_HEADER, X_CODEX_TURN_STATE_HEADER,
     };
     use crate::models::codex::{
         CodexAccount, CodexApiProviderMode, CodexAppSpeed, CodexQuota, CodexTokens,
@@ -20995,8 +22602,8 @@ mod tests {
         CodexLocalAccessHealthSummary, CodexLocalAccessImageGenerationMode,
         CodexLocalAccessModelCooldown, CodexLocalAccessRequestKind,
         CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessStats,
-        CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId,
-        CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
+        CodexLocalAccessTimeouts, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
+        CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
     };
     use crate::models::{
         DefaultInstanceSettings, InstanceLaunchMode, InstanceProfile, InstanceStore,
@@ -21036,6 +22643,9 @@ mod tests {
             session_affinity_ttl_ms: super::DEFAULT_SESSION_AFFINITY_TTL_MS,
             max_retry_credentials: 0,
             max_retry_interval_ms: super::DEFAULT_MAX_RETRY_INTERVAL_MS,
+            timeouts: CodexLocalAccessTimeouts::default(),
+            active_timeout_preset_id: "long_wait".to_string(),
+            timeout_presets: Vec::new(),
             disable_cooling: false,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -21158,6 +22768,7 @@ mod tests {
         let signature = UpstreamHttpClientSignature {
             proxy_source: UpstreamProxySource::SystemAuto,
             proxy_url: None,
+            connect_timeout_ms: super::duration_to_millis(super::DEFAULT_UPSTREAM_CONNECT_TIMEOUT),
         };
         let result = build_upstream_http_client(&signature);
         assert!(
@@ -21494,6 +23105,7 @@ mod tests {
             downstream,
             upstream,
             br#"{"type":"response.create","payload":{}}"#.to_vec(),
+            CodexLocalAccessTimeouts::default(),
         ));
         let pong_result = pong_rx.await.unwrap();
 
@@ -21546,6 +23158,7 @@ mod tests {
             downstream,
             upstream,
             br#"{"type":"response.create","payload":{}}"#.to_vec(),
+            CodexLocalAccessTimeouts::default(),
         ));
         let (first_opcode, first_payload) =
             read_raw_client_websocket_frame(&mut raw_upstream).await;
@@ -23060,6 +24673,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 .to_string(),
             account_id: None,
             account_email: None,
+            error_category: Some("pool_unavailable".to_string()),
             retry_after: Some(Duration::from_secs(7 * 24 * 60 * 60)),
             defer_until_pool_available: true,
         };
@@ -27490,6 +29104,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             message: "API 服务号池暂无可调度账号".to_string(),
             account_id: None,
             account_email: None,
+            error_category: Some("pool_unavailable".to_string()),
             retry_after: None,
             defer_until_pool_available: false,
         };
@@ -27520,6 +29135,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             message: "API 服务号池暂无可调度账号".to_string(),
             account_id: None,
             account_email: None,
+            error_category: Some("pool_unavailable".to_string()),
             retry_after: None,
             defer_until_pool_available: false,
         };
@@ -27664,6 +29280,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             message,
             account_id: None,
             account_email: None,
+            error_category: Some("auth_failed".to_string()),
             retry_after: None,
             defer_until_pool_available: false,
         };
@@ -28950,7 +30567,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             .await
             .expect("test request writer should close cleanly");
 
-        let error = super::read_http_request(&mut server, 96)
+        let error = super::read_http_request(&mut server, 96, super::DEFAULT_REQUEST_READ_TIMEOUT)
             .await
             .expect_err("configured limit should reject a declared oversized body");
 
@@ -29390,6 +31007,55 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         assert_eq!(
             classify_upstream_error_category(StatusCode::FORBIDDEN, body),
             Some("image_generation_not_enabled")
+        );
+    }
+
+    #[test]
+    fn classifies_stream_incomplete_errors_separately() {
+        let decoding_error = "读取上游响应失败: error decoding response body";
+        let disconnected_error = "stream error: stream disconnected before completion: stream closed before response.completed/response.done";
+        let response_failed_error = "stream error: stream disconnected before completion: stream closed before response.completed/response.done, last_event=response.failed";
+
+        assert!(is_stream_incomplete_error_message(decoding_error));
+        assert!(is_stream_incomplete_error_message(disconnected_error));
+        assert!(is_upstream_response_failed_error_message(
+            response_failed_error
+        ));
+        assert_eq!(
+            legacy_stream_error_category(decoding_error),
+            "stream_incomplete"
+        );
+        assert_eq!(
+            legacy_stream_error_category(disconnected_error),
+            "stream_incomplete"
+        );
+        assert_eq!(
+            legacy_stream_error_category(response_failed_error),
+            "upstream_response_failed"
+        );
+    }
+
+    #[test]
+    fn sidecar_response_failed_overrides_generic_request_failed() {
+        let event = SidecarUsageEvent {
+            request_id: "req-1".to_string(),
+            model: "gpt-5.4".to_string(),
+            account_id: "account-1".to_string(),
+            account_email: "user@example.com".to_string(),
+            api_key_id: "key-1".to_string(),
+            api_key_label: "Default".to_string(),
+            request_kind: "text".to_string(),
+            success: false,
+            status: Some(200),
+            error_category: Some("request_failed".to_string()),
+            error_message: Some("stream error: stream disconnected before completion: stream closed before response.completed/response.done, last_event=response.failed".to_string()),
+            latency_ms: 1754,
+            usage: SidecarUsageDetails::default(),
+        };
+
+        assert_eq!(
+            normalized_sidecar_error_category(&event).as_deref(),
+            Some("upstream_response_failed")
         );
     }
 
@@ -31292,7 +32958,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             gateway_request_id: "gw-test-25".to_string(),
         };
 
-        assert!(is_websocket_upgrade_request(&request.headers));
+        assert!(is_websocket_upgrade_request(&request));
         assert!(is_responses_websocket_upgrade_request(&request));
     }
 
@@ -31306,7 +32972,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             gateway_request_id: "gw-test-26".to_string(),
         };
 
-        assert!(!is_websocket_upgrade_request(&request.headers));
+        assert!(!is_websocket_upgrade_request(&request));
         assert!(!is_responses_websocket_upgrade_request(&request));
     }
 
@@ -31852,6 +33518,41 @@ data: {"response":{"id":"resp_done","model":"gpt-5.4","status":"completed","usag
                 .and_then(Value::as_u64),
             Some(2)
         );
+    }
+
+    #[test]
+    fn parses_responses_sse_response_failed_as_upstream_failure() {
+        let sse = br#"event: response.failed
+data: {"type":"response.failed","response":{"id":"resp_failed","error":{"code":"model_at_capacity","type":"server_error","message":"model overloaded"}}}
+
+"#;
+
+        let error = parse_responses_payload_from_upstream(sse).expect_err("failed event");
+        assert!(error.contains("upstream_response_failed"));
+        assert!(error.contains("response.failed"));
+        assert!(error.contains("model_at_capacity"));
+        assert!(error.contains("model overloaded"));
+        assert_eq!(
+            legacy_stream_error_category(&error),
+            "upstream_response_failed"
+        );
+    }
+
+    #[test]
+    fn response_usage_collector_captures_sse_error_event() {
+        let sse = br#"event: error
+data: {"error":{"code":"server_error","type":"upstream","message":"stream aborted"}}
+
+"#;
+
+        let mut collector = ResponseUsageCollector::new(true);
+        collector.feed(sse);
+        let capture = collector.finish();
+
+        let error = capture.terminal_error.expect("terminal error");
+        assert!(error.contains("upstream_response_failed"));
+        assert!(error.contains("server_error"));
+        assert!(error.contains("stream aborted"));
     }
 
     #[test]
