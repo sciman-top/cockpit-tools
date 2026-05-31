@@ -2749,7 +2749,9 @@
     "cursorRefreshInterval": "할당량 자동 새로고침",
     "gemini": {
       "title": "Gemini Cli 설정",
-      "appPath": "Gemini Cli 경로"
+      "appPath": "Gemini Cli 경로",
+      "syncWsl": "WSL 구성 동기화",
+      "syncWslDesc": "계정 전환 시 WSL의 .gemini 구성을 자동으로 덮어씁니다"
     },
     "geminiRefreshInterval": "할당량 자동 새로고침",
     "codebuddy": {

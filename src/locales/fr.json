@@ -2749,7 +2749,9 @@
     "cursorRefreshInterval": "Actualisation auto du quota",
     "gemini": {
       "title": "Paramètres Gemini Cli",
-      "appPath": "Chemin Gemini Cli"
+      "appPath": "Chemin Gemini Cli",
+      "syncWsl": "Synchroniser la configuration WSL",
+      "syncWslDesc": "Remplacer automatiquement la configuration .gemini dans WSL lors du changement de compte"
     },
     "geminiRefreshInterval": "Actualisation auto du quota",
     "codebuddy": {

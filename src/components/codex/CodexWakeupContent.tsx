@@ -15,6 +15,7 @@ import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import {
   Check,
   ChevronDown,
+  ChevronLeft,
   CircleAlert,
   Copy,
   Eye,
@@ -28,6 +29,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import { useEscClose } from '../../hooks/useEscClose';
 import {
   CodexAccount,
   getCodexAuthMetadata,
@@ -972,6 +974,7 @@ export function CodexWakeupContent({
   } = useModalErrorState();
   const [taskAccountFilters, setTaskAccountFilters] = useState<AccountPickerFilters>(createEmptyAccountPickerFilters());
   const [showPresetModal, setShowPresetModal] = useState(false);
+  const [presetModalSource, setPresetModalSource] = useState<'task' | 'test' | 'page'>('page');
   const [presetDraft, setPresetDraft] = useState<PresetDraft>(createEmptyPresetDraft());
   const {
     message: presetModalError,
@@ -984,6 +987,7 @@ export function CodexWakeupContent({
     if (openPresetManagerSignal <= 0) return;
     setPresetDraft(createEmptyPresetDraft());
     clearPresetModalError();
+    setPresetModalSource('page');
     setShowPresetModal(true);
   }, [clearPresetModalError, openPresetManagerSignal]);
   const [showTestModal, setShowTestModal] = useState(false);
@@ -1004,6 +1008,7 @@ export function CodexWakeupContent({
   const activeTestRunTokenRef = useRef(0);
   const activeTestScopeIdRef = useRef<string | null>(null);
   const [executionSession, setExecutionSession] = useState<ExecutionSessionState | null>(null);
+  const [executionSessionFromHistory, setExecutionSessionFromHistory] = useState(false);
   const [executionFilter, setExecutionFilter] = useState<ExecutionRecordFilter>('all');
   const [copiedCommand, setCopiedCommand] = useState<string | null>(null);
   const [showRuntimeGuideModal, setShowRuntimeGuideModal] = useState(false);
@@ -1799,9 +1804,10 @@ export function CodexWakeupContent({
     }
   }, [refreshRuntime, runtimeConfigDraft.codexCliPath, runtimeConfigDraft.nodePath]);
 
-  const openPresetModal = useCallback(() => {
+  const openPresetModal = useCallback((source: 'task' | 'test' | 'page' = 'page') => {
     setPresetDraft(createEmptyPresetDraft());
     setPresetModalError(null);
+    setPresetModalSource(source);
     setShowPresetModal(true);
   }, [setPresetModalError]);
 
@@ -2021,6 +2027,12 @@ export function CodexWakeupContent({
     setTestModelReasoningEffort(resolvedModelSelection.modelReasoningEffort);
   }, [cancelRunningTest, resolvedModelSelection, testing]);
 
+  useEscClose(showRuntimeGuideModal, closeRuntimeGuideModal);
+  useEscClose(showPresetModal, closePresetModal);
+  useEscClose(showTaskModal, closeTaskModal);
+  useEscClose(showTestModal, closeTestModal);
+  useEscClose(showHistoryModal, () => setShowHistoryModal(false));
+
   const persistTasks = useCallback(
     async (
       enabled: boolean,
@@ -2185,6 +2197,7 @@ export function CodexWakeupContent({
       }
 
       const runId = crypto.randomUUID();
+      setExecutionSessionFromHistory(false);
       setExecutionSession(
         buildExecutionSession(
           runId,
@@ -2281,6 +2294,7 @@ export function CodexWakeupContent({
     activeTestRunTokenRef.current = runToken;
     activeTestScopeIdRef.current = cancelScopeId;
     const promptValue = testPrompt.trim() || undefined;
+    setExecutionSessionFromHistory(false);
     setExecutionSession(
       buildExecutionSession(
         runId,
@@ -2441,7 +2455,7 @@ export function CodexWakeupContent({
           <button className="btn btn-primary" onClick={() => void openNewTaskModal()} disabled={oauthAccounts.length === 0}>
             <Plus size={16} /> {t('codex.wakeup.addTask')}
           </button>
-          <button className="btn btn-secondary" onClick={openPresetModal}>
+          <button className="btn btn-secondary" onClick={() => openPresetModal('page')}>
             {t('codex.wakeup.managePresets')}
           </button>
           <button className="btn btn-secondary" onClick={() => void openTestModal()} disabled={oauthAccounts.length === 0}>
@@ -2591,6 +2605,15 @@ export function CodexWakeupContent({
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-header">
+              <button
+                className="btn btn-secondary icon-only"
+                onClick={closeRuntimeGuideModal}
+                title={t('common.back', '返回')}
+                aria-label={t('common.back', '返回')}
+                disabled={runtimeGuideRefreshing}
+              >
+                <ChevronLeft size={14} />
+              </button>
               <h2>{runtimeGuideTitle}</h2>
               <button className="modal-close" onClick={closeRuntimeGuideModal} disabled={runtimeGuideRefreshing}>
                 <X />
@@ -2685,6 +2708,17 @@ export function CodexWakeupContent({
         <div className="modal-overlay codex-wakeup-preset-overlay" onClick={closePresetModal}>
           <div className="modal modal-lg wakeup-modal codex-wakeup-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
+              {presetModalSource !== 'page' && (
+                <button
+                  className="btn btn-secondary icon-only"
+                  onClick={closePresetModal}
+                  title={t('common.back', '返回')}
+                  aria-label={t('common.back', '返回')}
+                  disabled={saving}
+                >
+                  <ChevronLeft size={14} />
+                </button>
+              )}
               <h2>{t('codex.wakeup.presetManagerTitle')}</h2>
               <button className="modal-close" onClick={closePresetModal} disabled={saving}>
                 <X />
@@ -2831,6 +2865,7 @@ export function CodexWakeupContent({
         <div className="modal-overlay" onClick={closeTaskModal}>
           <div className="modal modal-lg wakeup-modal codex-wakeup-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
+              <button className="btn btn-secondary icon-only" onClick={closeTaskModal} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{taskDraft.id ? t('codex.wakeup.editTaskTitle') : t('codex.wakeup.createTaskTitle')}</h2>
               <button className="modal-close" onClick={closeTaskModal}>
                 <X />
@@ -2914,7 +2949,7 @@ export function CodexWakeupContent({
               <div className="wakeup-form-group">
                 <div className="codex-wakeup-inline-header">
                   <label>{t('codex.wakeup.taskModelLabel')}</label>
-                  <button type="button" className="btn btn-secondary" onClick={openPresetModal}>
+                  <button type="button" className="btn btn-secondary" onClick={() => openPresetModal('task')}>
                     {t('codex.wakeup.managePresets')}
                   </button>
                 </div>
@@ -3200,6 +3235,7 @@ export function CodexWakeupContent({
         <div className="modal-overlay" onClick={closeTestModal}>
           <div className="modal modal-lg wakeup-modal wakeup-test-modal codex-wakeup-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
+              <button className="btn btn-secondary icon-only" onClick={closeTestModal} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{t('codex.wakeup.testTitle')}</h2>
               <button className="modal-close" onClick={closeTestModal}>
                 <X />
@@ -3246,7 +3282,7 @@ export function CodexWakeupContent({
               <div className="wakeup-form-group">
                 <div className="codex-wakeup-inline-header">
                   <label>{t('codex.wakeup.testModelLabel')}</label>
-                  <button type="button" className="btn btn-secondary" onClick={openPresetModal}>
+                  <button type="button" className="btn btn-secondary" onClick={() => openPresetModal('test')}>
                     {t('codex.wakeup.managePresets')}
                   </button>
                 </div>
@@ -3312,6 +3348,7 @@ export function CodexWakeupContent({
         <div className="modal-overlay" onClick={() => setShowHistoryModal(false)}>
           <div className="modal wakeup-modal wakeup-history-modal codex-wakeup-history-modal" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
+              <button className="btn btn-secondary icon-only" onClick={() => setShowHistoryModal(false)} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
               <h2>{t('codex.wakeup.historyTitle')}</h2>
               <button className="modal-close" onClick={() => setShowHistoryModal(false)}>
                 <X />
@@ -3353,6 +3390,7 @@ export function CodexWakeupContent({
                               className="btn btn-secondary codex-wakeup-history-detail-btn"
                               onClick={() => {
                                 setShowHistoryModal(false);
+                                setExecutionSessionFromHistory(true);
                                 setExecutionSession(buildExecutionSessionFromHistory(batch));
                               }}
                             >
@@ -3399,6 +3437,7 @@ export function CodexWakeupContent({
           onClick={() => {
             if (!executionSession.running) {
               setExecutionSession(null);
+              setExecutionSessionFromHistory(false);
             }
           }}
         >
@@ -3407,10 +3446,17 @@ export function CodexWakeupContent({
             onClick={(event) => event.stopPropagation()}
           >
             <div className="modal-header">
+              {executionSessionFromHistory && !executionSession.running && (
+                <button className="btn btn-secondary icon-only" onClick={() => {
+                  setExecutionSession(null);
+                  setExecutionSessionFromHistory(false);
+                  setShowHistoryModal(true);
+                }} title={t('common.back', '返回')} aria-label={t('common.back', '返回')}><ChevronLeft size={14} /></button>
+              )}
               <h2>{t('codex.wakeup.resultsTitle')}</h2>
               <button
                 className="modal-close"
-                onClick={() => setExecutionSession(null)}
+                onClick={() => { setExecutionSession(null); setExecutionSessionFromHistory(false); }}
                 disabled={executionSession.running}
               >
                 <X />
@@ -3597,7 +3643,7 @@ export function CodexWakeupContent({
               )}
               <button
                 className="btn btn-primary codex-wakeup-results-close-btn"
-                onClick={() => setExecutionSession(null)}
+                onClick={() => { setExecutionSession(null); setExecutionSessionFromHistory(false); }}
                 disabled={executionSession.running}
               >
                 {t('common.close', '关闭')}

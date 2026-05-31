@@ -2899,7 +2899,9 @@
     },
     "gemini": {
       "title": "Gemini Cli Settings",
-      "appPath": "Gemini Cli Path"
+      "appPath": "Gemini Cli Path",
+      "syncWsl": "Sinkronkan Konfigurasi WSL",
+      "syncWslDesc": "Otomatis menimpa konfigurasi .gemini di WSL saat mengganti akun"
     },
     "geminiRefreshInterval": "Quota Auto Refresh",
     "error": {

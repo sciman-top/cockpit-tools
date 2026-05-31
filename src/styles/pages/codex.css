@@ -1241,7 +1241,8 @@
 }
 
 .codex-account-card .tier-badge,
-.codex-accounts-page .account-table .tier-badge {
+.codex-accounts-page .account-table .tier-badge,
+.codex-oauth-binding-row .tier-badge {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1257,19 +1258,22 @@
 }
 
 .codex-account-card .tier-badge::before,
-.codex-accounts-page .account-table .tier-badge::before {
+.codex-accounts-page .account-table .tier-badge::before,
+.codex-oauth-binding-row .tier-badge::before {
   display: none;
 }
 
 .codex-account-card .tier-badge.free,
-.codex-accounts-page .account-table .tier-badge.free {
+.codex-accounts-page .account-table .tier-badge.free,
+.codex-oauth-binding-row .tier-badge.free {
   background: var(--plan-free-bg);
   color: var(--plan-free-color);
   border: 1px solid var(--plan-free-border);
 }
 
 .codex-account-card .tier-badge.plus,
-.codex-accounts-page .account-table .tier-badge.plus {
+.codex-accounts-page .account-table .tier-badge.plus,
+.codex-oauth-binding-row .tier-badge.plus {
   background: var(--plan-plus-bg);
   color: var(--plan-plus-color);
   border: 1px solid var(--plan-plus-border);
@@ -1277,6 +1281,7 @@
 
 .codex-account-card .tier-badge.codex-plus,
 .codex-accounts-page .account-table .tier-badge.codex-plus,
+.codex-oauth-binding-row .tier-badge.codex-plus,
 .codex-accounts-page .folder-preview-item .tier-badge.codex-plus,
 .codex-wakeup-account-chip .tier-badge.codex-plus,
 .group-account-tier-badge.codex-plus {
@@ -1287,21 +1292,24 @@
 }
 
 .codex-account-card .tier-badge.team,
-.codex-accounts-page .account-table .tier-badge.team {
+.codex-accounts-page .account-table .tier-badge.team,
+.codex-oauth-binding-row .tier-badge.team {
   background: var(--plan-team-bg);
   color: var(--plan-team-color);
   border: 1px solid var(--plan-team-border);
 }
 
 .codex-account-card .tier-badge.enterprise,
-.codex-accounts-page .account-table .tier-badge.enterprise {
+.codex-accounts-page .account-table .tier-badge.enterprise,
+.codex-oauth-binding-row .tier-badge.enterprise {
   background: var(--plan-enterprise-bg);
   color: var(--plan-enterprise-color);
   border: 1px solid var(--plan-enterprise-border);
 }
 
 .codex-account-card .tier-badge.pro,
-.codex-accounts-page .account-table .tier-badge.pro {
+.codex-accounts-page .account-table .tier-badge.pro,
+.codex-oauth-binding-row .tier-badge.pro {
   background: var(--plan-pro-bg);
   color: var(--plan-pro-color);
   border: 1px solid var(--plan-pro-border);
@@ -1309,6 +1317,7 @@
 
 .codex-account-card .tier-badge.codex-pro-lite,
 .codex-accounts-page .account-table .tier-badge.codex-pro-lite,
+.codex-oauth-binding-row .tier-badge.codex-pro-lite,
 .codex-accounts-page .folder-preview-item .tier-badge.codex-pro-lite,
 .codex-wakeup-account-chip .tier-badge.codex-pro-lite {
   background: linear-gradient(135deg, #f8fafc 0%, #dbeafe 45%, #a8b7ca 100%);
@@ -1319,6 +1328,7 @@
 
 .codex-account-card .tier-badge.codex-pro-max,
 .codex-accounts-page .account-table .tier-badge.codex-pro-max,
+.codex-oauth-binding-row .tier-badge.codex-pro-max,
 .codex-accounts-page .folder-preview-item .tier-badge.codex-pro-max,
 .codex-wakeup-account-chip .tier-badge.codex-pro-max {
   background: linear-gradient(135deg, #fff7cc 0%, #f6d365 42%, #d99b16 100%);
@@ -1329,6 +1339,7 @@
 
 .codex-account-card .tier-badge.new-api-exclusive,
 .codex-accounts-page .account-table .tier-badge.new-api-exclusive,
+.codex-oauth-binding-row .tier-badge.new-api-exclusive,
 .codex-accounts-page .folder-preview-item .tier-badge.new-api-exclusive,
 .codex-wakeup-account-chip .tier-badge.new-api-exclusive {
   background: linear-gradient(135deg, #ecfeff 0%, #99f6e4 52%, #facc15 100%);
@@ -3701,13 +3712,16 @@
 }
 
 .codex-oauth-binding-row-main {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
   flex: 1;
 }
 
 .codex-oauth-binding-row-name {
   display: block;
+  flex: 1;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -3717,6 +3731,10 @@
   line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.codex-oauth-binding-row-plan {
+  flex-shrink: 0;
 }
 
 .codex-oauth-binding-modal .group-account-empty {

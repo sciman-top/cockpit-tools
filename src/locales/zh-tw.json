@@ -2749,7 +2749,9 @@
     "cursorRefreshInterval": "配額自動更新",
     "gemini": {
       "title": "Gemini Cli 設定",
-      "appPath": "Gemini Cli 路徑"
+      "appPath": "Gemini Cli 路徑",
+      "syncWsl": "同步 WSL 設定",
+      "syncWslDesc": "切換帳號時自動覆寫 WSL 內的 .gemini 設定"
     },
     "geminiRefreshInterval": "配額自動刷新",
     "codebuddy": {

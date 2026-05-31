@@ -2749,7 +2749,9 @@
     "cursorRefreshInterval": "Kota otomatik yenileme",
     "gemini": {
       "title": "Gemini Cli Ayarları",
-      "appPath": "Gemini Cli Yolu"
+      "appPath": "Gemini Cli Yolu",
+      "syncWsl": "WSL Yapılandırmasını Eşitle",
+      "syncWslDesc": "Hesap değiştirirken WSL içindeki .gemini yapılandırmasını otomatik olarak üzerine yaz"
     },
     "geminiRefreshInterval": "Kota Otomatik Yenileme",
     "codebuddy": {

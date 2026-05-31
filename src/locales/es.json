@@ -2749,7 +2749,9 @@
     "cursorRefreshInterval": "Actualización automática de cuota",
     "gemini": {
       "title": "Ajustes de Gemini Cli",
-      "appPath": "Ruta de Gemini Cli"
+      "appPath": "Ruta de Gemini Cli",
+      "syncWsl": "Sincronizar configuración de WSL",
+      "syncWslDesc": "Sobrescribir automáticamente la configuración de .gemini en WSL al cambiar de cuenta"
     },
     "geminiRefreshInterval": "Actualización automática de cuota",
     "codebuddy": {

@@ -2749,7 +2749,9 @@
     "cursorRefreshInterval": "Tự động làm mới hạn mức",
     "gemini": {
       "title": "Cài đặt Gemini Cli",
-      "appPath": "Đường dẫn Gemini Cli"
+      "appPath": "Đường dẫn Gemini Cli",
+      "syncWsl": "Đồng bộ cấu hình WSL",
+      "syncWslDesc": "Tự động ghi đè cấu hình .gemini trong WSL khi chuyển tài khoản"
     },
     "geminiRefreshInterval": "Tự động làm mới hạn ngạch",
     "codebuddy": {

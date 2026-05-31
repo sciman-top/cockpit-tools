@@ -2749,7 +2749,9 @@
     "cursorRefreshInterval": "クォータ自動更新",
     "gemini": {
       "title": "Gemini Cli 設定",
-      "appPath": "Gemini Cli パス"
+      "appPath": "Gemini Cli パス",
+      "syncWsl": "WSL 設定を同期",
+      "syncWslDesc": "アカウント切り替え時に WSL 内の .gemini 設定を自動で上書きします"
     },
     "geminiRefreshInterval": "クォータ自動更新",
     "codebuddy": {

@@ -78,6 +78,7 @@ import {
   sortCodexLocalAccessAccountsForScheduling,
 } from '../utils/codexAccountSort';
 import { isCodexLocalAccessQuotaHealthIssue } from '../utils/codexLocalAccessHealth';
+import { useEscClose } from '../hooks/useEscClose';
 import './GroupAccountPickerModal.css';
 import './CodexLocalAccessModal.css';
 
@@ -317,6 +318,7 @@ export function CodexLocalAccessModal({
   portCleanupBusy,
 }: CodexLocalAccessModalProps) {
   const { t } = useTranslation();
+  useEscClose(isOpen, onClose);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [selectedOrder, setSelectedOrder] = useState<string[]>([]);

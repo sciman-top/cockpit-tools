@@ -8,6 +8,7 @@ import {
   compareCodexAccountTieBreak,
   compareCodexAccountsByRecommendedSort,
 } from '../utils/codexAccountSort'
+import { useEscClose } from '../hooks/useEscClose'
 import './GroupAccountPickerModal.css'
 
 interface CodexGroupAccountPickerModalProps {
@@ -34,6 +35,7 @@ export function CodexGroupAccountPickerModal({
   onConfirm,
 }: CodexGroupAccountPickerModalProps) {
   const { t } = useTranslation()
+  useEscClose(isOpen, onClose)
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [saving, setSaving] = useState(false)

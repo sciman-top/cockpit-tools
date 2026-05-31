@@ -7,6 +7,21 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
 ---
+## [0.23.7] - 2026-05-16
+
+### 新增
+- **Windows 上 Gemini 默认账号切换现可同步到 WSL 凭证目录**：切换默认 Gemini 账号时，可将 `oauth_creds.json` 与 `google_accounts.json` 同步到 WSL `~/.gemini`，并清理过期的 `gemini-credentials.json`。
+- **账号与工具弹框补齐键盘/返回交互**：多个核心弹框新增 `Esc` 关闭与显式返回操作，优化键盘操作和多层弹框流程。
+
+### 变更
+- **Gemini WSL 同步新增用户可控开关（设置页 + 快捷设置）**：新增 `同步 WSL 配置` 选项，默认开启，用于控制切号时是否执行凭证同步。
+- **Codex OAuth 绑定账号选择弹框的订阅徽标现与主账号视图样式一致**：绑定弹框中的套餐徽标已复用与 Codex 账号卡片/表格一致的视觉 class 与颜色语义。
+- **Homebrew Cask 元数据在 v0.23.6 后已更新**：Cask 的版本与校验信息已刷新到最新打包产物状态。
+
+### 修复
+- **Windows 上 GitHub Copilot 切号/导入已支持 VS Code 共享存储路径**：导入与注入会同时读写旧路径 `User/globalStorage/state.vscdb` 和新路径 `.vscode-shared*/sharedStorage/state.vscdb`，优先读取共享存储并回退兼容旧路径，适配混合安装场景。
+
+---
 ## [0.23.6] - 2026-05-16
 
 ### 新增
