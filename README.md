@@ -4,7 +4,22 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/sciman-top/cockpit-tools-local?style=flat)](https://github.com/sciman-top/cockpit-tools-local/releases)
 
-> 这是 `jlcodes99/cockpit-tools` 的个人自用版 fork。`main` 是 Cockpit Tools Local 自用源码主线，官方原版通过本地 remote `upstream/main` 跟踪；不再把 `mirror/upstream-main` 作为长期协作入口。Releases 只发布 Cockpit Tools Local 自用版构建产物，不镜像官方安装资产。自用差异与上游吸收流程见 [自用差异清单](docs/SELF_USE_DELTA.md) 和 [官方上游吸收策略](docs/UPSTREAM_SYNC_POLICY.md)。
+## 先看这里：这是 Cockpit Tools Local 自用版
+
+本仓库是 [`jlcodes99/cockpit-tools`](https://github.com/jlcodes99/cockpit-tools) 的个人自用版 fork，不是官方原版发布仓库。GitHub 首页、Release、版本号和安装资产都按 `Cockpit Tools Local` 自用版语义维护。
+
+| 领域 | Cockpit Tools Local 自用版 | 官方原版 |
+| --- | --- | --- |
+| 仓库与产品身份 | `sciman-top/cockpit-tools-local`、产品名 `Cockpit Tools Local`、Tauri identifier `com.sciman.cockpit-tools-local` | `jlcodes99/cockpit-tools` 官方项目身份 |
+| 版本与发布 | 使用 `0.24.10-local.1` 这类本地后缀；Release 只发布自用版构建产物，不镜像官方安装资产 | 使用官方版本号与官方发布资产 |
+| 上游吸收方式 | `main` 保持自用主线，官方源码只作为 `upstream/main` 输入；通过本地隔离分支/worktree 深度审查后合并 | 官方项目自身开发主线 |
+| Codex 本地增强 | 保留本地 API Service、hardened gateway、账号池/跟随当前账号、provider 投影、session 可见性、quota/cooldown 和连续性守卫 | 以官方默认实现为准 |
+| 安全与运行边界 | live upstream probe、drain、dev app/server、release exe 替换等需要显式确认；不自动打断当前 Codex/Cockpit 运行 | 不适用本机自用运行守卫 |
+| 合并裁决 | 冲突/重叠默认保留自用版；官方实现明显更优时先说明推荐理由并等待确认 | 不维护本地自用差异 |
+
+主要自有特性/功能包括：Codex Direct OAuth 与 API Key provider 往返切换、本地 API Service 小池调度、hardened local API mode、quota/cooldown registry、stream/audit 脱敏证据链、账号缓存清洗、Windows-first 本机入口、self-use release 流程，以及保留官方 CLIProxyAPI sidecar 的兼容吸收能力。
+
+完整差异与合并守卫见 [自用差异清单](docs/SELF_USE_DELTA.md)，后续吸收官方新版按 [官方上游吸收策略](docs/UPSTREAM_SYNC_POLICY.md) 执行。
 
 一款**通用的 AI IDE 账号管理工具**，目前支持 **Antigravity IDE**、**Codex**、**GitHub Copilot**、**Windsurf**、**Kiro**、**Cursor**、**Gemini Cli**、**CodeBuddy**、**CodeBuddy CN**、**Qoder**、**Trae** 和 **Zed**，并支持多账号多实例并行运行。
 
@@ -289,18 +304,18 @@ Codex 同样支持多账号多实例并行运行。比如同时打开两个 Code
 
 ### 选项 A: 手动下载 (推荐)
 
-前往 [GitHub Releases](https://github.com/jlcodes99/cockpit-tools/releases) 下载对应系统的安装包：
+前往本仓 [Cockpit Tools Local Releases](https://github.com/sciman-top/cockpit-tools-local/releases) 下载自用版安装包。这里的 Release 只代表 `Cockpit Tools Local` 自用构建；如果当前版本尚未发布安装资产，请使用下方开发/构建流程自行构建，不要把官方原版 Release 当作本仓自用版。
 
-*   **macOS**: `.dmg` (Apple Silicon & Intel)
-*   **Windows**: `.msi` (推荐) 或 `.exe`
-*   **Linux**: `.deb` (Debian/Ubuntu)、`.rpm` 或 `.AppImage` (通用)
+*   **macOS**: `.dmg` (Apple Silicon & Intel)，以本仓 Release 实际资产为准
+*   **Windows**: `.msi` (推荐) 或 `.exe`，以本仓 Release 实际资产为准
+*   **Linux**: 自用版默认不把官方 Linux 包当作发布资产；需要时建议按构建文档自编译
 
 ### 选项 B: Homebrew 安装 (macOS)
 
-> 需要先安装 Homebrew。
+> 自用版 Homebrew cask 只应指向本仓 self-use release。若本仓尚未发布对应 cask 更新，请优先使用手动下载或本地构建；不要用官方 tap 代替 Cockpit Tools Local。
 
 ```bash
-brew tap jlcodes99/cockpit-tools https://github.com/jlcodes99/cockpit-tools
+brew tap sciman-top/cockpit-tools-local https://github.com/sciman-top/cockpit-tools-local
 brew install --cask cockpit-tools
 ```
 
@@ -373,7 +388,7 @@ npm run tauri build
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jlcodes99/cockpit-tools&type=Date)](https://star-history.com/#jlcodes99/cockpit-tools&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=sciman-top/cockpit-tools-local&type=Date)](https://star-history.com/#sciman-top/cockpit-tools-local&Date)
 
 ---
 

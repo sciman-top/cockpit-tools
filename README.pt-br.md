@@ -1,11 +1,25 @@
-# Cockpit Tools
+# Cockpit Tools Local
 
 [English](README.en.md)  · Portuguese (BR) · [简体中文](README.md)
 
-[![GitHub stars](https://img.shields.io/github/stars/jlcodes99/cockpit-tools?style=flat&color=gold)](https://github.com/jlcodes99/cockpit-tools)
-[![GitHub downloads](https://img.shields.io/github/downloads/jlcodes99/cockpit-tools/total?style=flat&color=blue)](https://github.com/jlcodes99/cockpit-tools/releases)
-[![GitHub release](https://img.shields.io/github/v/release/jlcodes99/cockpit-tools?style=flat)](https://github.com/jlcodes99/cockpit-tools/releases)
-[![GitHub issues](https://img.shields.io/github/issues/jlcodes99/cockpit-tools)](https://github.com/jlcodes99/cockpit-tools/issues)
+[![GitHub release](https://img.shields.io/github/v/release/sciman-top/cockpit-tools-local?style=flat)](https://github.com/sciman-top/cockpit-tools-local/releases)
+
+## Comece aqui: esta e a edicao pessoal Cockpit Tools Local
+
+Este repositorio e um fork pessoal de uso proprio de [`jlcodes99/cockpit-tools`](https://github.com/jlcodes99/cockpit-tools), nao o repositorio oficial de releases upstream. A pagina inicial do GitHub, os releases, os numeros de versao e os artefatos instalaveis seguem a semantica de uso proprio `Cockpit Tools Local`.
+
+| Area | Cockpit Tools Local | Upstream oficial |
+| --- | --- | --- |
+| Identidade do repositorio e produto | `sciman-top/cockpit-tools-local`, nome do produto `Cockpit Tools Local`, Tauri identifier `com.sciman.cockpit-tools-local` | Identidade oficial `jlcodes99/cockpit-tools` |
+| Versoes e releases | Usa sufixos locais como `0.24.10-local.1`; releases publicam apenas builds de uso proprio e nao espelham instaladores oficiais | Usa versoes e artefatos oficiais |
+| Absorcao de upstream | `main` permanece a linha de codigo de uso proprio; o codigo oficial entra por `upstream/main` e e mesclado em branches/worktrees locais isolados apos revisao | Linha de desenvolvimento do projeto oficial |
+| Melhorias locais de Codex | Mantem Local API Service, hardened gateway, pool de contas/follow-current, provider projection, session visibility, quota/cooldown e guardas de continuidade | Segue o comportamento oficial padrao |
+| Seguranca e runtime | Live upstream probes, drains, dev app/server e substituicao de release exe exigem confirmacao explicita; sessoes Codex/Cockpit atuais nao sao interrompidas automaticamente | Guardas locais de uso proprio nao fazem parte do upstream |
+| Politica de merge | Em conflitos, o comportamento Local e preservado por padrao; quando o upstream for claramente melhor, a recomendacao e o motivo sao explicados antes da adocao | Nao mantem este delta local |
+
+As principais capacidades proprias incluem alternancia Codex Direct OAuth/API Key provider, Local API Service com pequeno pool, hardened local API mode, quota/cooldown registry, evidencias stream/audit com redacao, limpeza de cache de contas, entradas locais Windows-first, fluxo de release self-use e absorcao compativel do sidecar oficial CLIProxyAPI.
+
+Veja [Self-Use Delta](docs/SELF_USE_DELTA.md) para o delta local completo e [Upstream Sync Policy](docs/UPSTREAM_SYNC_POLICY.md) para futuras absorcoes do upstream.
 
 Uma **ferramenta universal de gerenciamento de contas para IDEs de IA**, atualmente compatível com **Antigravity IDE**, **Codex**, **GitHub Copilot**, **Windsurf**, **Kiro**, **Cursor**, **Gemini Cli**, **CodeBuddy**, **CodeBuddy CN**, **Qoder**, **Trae** e **Zed**, com fluxos de trabalho paralelos em múltiplas instâncias.
 
@@ -296,19 +310,19 @@ Observações:
 
 ### Opção A: Download Manual (Recomendado)
 
-Acesse a [página de lançamentos do GitHub](https://github.com/jlcodes99/cockpit-tools/releases) para baixar o pacote para o seu sistema:
+Acesse os [Cockpit Tools Local Releases](https://github.com/sciman-top/cockpit-tools-local/releases) deste repositorio para baixar builds de uso proprio. Os releases daqui representam apenas `Cockpit Tools Local`; se a versao atual ainda nao tiver artefatos instalaveis, compile localmente pelo fluxo de desenvolvimento abaixo em vez de tratar o release oficial upstream como esta edicao local.
 
-*   **macOS**: `.dmg` (Apple Silicon & Intel)
-*   **Windows**: `.msi` (Recommended) or `.exe`
-*   **Linux**: `.deb` (Debian/Ubuntu), `.rpm`, or `.AppImage` (Universal)
+*   **macOS**: `.dmg` (Apple Silicon & Intel), quando estiver disponivel nos assets deste repositorio
+*   **Windows**: `.msi` (recomendado) ou `.exe`, quando estiver disponivel nos assets deste repositorio
+*   **Linux**: assets Linux oficiais nao sao tratados como assets da edicao Local por padrao; compile localmente quando necessario
 
 ### Opção B: Instalar com o Homebrew (macOS)
 
-> É necessário o Homebrew.
+> O cask Homebrew de uso proprio deve apontar para os releases self-use deste repositorio. Se a atualizacao correspondente do cask ainda nao tiver sido publicada, prefira download manual ou build local; nao use o tap oficial upstream como substituto do Cockpit Tools Local.
 
 
 ```bash
-brew tap jlcodes99/cockpit-tools https://github.com/jlcodes99/cockpit-tools
+brew tap sciman-top/cockpit-tools-local https://github.com/sciman-top/cockpit-tools-local
 brew install --cask cockpit-tools
 ```
 
@@ -377,7 +391,7 @@ npm run tauri build
 
 ## Histórico do Star
 
-[![Gráfico do Histórico do Star](https://api.star-history.com/svg?repos=jlcodes99/cockpit-tools&type=Date)](https://star-history.com/#jlcodes99/cockpit-tools&Date)
+[![Gráfico do Histórico do Star](https://api.star-history.com/svg?repos=sciman-top/cockpit-tools-local&type=Date)](https://star-history.com/#sciman-top/cockpit-tools-local&Date)
 
 ---
 
