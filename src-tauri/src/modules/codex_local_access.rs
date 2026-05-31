@@ -8021,7 +8021,6 @@ fn log_health_registry_update_error(err: &str) {
     ));
 }
 
-#[cfg(test)]
 fn parse_codex_retry_after(status: StatusCode, error_body: &str) -> Option<Duration> {
     classify_codex_upstream_error(status, None, error_body).retry_after
 }
