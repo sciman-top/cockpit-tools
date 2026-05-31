@@ -1415,7 +1415,15 @@ fn mark_token_chain_updated(account: &mut CodexAccount) {
     account.reauth_reason = None;
 }
 
-fn sync_identity_from_tokens(account: &mut CodexAccount) {
+fn sync_identity_from_tokens(account: &mut CodexAccount) -> bool {
+    let before = (
+        account.email.clone(),
+        account.user_id.clone(),
+        account.plan_type.clone(),
+        account.subscription_active_until.clone(),
+        account.account_id.clone(),
+        account.organization_id.clone(),
+    );
     if let Ok((
         email,
         user_id,
@@ -1442,6 +1450,16 @@ fn sync_identity_from_tokens(account: &mut CodexAccount) {
                 .or_else(|| account.organization_id.clone()),
         );
     }
+
+    before
+        != (
+            account.email.clone(),
+            account.user_id.clone(),
+            account.plan_type.clone(),
+            account.subscription_active_until.clone(),
+            account.account_id.clone(),
+            account.organization_id.clone(),
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2122,6 +2140,7 @@ fn parse_codex_account_compat(
     ));
     sync_identity_from_tokens(&mut account);
     apply_compat_account_metadata(&mut account, &value, summary);
+    sync_identity_from_tokens(&mut account);
     Ok(Some(account))
 }
 
@@ -2135,6 +2154,31 @@ fn normalize_account_for_runtime(account: &mut CodexAccount) -> bool {
         return quota.normalize_window_slots();
     }
     false
+}
+
+fn sync_loaded_account_summaries(
+    index: &mut CodexAccountIndex,
+    accounts: &[CodexAccount],
+) -> bool {
+    let mut changed = false;
+    for account in accounts {
+        let Some(summary) = index.accounts.iter_mut().find(|item| item.id == account.id) else {
+            continue;
+        };
+        if summary.email != account.email {
+            summary.email = account.email.clone();
+            changed = true;
+        }
+        if summary.plan_type != account.plan_type {
+            summary.plan_type = account.plan_type.clone();
+            changed = true;
+        }
+        if summary.subscription_active_until != account.subscription_active_until {
+            summary.subscription_active_until = account.subscription_active_until.clone();
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn local_access_health_registry_path() -> Result<PathBuf, String> {
@@ -2735,10 +2779,17 @@ fn load_account_with_summary(
     let content = fs::read_to_string(&path)
         .map_err(|error| format!("读取账号详情失败 ({}): {}", path.display(), error))?;
     if let Ok(mut account) = serde_json::from_str::<CodexAccount>(&content) {
+        let mut changed = false;
+        if !account.is_api_key_auth() && sync_identity_from_tokens(&mut account) {
+            changed = true;
+        }
         if normalize_account_for_runtime(&mut account) {
+            changed = true;
+        }
+        if changed {
             if let Err(error) = save_account(&account) {
                 logger::log_warn(&format!(
-                    "[Codex Account][Compat] 账号 quota 窗口标准化写回失败: account_id={}, error={}",
+                    "[Codex Account][Compat] 账号身份/quota 标准化写回失败: account_id={}, error={}",
                     account.id, error
                 ));
             }
@@ -2784,7 +2835,7 @@ pub fn delete_account_file(account_id: &str) -> Result<(), String> {
 
 /// 列出所有账号
 pub fn list_accounts() -> Vec<CodexAccount> {
-    let index = load_account_index();
+    let mut index = load_account_index();
     let mut accounts: Vec<CodexAccount> = index
         .accounts
         .iter()
@@ -2802,11 +2853,19 @@ pub fn list_accounts() -> Vec<CodexAccount> {
         )
         .collect();
     repair_accounts_quota_from_local_access_health(&mut accounts);
+    if sync_loaded_account_summaries(&mut index, &accounts) {
+        if let Err(error) = save_account_index(&index) {
+            logger::log_warn(&format!(
+                "[Codex Account][Compat] 账号索引身份摘要写回失败: error={}",
+                error
+            ));
+        }
+    }
     accounts
 }
 
 pub fn list_accounts_checked() -> Result<Vec<CodexAccount>, String> {
-    let index = load_account_index_checked()?;
+    let mut index = load_account_index_checked()?;
     let mut accounts = Vec::new();
     let mut failed = Vec::new();
 
@@ -2835,6 +2894,9 @@ pub fn list_accounts_checked() -> Result<Vec<CodexAccount>, String> {
     }
 
     repair_accounts_quota_from_local_access_health(&mut accounts);
+    if sync_loaded_account_summaries(&mut index, &accounts) {
+        save_account_index(&index)?;
+    }
 
     Ok(accounts)
 }
@@ -6394,6 +6456,74 @@ mod tests {
             access_token,
             refresh_token: Some(refresh_token.to_string()),
         }
+    }
+
+    #[test]
+    fn load_account_refreshes_stale_plan_type_from_token_claims() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-stale-plan-refresh");
+        let email = "filter-raisins.9f+g1@icloud.com";
+        let account_id = "38677d7a-3c87-4d26-94d3-14a6f0b4c2fc";
+        let storage_id = "codex_stale_plus_real_free";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-stale-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-stale-plan",
+                "chatgpt_plan_type": "free",
+                "account_id": account_id
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-stale-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let mut account = CodexAccount::new(
+            storage_id.to_string(),
+            email.to_string(),
+            CodexTokens {
+                id_token,
+                access_token,
+                refresh_token: Some("refresh-stale-plan".to_string()),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.account_id = Some(account_id.to_string());
+        save_account(&account).expect("save stale account detail");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.to_string(),
+            email: email.to_string(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: None,
+            created_at: account.created_at,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("save stale account index");
+
+        let loaded = load_account(storage_id).expect("load account");
+        assert_eq!(loaded.plan_type.as_deref(), Some("free"));
+
+        let listed = list_accounts_checked().expect("list accounts checked");
+        let listed_account = listed
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("listed account");
+        assert_eq!(listed_account.plan_type.as_deref(), Some("free"));
+
+        let repaired_index = load_account_index();
+        let repaired_summary = repaired_index
+            .accounts
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("repaired summary");
+        assert_eq!(repaired_summary.plan_type.as_deref(), Some("free"));
     }
 
     fn seed_oauth_account(tokens: CodexTokens) -> CodexAccount {

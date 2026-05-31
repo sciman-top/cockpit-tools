@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-05-31T14:29:56.6984000+08:00",
-  "pid": 5236,
+  "timestamp": "2026-05-31T14:35:22.7819142+08:00",
+  "pid": 35852,
   "desiredInstance": "Debug",
   "debugSwitchMode": "PrebuildThenStop",
   "releaseFallbackEnabled": true,
@@ -71,10 +71,13 @@
   },
   "periodicStableLocalAccessGateway": null,
   "activeCodexStreamGuard": {
-    "activeStreamCount": 2,
+    "activeStreamCount": 5,
     "activeLeaseIds": [
+      "237",
       "236",
-      "237"
+      "113",
+      "109",
+      "111"
     ],
     "auditPaths": [
       "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl.1",
@@ -82,18 +85,18 @@
     ],
     "dataRoot": "C:\\Users\\sciman\\.antigravity_cockpit",
     "windowMinutes": 720,
-    "lastEventTimestampMs": 1780208996171,
+    "lastEventTimestampMs": 1780209321233,
     "parseErrorCount": 0
   },
-  "launchCount": 2,
-  "prebuildCount": 2,
-  "releaseFallbackCount": 1,
-  "lastLaunchAt": "2026-05-31T14:21:26.3790023+08:00",
-  "lastPrebuildAt": "2026-05-31T14:10:05.6343847+08:00",
-  "lastReleaseFallbackAt": "2026-05-31T14:08:33.4112591+08:00",
+  "launchCount": 0,
+  "prebuildCount": 0,
+  "releaseFallbackCount": 0,
+  "lastLaunchAt": null,
+  "lastPrebuildAt": null,
+  "lastReleaseFallbackAt": null,
   "debugPrebuild": null,
   "pendingDebugLaunchAfterPrebuild": false,
   "pendingDebugLaunchPrebuild": null,
   "debugMissingSince": null,
-  "stopSignalFile": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-133511-release-first-debug-grace-watchdog\\stop.signal"
+  "stopSignalFile": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-143001-seamless-debug-switch-watchdog\\stop.signal"
 }

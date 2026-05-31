@@ -317,6 +317,221 @@ function Stop-CockpitProcessesForDebugSwitch {
   return $results
 }
 
+function ConvertTo-PowerShellSingleQuotedLiteral {
+  param([AllowNull()][string]$Value)
+
+  if ($null -eq $Value) {
+    return "''"
+  }
+  return "'{0}'" -f $Value.Replace("'", "''")
+}
+
+function New-DebugSwitchRunner {
+  param([Parameter(Mandatory = $true)][array]$SwitchFromProcesses)
+
+  $runnerId = Get-Date -Format "yyyyMMdd-HHmmssfff"
+  $runnerScriptPath = Join-Path $ReportDir ("debug-switch-runner-{0}.ps1" -f $runnerId)
+  $runnerCmdPath = Join-Path $ReportDir ("debug-switch-runner-{0}.cmd" -f $runnerId)
+  $runnerEventLogPath = Join-Path $ReportDir ("debug-switch-runner-{0}.jsonl" -f $runnerId)
+  $stopPids = @($SwitchFromProcesses | ForEach-Object { [int]$_.ProcessId })
+  $stopPidsLiteral = if ($stopPids.Count -gt 0) { $stopPids -join ", " } else { "" }
+  $eventLogLiteral = ConvertTo-PowerShellSingleQuotedLiteral $runnerEventLogPath
+  $dataRootLiteral = ConvertTo-PowerShellSingleQuotedLiteral (Get-LocalAccessDataRoot)
+
+  $runnerScript = @"
+`$ErrorActionPreference = "Stop"
+`$stopPids = @($stopPidsLiteral)
+`$gracefulStopTimeoutSeconds = $GracefulStopTimeoutSeconds
+`$activeStreamAuditWindowMinutes = $ActiveStreamAuditWindowMinutes
+`$dataRoot = $dataRootLiteral
+`$eventLogPath = $eventLogLiteral
+
+function Write-RunnerEvent {
+  param([Parameter(Mandatory = `$true)][hashtable]`$Event)
+
+  `$Event.timestamp = (Get-Date).ToString("o")
+  `$json = `$Event | ConvertTo-Json -Depth 8 -Compress
+  Add-Content -LiteralPath `$eventLogPath -Value `$json -Encoding UTF8
+}
+
+function Get-ObjectPropertyValue {
+  param(`$Object, [string]`$Name)
+  if (`$null -eq `$Object) {
+    return `$null
+  }
+  `$property = `$Object.PSObject.Properties[`$Name]
+  if (`$property) {
+    return `$property.Value
+  }
+  return `$null
+}
+
+function Get-ActiveCodexLocalAccessStreamSnapshot {
+  `$activeLeases = @{}
+  `$auditPath = Join-Path `$dataRoot "codex_local_access_audit.jsonl"
+  `$auditPaths = @("`$auditPath.1", `$auditPath) | Where-Object { Test-Path -LiteralPath `$_ -PathType Leaf }
+  `$nowMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  `$windowStartMs = `$nowMs - ([int64]`$activeStreamAuditWindowMinutes * 60 * 1000)
+  `$events = New-Object System.Collections.Generic.List[object]
+  `$sequence = 0
+  `$parseErrorCount = 0
+  `$lastEventTimestampMs = `$null
+
+  foreach (`$path in `$auditPaths) {
+    try {
+      foreach (`$line in @(Get-Content -LiteralPath `$path -Tail 4000 -ErrorAction Stop)) {
+        if ([string]::IsNullOrWhiteSpace(`$line)) {
+          continue
+        }
+        try {
+          `$event = `$line | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+          `$parseErrorCount += 1
+          continue
+        }
+        `$timestamp = Get-ObjectPropertyValue `$event "timestamp"
+        if (`$null -eq `$timestamp) {
+          continue
+        }
+        `$timestamp = [int64]`$timestamp
+        if (`$timestamp -lt `$windowStartMs) {
+          continue
+        }
+        `$phase = [string](Get-ObjectPropertyValue `$event "phase")
+        if (`$phase -ne "lease_granted" -and `$phase -ne "lease_released") {
+          continue
+        }
+        `$detail = Get-ObjectPropertyValue `$event "detail"
+        `$leaseId = [string](Get-ObjectPropertyValue `$detail "lease_id")
+        if ([string]::IsNullOrWhiteSpace(`$leaseId)) {
+          continue
+        }
+        `$events.Add([pscustomobject][ordered]@{
+            timestamp = `$timestamp
+            sequence = `$sequence
+            phase = `$phase
+            leaseId = `$leaseId
+            path = `$path
+          })
+        `$sequence += 1
+      }
+    } catch {
+      `$parseErrorCount += 1
+    }
+  }
+
+  foreach (`$event in @(`$events | Sort-Object timestamp, sequence)) {
+    `$lastEventTimestampMs = `$event.timestamp
+    if (`$event.phase -eq "lease_granted") {
+      `$activeLeases[`$event.leaseId] = `$event
+    } elseif (`$event.phase -eq "lease_released") {
+      [void]`$activeLeases.Remove(`$event.leaseId)
+    }
+  }
+
+  [ordered]@{
+    activeStreamCount = `$activeLeases.Count
+    activeLeaseIds = @(`$activeLeases.Keys)
+    auditPaths = `$auditPaths
+    dataRoot = `$dataRoot
+    windowMinutes = `$activeStreamAuditWindowMinutes
+    lastEventTimestampMs = `$lastEventTimestampMs
+    parseErrorCount = `$parseErrorCount
+  }
+}
+
+function Wait-UntilNoActiveCodexStreams {
+  while (`$true) {
+    `$guard = Get-ActiveCodexLocalAccessStreamSnapshot
+    if ([int]`$guard.activeStreamCount -le 0) {
+      Write-RunnerEvent @{ event = "active_stream_guard_clear_before_debug_switch"; activeCodexStreamGuard = `$guard }
+      return
+    }
+    Write-RunnerEvent @{ event = "debug_switch_runner_waiting_for_active_streams"; activeCodexStreamGuard = `$guard }
+    Start-Sleep -Seconds 2
+  }
+}
+
+function Stop-ReleaseProcessesBeforeDebugLaunch {
+  `$results = @()
+  foreach (`$id in `$stopPids) {
+    `$result = [ordered]@{
+      processId = `$id
+      closeMainWindow = `$false
+      forcedStop = `$false
+      exited = `$false
+      error = `$null
+    }
+    try {
+      `$process = Get-Process -Id `$id -ErrorAction Stop
+      `$result.name = `$process.ProcessName
+      if (`$process.MainWindowHandle -ne 0) {
+        `$result.closeMainWindow = [bool]`$process.CloseMainWindow()
+      }
+      `$deadline = (Get-Date).AddSeconds(`$gracefulStopTimeoutSeconds)
+      while ((Get-Date) -lt `$deadline) {
+        Start-Sleep -Milliseconds 250
+        `$stillRunning = Get-Process -Id `$id -ErrorAction SilentlyContinue
+        if (-not `$stillRunning) {
+          `$result.exited = `$true
+          break
+        }
+      }
+      if (-not `$result.exited) {
+        `$stillRunning = Get-Process -Id `$id -ErrorAction SilentlyContinue
+        if (`$stillRunning) {
+          Stop-Process -Id `$id -Force -ErrorAction Stop
+          `$result.forcedStop = `$true
+          Start-Sleep -Milliseconds 500
+          `$result.exited = -not [bool](Get-Process -Id `$id -ErrorAction SilentlyContinue)
+        }
+      }
+    } catch {
+      `$result.error = `$_.Exception.Message
+    }
+    `$results += [pscustomobject]`$result
+  }
+  Write-RunnerEvent @{ event = "release_processes_stopped_by_debug_switch_runner"; processes = `$results }
+}
+
+if (`$args.Count -lt 1) {
+  Write-RunnerEvent @{ event = "debug_switch_runner_missing_executable"; args = `$args }
+  exit 2
+}
+
+`$exePath = `$args[0]
+`$appArgs = @()
+if (`$args.Count -gt 1) {
+  `$appArgs = @(`$args[1..(`$args.Count - 1)])
+}
+
+Write-RunnerEvent @{ event = "debug_switch_runner_ready"; executablePath = `$exePath; appArgs = `$appArgs; stopPids = `$stopPids }
+Wait-UntilNoActiveCodexStreams
+Stop-ReleaseProcessesBeforeDebugLaunch
+Write-RunnerEvent @{ event = "debug_switch_runner_starting_debug_exe"; executablePath = `$exePath; appArgs = `$appArgs }
+& `$exePath @appArgs
+`$exitCode = if (`$null -ne `$LASTEXITCODE) { [int]`$LASTEXITCODE } else { 0 }
+Write-RunnerEvent @{ event = "debug_switch_runner_debug_exe_exited"; executablePath = `$exePath; exitCode = `$exitCode }
+exit `$exitCode
+"@
+
+  Set-Content -LiteralPath $runnerScriptPath -Value $runnerScript -Encoding UTF8
+
+  $runnerCmd = @"
+@echo off
+pwsh -NoProfile -ExecutionPolicy Bypass -File "$runnerScriptPath" %*
+exit /b %ERRORLEVEL%
+"@
+  Set-Content -LiteralPath $runnerCmdPath -Value $runnerCmd -Encoding ASCII
+
+  return [ordered]@{
+    runnerScriptPath = $runnerScriptPath
+    runnerCmdPath = $runnerCmdPath
+    eventLogPath = $runnerEventLogPath
+    stopPids = $stopPids
+  }
+}
+
 function Stop-ProcessTrees {
   param([Parameter(Mandatory = $true)][array]$Processes)
 
@@ -363,12 +578,22 @@ function Stop-ProcessTrees {
 }
 
 function Start-CockpitTauriDev {
+  param([array]$SwitchFromProcesses = @())
+
   $gateway = Ensure-StableLocalAccessGateway -Reason "before_tauri_dev_launch"
   $stdoutPath = Join-Path $ReportDir "tauri-dev.stdout.log"
   $stderrPath = Join-Path $ReportDir "tauri-dev.stderr.log"
+  $switchRunner = $null
+  $argumentList = @("run", "tauri", "dev")
+  $command = "npm run tauri dev"
+  if ($SwitchFromProcesses.Count -gt 0) {
+    $switchRunner = New-DebugSwitchRunner -SwitchFromProcesses $SwitchFromProcesses
+    $argumentList = @("run", "tauri", "--", "dev", "--runner", $switchRunner.runnerCmdPath)
+    $command = "npm run tauri -- dev --runner $($switchRunner.runnerCmdPath)"
+  }
   $process = Start-Process `
     -FilePath "npm.cmd" `
-    -ArgumentList @("run", "tauri", "dev") `
+    -ArgumentList $argumentList `
     -WorkingDirectory $RepoRoot `
     -WindowStyle Hidden `
     -PassThru `
@@ -377,10 +602,11 @@ function Start-CockpitTauriDev {
 
   return [ordered]@{
     processId = $process.Id
-    command = "npm run tauri dev"
+    command = $command
     stdoutPath = $stdoutPath
     stderrPath = $stderrPath
     stableLocalAccessGateway = $gateway
+    switchRunner = $switchRunner
   }
 }
 
@@ -726,24 +952,20 @@ while ($true) {
       if ($nonDebugProcesses.Count -gt 0 -and $hasActiveCodexStreams) {
         Write-LogLine @{
           event = "restart_deferred_active_stream"
-          action = "pending_stop_release_and_launch_debug_after_prebuild"
+          action = "pending_prepare_debug_then_switch_from_release_after_prebuild"
           activeCodexStreamGuard = $activeStreamGuard
           runningNonDebugProcessCount = $nonDebugProcesses.Count
           prebuild = $pendingDebugLaunchPrebuild
         }
       } else {
-        if ($nonDebugProcesses.Count -gt 0) {
-          $stopResults = Stop-CockpitProcessesForDebugSwitch -Processes $nonDebugProcesses
-          Write-LogLine @{ event = "pending_non_debug_processes_stopped_after_debug_prebuild"; processes = $stopResults }
-        }
         try {
-          $launch = Start-CockpitTauriDev
+          $launch = Start-CockpitTauriDev -SwitchFromProcesses $nonDebugProcesses
           $lastLaunchAt = Get-Date
           $launchCount += 1
           $pendingDebugLaunchAfterPrebuild = $false
           $pendingDebugLaunchPrebuild = $null
           $needsTauriDev = $false
-          Write-LogLine @{ event = "pending_tauri_dev_launched_after_debug_prebuild"; launch = $launch; launchCount = $launchCount }
+          Write-LogLine @{ event = "pending_tauri_dev_launched_after_debug_prebuild_release_preserved"; launch = $launch; launchCount = $launchCount }
         } catch {
           Write-LogLine @{ event = "pending_tauri_dev_launch_failed_after_debug_prebuild"; message = $_.Exception.Message }
         }
@@ -811,20 +1033,16 @@ while ($true) {
           $pendingDebugLaunchPrebuild = $completedPrebuild
           Write-LogLine @{
             event = "restart_deferred_active_stream"
-            action = "stop_release_and_launch_debug_after_prebuild"
+            action = "prepare_debug_then_switch_from_release_after_prebuild"
             activeCodexStreamGuard = $activeStreamGuard
             runningNonDebugProcessCount = $nonDebugProcesses.Count
           }
         } else {
-          if ($nonDebugProcesses.Count -gt 0) {
-            $stopResults = Stop-CockpitProcessesForDebugSwitch -Processes $nonDebugProcesses
-            Write-LogLine @{ event = "non_debug_processes_stopped_after_debug_prebuild"; processes = $stopResults }
-          }
           try {
-            $launch = Start-CockpitTauriDev
+            $launch = Start-CockpitTauriDev -SwitchFromProcesses $nonDebugProcesses
             $lastLaunchAt = Get-Date
             $launchCount += 1
-            Write-LogLine @{ event = "tauri_dev_launched_after_debug_prebuild"; launch = $launch; launchCount = $launchCount }
+            Write-LogLine @{ event = "tauri_dev_launched_after_debug_prebuild_release_preserved"; launch = $launch; launchCount = $launchCount }
           } catch {
             Write-LogLine @{ event = "tauri_dev_launch_failed_after_debug_prebuild"; message = $_.Exception.Message }
           }
