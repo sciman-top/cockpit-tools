@@ -635,10 +635,16 @@ function resolveCodexQuotaForPresentation(
   }
 
   const raw = toJsonRecord(quota.raw_data);
-  if (
-    readString(raw, "source") !== "codex_local_access_health_registry" ||
-    !readBoolean(raw, "reset_unknown")
-  ) {
+  const isResetUnknownHealthReplay =
+    readString(raw, "source") === "codex_local_access_health_registry" &&
+    readBoolean(raw, "reset_unknown");
+  const hasWeeklyEvidence =
+    quota.weekly_window_present === true ||
+    typeof quota.weekly_percentage === "number" ||
+    typeof quota.weekly_reset_time === "number" ||
+    typeof quota.weekly_window_minutes === "number";
+
+  if (!hasWeeklyEvidence) {
     return quota;
   }
 
@@ -648,7 +654,7 @@ function resolveCodexQuotaForPresentation(
     hourly_reset_time: undefined,
     hourly_window_minutes: undefined,
     hourly_window_present: false,
-    weekly_percentage: 0,
+    weekly_percentage: isResetUnknownHealthReplay ? 0 : quota.weekly_percentage,
     weekly_window_present: true,
   };
 }

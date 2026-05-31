@@ -526,7 +526,7 @@ function Get-CodexSessionLogHits {
   [ordered]@{
     root = $Root
     searchedFiles = $files.Count
-    hits = @($hits)
+    hits = $hits.ToArray()
   }
 }
 

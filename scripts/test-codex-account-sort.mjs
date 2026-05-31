@@ -117,6 +117,50 @@ assert.equal(
   );
 }
 
+{
+  const presentation = platformPresentation.buildCodexAccountPresentation(
+    codexAccount(
+      'free-session-rate-limits',
+      quota(0, 0, {
+        hourly_window_minutes: 300,
+        weekly_window_minutes: 10080,
+        raw_data: {
+          source: 'codex_session_rate_limits',
+        },
+      }),
+      { plan_type: 'free' },
+    ),
+    translate,
+  );
+
+  assert.deepEqual(
+    presentation.quotaItems.map((item) => item.label),
+    ['Weekly'],
+    'Free quota snapshots with a weekly row should not render a stale 5h row',
+  );
+}
+
+{
+  const presentation = platformPresentation.buildCodexAccountPresentation(
+    codexAccount(
+      'free-legacy-dual-window',
+      quota(0, 0, {
+        hourly_window_minutes: 300,
+        weekly_window_minutes: 10080,
+        raw_data: null,
+      }),
+      { plan_type: 'free' },
+    ),
+    translate,
+  );
+
+  assert.deepEqual(
+    presentation.quotaItems.map((item) => item.label),
+    ['Weekly'],
+    'Free legacy snapshots with explicit weekly presence should collapse to weekly-only display',
+  );
+}
+
 const exhaustedWeeklyButRecentlyUsed = codexAccount(
   'exhausted-weekly',
   quota(100, 0),
