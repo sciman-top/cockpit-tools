@@ -321,7 +321,16 @@ fn collect_rollout_provider_changes(
     data_dir: &Path,
     target_provider: &str,
 ) -> Result<Vec<RolloutProviderChange>, String> {
-    let session_index_map = read_session_index_map(data_dir)?;
+    let session_index_map = match read_session_index_map(data_dir) {
+        Ok(value) => value,
+        Err(error) => {
+            modules::logger::log_warn(&format!(
+                "读取 Codex session_index.jsonl 失败，跳过该时间来源并继续修复会话可见性: {}",
+                error
+            ));
+            HashMap::new()
+        }
+    };
     let mut changes = Vec::new();
 
     for dir_name in SESSION_DIRS {
@@ -496,7 +505,6 @@ fn read_session_index_map(root_dir: &Path) -> Result<HashMap<String, JsonValue>,
         )
     })?;
     let mut entries = HashMap::new();
-
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -1045,6 +1053,10 @@ fn backup_instance_files(
                 error
             )
         })?;
+        modules::codex_session_file_time::restore_modified_time(
+            &target,
+            modules::codex_session_file_time::read_modified_time(&change.absolute_path),
+        )?;
         backed_up_files.push(change.relative_path.to_string_lossy().to_string());
     }
 
@@ -1221,6 +1233,10 @@ fn restore_directory_contents(source_root: &Path, target_root: &Path) -> Result<
                 error
             )
         })?;
+        modules::codex_session_file_time::restore_modified_time(
+            &target_path,
+            modules::codex_session_file_time::read_modified_time(&source_path),
+        )?;
     }
     Ok(())
 }
@@ -1245,23 +1261,28 @@ mod tests {
     }
 
     #[test]
-    fn rollout_repair_updates_session_meta_provider_only() {
-        let data_dir = make_temp_dir("codex-session-visibility-rollout-test");
+    fn rollout_repair_updates_provider_and_preserves_session_time() {
+        let data_dir = make_temp_dir("codex-session-visibility-rollout-time-test");
         let rollout_dir = data_dir.join("sessions").join("2026").join("05").join("23");
         fs::create_dir_all(&rollout_dir).expect("create rollout dir");
         let rollout_path = rollout_dir.join("rollout-test.jsonl");
         fs::write(
             &rollout_path,
-            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"old\"}}\n{\"type\":\"event\"}\n",
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"old\"}}\n{\"type\":\"event\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n",
         )
         .expect("write rollout");
-        let original_modified_at = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        fs::write(
+            data_dir.join(SESSION_INDEX_FILE),
+            "{\"id\":\"s1\",\"thread_name\":\"Test\",\"updated_at\":\"2024-02-03T04:05:06Z\"}\n",
+        )
+        .expect("write session index");
+        let polluted_modified_at = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         fs::OpenOptions::new()
             .write(true)
             .open(&rollout_path)
             .expect("open rollout")
-            .set_modified(original_modified_at)
-            .expect("set rollout mtime");
+            .set_modified(polluted_modified_at)
+            .expect("set polluted rollout mtime");
 
         let changes =
             collect_rollout_provider_changes(&data_dir, "relay").expect("collect rollout changes");
@@ -1278,13 +1299,50 @@ mod tests {
                 .and_then(JsonValue::as_str),
             Some("relay")
         );
-        assert!(content.contains("{\"type\":\"event\"}"));
         assert_eq!(
             fs::metadata(&rollout_path)
                 .expect("rollout metadata")
                 .modified()
                 .expect("rollout mtime"),
-            original_modified_at
+            UNIX_EPOCH + Duration::from_secs(1_706_933_106)
+        );
+        fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn rollout_repair_restores_activity_time_without_provider_change() {
+        let data_dir = make_temp_dir("codex-session-visibility-mtime-only-test");
+        let rollout_dir = data_dir.join("sessions").join("2026").join("05").join("23");
+        fs::create_dir_all(&rollout_dir).expect("create rollout dir");
+        let rollout_path = rollout_dir.join("rollout-test.jsonl");
+        let rollout_content =
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"s1\",\"model_provider\":\"relay\"}}\n{\"type\":\"event\",\"timestamp\":\"2024-01-01T00:00:00Z\"}\n";
+        fs::write(&rollout_path, rollout_content).expect("write rollout");
+        let polluted_modified_at = UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&rollout_path)
+            .expect("open rollout")
+            .set_modified(polluted_modified_at)
+            .expect("set polluted rollout mtime");
+
+        let changes =
+            collect_rollout_provider_changes(&data_dir, "relay").expect("collect rollout changes");
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].updated_first_line.is_none());
+
+        repair_single_instance(&data_dir, "relay", &changes, false).expect("repair rollout time");
+
+        assert_eq!(
+            fs::read_to_string(&rollout_path).expect("read repaired rollout"),
+            rollout_content
+        );
+        assert_eq!(
+            fs::metadata(&rollout_path)
+                .expect("rollout metadata")
+                .modified()
+                .expect("rollout mtime"),
+            UNIX_EPOCH + Duration::from_secs(1_704_067_200)
         );
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
     }

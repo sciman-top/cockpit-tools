@@ -3386,12 +3386,12 @@ export function CodexLocalAccessModal({
                   <div className="group-account-empty">
                     {t('codex.localAccess.modal.empty', '暂无可加入 API 服务的账号/API key')}
                   </div>
-                ) : visibleAccounts.length === 0 ? (
+                ) : visibleSelectableAccounts.length === 0 ? (
                   <div className="group-account-empty">
                     {t('common.shared.noMatch.title', '没有匹配的账号')}
                   </div>
                 ) : (
-                  visibleAccounts.map((account) => {
+                  visibleSelectableAccounts.map((account) => {
                     const presentation = buildCodexAccountPresentation(account, t);
                     const isChecked = selected.has(account.id);
                     const isPersistedMember = persistedMemberIdSet.has(account.id);
