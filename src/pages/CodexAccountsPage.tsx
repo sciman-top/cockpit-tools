@@ -220,7 +220,6 @@ import {
   readAccountsOverviewFilterPersistenceEnabled,
   readAccountsOverviewFilterStringArray,
   removeAccountsOverviewFilterField,
-  writeAccountsOverviewFilterField,
 } from "../utils/accountsOverviewFilterPersistence";
 import {
   getCodexLocalAccessRiskNoticeConfirmLabel,
@@ -929,7 +928,6 @@ export function CodexAccountsPage() {
     setViewMode,
     searchQuery,
     setSearchQuery,
-    filterPersistenceEnabled,
     filterPersistenceScope,
     sortBy,
     setSortBy,
@@ -1097,19 +1095,11 @@ export function CodexAccountsPage() {
   }, [showAddModal]);
 
   useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        filterPersistenceScope,
-        FILTER_TYPES_FIELD,
-      );
-      return;
-    }
-    writeAccountsOverviewFilterField(
+    removeAccountsOverviewFilterField(
       filterPersistenceScope,
       FILTER_TYPES_FIELD,
-      filterTypes,
     );
-  }, [filterPersistenceEnabled, filterPersistenceScope, filterTypes]);
+  }, [filterPersistenceScope]);
 
   useEffect(() => {
     removeAccountsOverviewFilterField(
@@ -1119,34 +1109,18 @@ export function CodexAccountsPage() {
   }, [filterPersistenceScope]);
 
   useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        filterPersistenceScope,
-        GROUP_FILTER_FIELD,
-      );
-      return;
-    }
-    writeAccountsOverviewFilterField(
+    removeAccountsOverviewFilterField(
       filterPersistenceScope,
       GROUP_FILTER_FIELD,
-      groupFilter,
     );
-  }, [filterPersistenceEnabled, filterPersistenceScope, groupFilter]);
+  }, [filterPersistenceScope]);
 
   useEffect(() => {
-    if (!filterPersistenceEnabled) {
-      removeAccountsOverviewFilterField(
-        filterPersistenceScope,
-        ACTIVE_GROUP_ID_FIELD,
-      );
-      return;
-    }
-    writeAccountsOverviewFilterField(
+    removeAccountsOverviewFilterField(
       filterPersistenceScope,
       ACTIVE_GROUP_ID_FIELD,
-      activeGroupId,
     );
-  }, [activeGroupId, filterPersistenceEnabled, filterPersistenceScope]);
+  }, [filterPersistenceScope]);
 
   const reloadLocalAccessState = useCallback(async (options?: { silent?: boolean }) => {
     try {
