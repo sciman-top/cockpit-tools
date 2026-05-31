@@ -233,7 +233,7 @@ impl PlatformId {
 
     pub(crate) fn title(self) -> &'static str {
         match self {
-            Self::Antigravity => "Antigravity",
+            Self::Antigravity => "Antigravity IDE",
             Self::Codex => "Codex",
             Self::Zed => "Zed",
             Self::GitHubCopilot => "GitHub Copilot",
@@ -3438,7 +3438,7 @@ fn handle_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: tauri::menu::
                         app, "overview",
                     )
                 {
-                    logger::log_warn(&format!("[Tray] 打开 Antigravity 总览失败: {}", err));
+                    logger::log_warn(&format!("[Tray] 打开 Antigravity IDE 总览失败: {}", err));
                 }
             } else if id.starts_with("codex_") {
                 if let Err(err) =

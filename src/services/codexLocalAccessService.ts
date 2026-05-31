@@ -9,6 +9,7 @@ import type {
   CodexLocalAccessTestResult,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
+  CodexLocalAccessUpstreamProxyMode,
 } from '../types/codexLocalAccess';
 
 export async function getCodexLocalAccessState(): Promise<CodexLocalAccessState> {
@@ -90,6 +91,14 @@ export async function updateCodexLocalAccessCustomRouting(
   rules: CodexLocalAccessCustomRoutingRule[],
 ): Promise<CodexLocalAccessState> {
   return await invoke('codex_local_access_update_custom_routing', { rules });
+}
+
+export async function updateCodexLocalAccessUpstreamProxyMode(
+  upstreamProxyMode: CodexLocalAccessUpstreamProxyMode,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_update_upstream_proxy_mode', {
+    upstreamProxyMode,
+  });
 }
 
 export async function updateCodexLocalAccessAccessScope(

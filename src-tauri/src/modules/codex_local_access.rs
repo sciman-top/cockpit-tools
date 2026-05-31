@@ -7,10 +7,10 @@ use crate::models::codex_local_access::{
     CodexLocalAccessModelCooldown, CodexLocalAccessPortCleanupResult,
     CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessState,
     CodexLocalAccessStats, CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding,
-    CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessUsageEvent,
-    CodexLocalAccessUsageStats, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
-    CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
-    CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
+    CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessUpstreamProxyMode,
+    CodexLocalAccessUsageEvent, CodexLocalAccessUsageStats, CodexLocalApiFallbackMode,
+    CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
+    CodexRuntimeIntegrationMode, CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
     CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
 };
 use crate::modules::atomic_write::write_string_atomic;
@@ -222,6 +222,7 @@ struct CachedPreparedAccount {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpstreamHttpClientSignature {
+    proxy_mode: CodexLocalAccessUpstreamProxyMode,
     proxy_url: Option<String>,
     no_proxy: Option<String>,
 }
@@ -1211,10 +1212,21 @@ fn reset_active_stream_leases_for_tests() {
     }
 }
 
-fn current_upstream_http_client_signature() -> UpstreamHttpClientSignature {
+fn current_upstream_http_client_signature(
+    proxy_mode: CodexLocalAccessUpstreamProxyMode,
+) -> UpstreamHttpClientSignature {
+    if proxy_mode == CodexLocalAccessUpstreamProxyMode::Direct {
+        return UpstreamHttpClientSignature {
+            proxy_mode,
+            proxy_url: None,
+            no_proxy: None,
+        };
+    }
+
     let config = crate::modules::config::get_user_config();
     if !config.global_proxy_enabled {
         return UpstreamHttpClientSignature {
+            proxy_mode,
             proxy_url: None,
             no_proxy: None,
         };
@@ -1223,6 +1235,7 @@ fn current_upstream_http_client_signature() -> UpstreamHttpClientSignature {
     let proxy_url = config.global_proxy_url.trim();
     if proxy_url.is_empty() {
         return UpstreamHttpClientSignature {
+            proxy_mode,
             proxy_url: None,
             no_proxy: None,
         };
@@ -1230,6 +1243,7 @@ fn current_upstream_http_client_signature() -> UpstreamHttpClientSignature {
 
     let no_proxy = codex_protocol::merge_local_no_proxy(config.global_proxy_no_proxy.trim());
     UpstreamHttpClientSignature {
+        proxy_mode,
         proxy_url: Some(proxy_url.to_string()),
         no_proxy: (!no_proxy.is_empty()).then_some(no_proxy),
     }
@@ -1253,7 +1267,9 @@ fn redact_proxy_url_for_log(proxy_url: &str) -> String {
 fn build_upstream_http_client(signature: &UpstreamHttpClientSignature) -> Result<Client, String> {
     let mut builder = Client::builder();
 
-    if let Some(proxy_url) = signature.proxy_url.as_deref() {
+    if signature.proxy_mode == CodexLocalAccessUpstreamProxyMode::Direct {
+        builder = builder.no_proxy();
+    } else if let Some(proxy_url) = signature.proxy_url.as_deref() {
         let mut proxy =
             Proxy::all(proxy_url).map_err(|e| format!("Codex 本地接入代理地址无效: {}", e))?;
         if let Some(no_proxy) = signature.no_proxy.as_deref() {
@@ -1268,6 +1284,11 @@ fn build_upstream_http_client(signature: &UpstreamHttpClientSignature) -> Result
 }
 
 fn log_upstream_http_client_signature(signature: &UpstreamHttpClientSignature) {
+    if signature.proxy_mode == CodexLocalAccessUpstreamProxyMode::Direct {
+        logger::log_info("[CodexLocalAccess] 上游 HTTP 客户端直连官方上游");
+        return;
+    }
+
     match signature.proxy_url.as_deref() {
         Some(proxy_url) => logger::log_info(&format!(
             "[CodexLocalAccess] 上游 HTTP 客户端已应用全局代理 proxy_url={} no_proxy={}",
@@ -1278,8 +1299,8 @@ fn log_upstream_http_client_signature(signature: &UpstreamHttpClientSignature) {
     }
 }
 
-fn upstream_http_client() -> Result<Client, String> {
-    let signature = current_upstream_http_client_signature();
+fn upstream_http_client(proxy_mode: CodexLocalAccessUpstreamProxyMode) -> Result<Client, String> {
+    let signature = current_upstream_http_client_signature(proxy_mode);
     let mut cache = upstream_http_client_cache()
         .lock()
         .map_err(|_| "Codex 上游 HTTP 客户端缓存已损坏".to_string())?;
@@ -8147,6 +8168,7 @@ async fn ensure_runtime_loaded_without_start() -> Result<(), String> {
             api_key: generate_local_api_key(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: true,
@@ -9144,6 +9166,7 @@ pub async fn save_local_access_accounts(
                 api_key: generate_local_api_key(),
                 safety_config: CodexLocalApiSafetyConfig::default(),
                 access_scope: CodexLocalAccessScope::Localhost,
+                upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
                 routing_strategy: CodexLocalAccessRoutingStrategy::default(),
                 custom_routing_rules: Vec::new(),
                 restrict_free_accounts: true,
@@ -9282,6 +9305,36 @@ pub async fn update_local_access_custom_routing(
     collection.custom_routing_rules =
         normalize_custom_routing_rules(rules, &collection.account_ids);
     collection.routing_strategy = CodexLocalAccessRoutingStrategy::Custom;
+    collection.updated_at = now_ms();
+    save_collection_to_disk(&collection)?;
+
+    {
+        let mut runtime = gateway_runtime().lock().await;
+        sync_runtime_collection(&mut runtime, collection);
+    }
+
+    snapshot_state().await
+}
+
+pub async fn update_local_access_upstream_proxy_mode(
+    upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode,
+) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded().await?;
+
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    };
+
+    let Some(mut collection) = maybe_collection else {
+        return Err("本地接入集合尚未创建".to_string());
+    };
+
+    if collection.upstream_proxy_mode == upstream_proxy_mode {
+        return snapshot_state().await;
+    }
+
+    collection.upstream_proxy_mode = upstream_proxy_mode;
     collection.updated_at = now_ms();
     save_collection_to_disk(&collection)?;
 
@@ -12563,6 +12616,7 @@ async fn send_upstream_request(
     headers: &HashMap<String, String>,
     body: &[u8],
     account: &CodexAccount,
+    upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode,
 ) -> Result<reqwest::Response, String> {
     let method =
         Method::from_bytes(method.as_bytes()).map_err(|e| format!("不支持的请求方法: {}", e))?;
@@ -12577,7 +12631,7 @@ async fn send_upstream_request(
     } else {
         format!("{}{}", UPSTREAM_CODEX_BASE_URL, target)
     };
-    let client = upstream_http_client()?;
+    let client = upstream_http_client(upstream_proxy_mode)?;
     for retry_attempt in 0..=UPSTREAM_SEND_RETRY_ATTEMPTS {
         let mut request = client.request(method.clone(), &url);
 
@@ -12961,6 +13015,7 @@ async fn proxy_request_with_account_pool(
                     &request.headers,
                     &request.body,
                     &account,
+                    collection.upstream_proxy_mode,
                 )
                 .await;
 
@@ -13040,6 +13095,7 @@ async fn proxy_request_with_account_pool(
                                 &request.headers,
                                 &request.body,
                                 &account,
+                                collection.upstream_proxy_mode,
                             )
                             .await
                             {
@@ -14705,9 +14761,9 @@ mod tests {
         CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
         CodexLocalAccessCollection, CodexLocalAccessCustomRoutingRule,
         CodexLocalAccessHealthSummary, CodexLocalAccessModelCooldown,
-        CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalApiFallbackMode,
-        CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
-        CodexRuntimeIntegrationMode,
+        CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessUpstreamProxyMode,
+        CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId,
+        CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
     };
     use reqwest::header::{HeaderValue, RETRY_AFTER};
     use reqwest::StatusCode;
@@ -14824,6 +14880,7 @@ mod tests {
                 ..CodexLocalApiSafetyConfig::default()
             },
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -14906,6 +14963,7 @@ mod tests {
             api_key: "ck-test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -22139,6 +22197,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 ..CodexLocalApiSafetyConfig::default()
             },
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -22179,6 +22238,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 ..CodexLocalApiSafetyConfig::default()
             },
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -22647,6 +22707,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -22735,6 +22796,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -22807,6 +22869,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23049,6 +23112,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23077,6 +23141,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23132,6 +23197,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 ..CodexLocalApiSafetyConfig::default()
             },
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23164,6 +23230,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 ..CodexLocalApiSafetyConfig::default()
             },
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23281,6 +23348,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23305,6 +23373,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23336,6 +23405,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23364,6 +23434,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
@@ -23755,6 +23826,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             api_key: "test-local-key".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode::default(),
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
             custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,

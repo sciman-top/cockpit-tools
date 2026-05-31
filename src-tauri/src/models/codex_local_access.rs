@@ -76,6 +76,19 @@ pub enum CodexLocalAccessScope {
     Lan,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexLocalAccessUpstreamProxyMode {
+    FollowGlobalProxy,
+    Direct,
+}
+
+impl Default for CodexLocalAccessUpstreamProxyMode {
+    fn default() -> Self {
+        Self::FollowGlobalProxy
+    }
+}
+
 fn default_access_scope_for_existing_config() -> CodexLocalAccessScope {
     CodexLocalAccessScope::Lan
 }
@@ -242,6 +255,8 @@ pub struct CodexLocalAccessCollection {
     pub safety_config: CodexLocalApiSafetyConfig,
     #[serde(default = "default_access_scope_for_existing_config")]
     pub access_scope: CodexLocalAccessScope,
+    #[serde(default)]
+    pub upstream_proxy_mode: CodexLocalAccessUpstreamProxyMode,
     #[serde(default)]
     pub routing_strategy: CodexLocalAccessRoutingStrategy,
     #[serde(default)]

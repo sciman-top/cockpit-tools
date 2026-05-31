@@ -44,6 +44,7 @@ import type {
   CodexLocalAccessTestResult,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
+  CodexLocalAccessUpstreamProxyMode,
 } from '../types/codexLocalAccess';
 import {
   getCodexPlanFilterKey,
@@ -130,6 +131,9 @@ interface CodexLocalAccessModalProps {
   ) => Promise<unknown> | unknown;
   onUpdateAccessScope: (
     accessScope: CodexLocalAccessScope,
+  ) => Promise<unknown> | unknown;
+  onUpdateUpstreamProxyMode: (
+    upstreamProxyMode: CodexLocalAccessUpstreamProxyMode,
   ) => Promise<unknown> | unknown;
   onRotateApiKey: () => Promise<unknown> | unknown;
   onKillPort: () => Promise<unknown> | unknown;
@@ -335,6 +339,7 @@ export function CodexLocalAccessModal({
   onSetRuntimeMode,
   onUpdateCustomRouting,
   onUpdateAccessScope,
+  onUpdateUpstreamProxyMode,
   onRotateApiKey,
   onKillPort,
   onToggleEnabled,
@@ -463,6 +468,7 @@ export function CodexLocalAccessModal({
   );
   const selectedRuntimeMode = runtimeMode?.mode ?? 'direct_projection';
   const accessScope = collection?.accessScope ?? 'localhost';
+  const upstreamProxyMode = collection?.upstreamProxyMode ?? 'follow_global_proxy';
   const accessScopeAddress =
     accessScope === 'lan' ? '0.0.0.0' : '127.0.0.1';
   const accessScopeBadge =
@@ -1221,6 +1227,19 @@ export function CodexLocalAccessModal({
         label: t('codex.localAccess.accessScopeLan', '局域网'),
       },
     ],
+    [t],
+  );
+  const upstreamProxyModeOptions = useMemo(
+    () => [
+      {
+        value: 'follow_global_proxy',
+        label: t('codex.localAccess.upstreamProxyMode.followGlobalProxy', '跟随全局代理'),
+      },
+      {
+        value: 'direct',
+        label: t('codex.localAccess.upstreamProxyMode.direct', '直连上游'),
+      },
+    ] satisfies Array<{ value: CodexLocalAccessUpstreamProxyMode; label: string }>,
     [t],
   );
 
@@ -2121,6 +2140,23 @@ export function CodexLocalAccessModal({
     );
   };
 
+  const handleChangeUpstreamProxyMode = async (nextValue: string) => {
+    if (!collection) return;
+    const nextMode =
+      nextValue === 'direct' ? 'direct' : 'follow_global_proxy';
+    if (nextMode === upstreamProxyMode) return;
+
+    await runAction(
+      async () => {
+        await onUpdateUpstreamProxyMode(nextMode);
+      },
+      t(
+        'codex.localAccess.upstreamProxySaveSuccess',
+        'API 服务上游连接方式已更新',
+      ),
+    );
+  };
+
   const handleResetKey = async () => {
     const confirmed = await confirmDialog(
       t(
@@ -2320,6 +2356,18 @@ export function CodexLocalAccessModal({
                     <ShieldCheck size={13} className={testDialogBusy ? 'loading-spinner' : ''} />
                     <span>{t('codex.localAccess.testAction', '测试')}</span>
                   </button>
+                  {collection && (
+                    <div className="codex-local-access-header-upstream-proxy">
+                      <SingleSelectDropdown
+                        value={upstreamProxyMode}
+                        options={upstreamProxyModeOptions}
+                        onChange={(value) => void handleChangeUpstreamProxyMode(value)}
+                        disabled={saving || testing || starting}
+                        ariaLabel={t('codex.localAccess.upstreamProxyLabel', '上游连接')}
+                        menuWidth={150}
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="codex-local-access-header-tools">
                   <button

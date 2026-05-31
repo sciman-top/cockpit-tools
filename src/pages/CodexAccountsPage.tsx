@@ -72,6 +72,7 @@ import {
   ModalErrorMessage,
   useModalErrorState,
 } from "../components/ModalErrorMessage";
+import { MfaQuickCodeSelect } from "../components/MfaQuickCodeSelect";
 import { PaginationControls } from "../components/PaginationControls";
 import {
   CodexAccountGroupModal,
@@ -166,6 +167,7 @@ import type {
   CodexLocalApiSafetyPresetId,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
+  CodexLocalAccessUpstreamProxyMode,
 } from "../types/codexLocalAccess";
 import {
   CODEX_API_SERVICE_BIND_ID,
@@ -825,6 +827,9 @@ export function CodexAccountsPage() {
   const [savingAppSpeedId, setSavingAppSpeedId] = useState<string | null>(null);
   const [apiServiceAppSpeed, setApiServiceAppSpeed] =
     useState<CodexAppSpeed>("standard");
+  const [reauthTargetAccount, setReauthTargetAccount] =
+    useState<CodexAccount | null>(null);
+  const [reauthEmailCopied, setReauthEmailCopied] = useState(false);
   const {
     message: accountNoteError,
     scrollKey: accountNoteErrorScrollKey,
@@ -998,6 +1003,38 @@ export function CodexAccountsPage() {
   useEffect(() => {
     void flushPendingActiveGroupAssignments();
   }, [flushPendingActiveGroupAssignments]);
+
+  const reauthTargetEmail = reauthTargetAccount?.email?.trim() ?? "";
+
+  const openCodexAddModal = useCallback(
+    (tab: string, targetAccount?: CodexAccount | null) => {
+      setReauthTargetAccount(targetAccount ?? null);
+      setReauthEmailCopied(false);
+      openAddModal(tab);
+    },
+    [openAddModal],
+  );
+
+  const closeCodexAddModal = useCallback(() => {
+    setReauthTargetAccount(null);
+    setReauthEmailCopied(false);
+    closeAddModal();
+  }, [closeAddModal]);
+
+  const handleCopyReauthEmail = useCallback(async () => {
+    if (!reauthTargetEmail) return;
+    try {
+      await navigator.clipboard.writeText(reauthTargetEmail);
+      setReauthEmailCopied(true);
+      window.setTimeout(() => setReauthEmailCopied(false), 1200);
+    } catch {}
+  }, [reauthTargetEmail]);
+
+  useEffect(() => {
+    if (showAddModal) return;
+    setReauthTargetAccount(null);
+    setReauthEmailCopied(false);
+  }, [showAddModal]);
 
   useEffect(() => {
     if (!filterPersistenceEnabled) {
@@ -5616,6 +5653,32 @@ export function CodexAccountsPage() {
     [setMessage, t],
   );
 
+  const handleUpdateLocalAccessUpstreamProxyMode = useCallback(
+    async (upstreamProxyMode: CodexLocalAccessUpstreamProxyMode) => {
+      setLocalAccessSaving(true);
+      try {
+        const nextState =
+          await codexLocalAccessService.updateCodexLocalAccessUpstreamProxyMode(
+            upstreamProxyMode,
+          );
+        setLocalAccessState(nextState);
+        setMessage({
+          text: t(
+            "codex.localAccess.upstreamProxySaveSuccess",
+            "API 服务上游连接方式已更新",
+          ),
+        });
+        return nextState;
+      } catch (error) {
+        console.error("Failed to update local access upstream proxy mode:", error);
+        throw new Error(String(error).replace(/^Error:\s*/, ""));
+      } finally {
+        setLocalAccessSaving(false);
+      }
+    },
+    [setMessage, t],
+  );
+
   const handleUpdateLocalAccessAccessScope = useCallback(
     async (accessScope: CodexLocalAccessScope) => {
       setLocalAccessSaving(true);
@@ -6984,7 +7047,7 @@ export function CodexAccountsPage() {
                     {showReauthorizeAction && (
                       <button
                         className="btn btn-sm btn-outline"
-                        onClick={() => openAddModal("oauth")}
+                        onClick={() => openCodexAddModal("oauth", account)}
                         title={t("common.shared.addModal.oauth", "OAuth 授权")}
                       >
                         {t("common.shared.addModal.oauth", "OAuth 授权")}
@@ -8366,7 +8429,7 @@ export function CodexAccountsPage() {
                     {showReauthorizeAction && (
                       <button
                         className="btn btn-sm btn-outline"
-                        onClick={() => openAddModal("oauth")}
+                        onClick={() => openCodexAddModal("oauth", account)}
                         title={t("common.shared.addModal.oauth", "OAuth 授权")}
                       >
                         {t("common.shared.addModal.oauth", "OAuth 授权")}
@@ -9404,7 +9467,7 @@ export function CodexAccountsPage() {
             <div className="toolbar-right">
               <button
                 className="btn btn-primary icon-only"
-                onClick={() => openAddModal("oauth")}
+                onClick={() => openCodexAddModal("oauth")}
                 title={
                   activeGroup
                     ? t("accounts.groups.addAccountToGroup", "添加到本分组")
@@ -9527,7 +9590,7 @@ export function CodexAccountsPage() {
               >
                 <button
                   className="btn btn-primary"
-                  onClick={() => openAddModal("oauth")}
+                  onClick={() => openCodexAddModal("oauth")}
                 >
                   <Plus size={16} />
                   {t("common.shared.addAccount", "添加账号")}
@@ -9782,7 +9845,7 @@ export function CodexAccountsPage() {
           />
 
           {showAddModal && (
-            <div className="modal-overlay" onClick={closeAddModal}>
+            <div className="modal-overlay" onClick={closeCodexAddModal}>
               <div
                 className="modal-content codex-add-modal"
                 onClick={(e) => e.stopPropagation()}
@@ -9791,7 +9854,7 @@ export function CodexAccountsPage() {
                   <h2>{t("codex.addModal.title", "添加 Codex 账号")}</h2>
                   <button
                     className="modal-close"
-                    onClick={closeAddModal}
+                    onClick={closeCodexAddModal}
                     aria-label={t("common.close", "关闭")}
                   >
                     <X />
@@ -9800,7 +9863,7 @@ export function CodexAccountsPage() {
                 <div className="modal-tabs">
                   <button
                     className={`modal-tab ${addTab === "oauth" ? "active" : ""}`}
-                    onClick={() => openAddModal("oauth")}
+                    onClick={() => openCodexAddModal("oauth")}
                   >
                     <Globe size={14} />
                     <span className="modal-tab-label">
@@ -9809,7 +9872,7 @@ export function CodexAccountsPage() {
                   </button>
                   <button
                     className={`modal-tab ${addTab === "token" ? "active" : ""}`}
-                    onClick={() => openAddModal("token")}
+                    onClick={() => openCodexAddModal("token")}
                   >
                     <FileText size={14} />
                     <span className="modal-tab-label">
@@ -9818,7 +9881,7 @@ export function CodexAccountsPage() {
                   </button>
                   <button
                     className={`modal-tab ${addTab === "apikey" ? "active" : ""}`}
-                    onClick={() => openAddModal("apikey")}
+                    onClick={() => openCodexAddModal("apikey")}
                   >
                     <KeyRound size={14} />
                     <span className="modal-tab-label">
@@ -9827,7 +9890,7 @@ export function CodexAccountsPage() {
                   </button>
                   <button
                     className={`modal-tab ${addTab === "import" ? "active" : ""}`}
-                    onClick={() => openAddModal("import")}
+                    onClick={() => openCodexAddModal("import")}
                   >
                     <Database size={14} />
                     <span className="modal-tab-label">
@@ -9836,8 +9899,50 @@ export function CodexAccountsPage() {
                   </button>
                 </div>
                 <div className="modal-body">
+                  <MfaQuickCodeSelect />
                   {addTab === "oauth" && (
                     <div className="add-section">
+                      {reauthTargetEmail && (
+                        <div className="oauth-link codex-reauth-email-block">
+                          <label>
+                            {t(
+                              "codex.oauth.reauthEmailLabel",
+                              "本次重新授权账号",
+                            )}
+                          </label>
+                          <div className="oauth-url-box">
+                            <input
+                              type="text"
+                              value={reauthTargetEmail}
+                              readOnly
+                              aria-label={t(
+                                "codex.oauth.reauthEmailLabel",
+                                "本次重新授权账号",
+                              )}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void handleCopyReauthEmail()}
+                              title={
+                                reauthEmailCopied
+                                  ? t("common.copied", "已复制")
+                                  : t("common.copy", "复制")
+                              }
+                              aria-label={
+                                reauthEmailCopied
+                                  ? t("common.copied", "已复制")
+                                  : t("common.copy", "复制")
+                              }
+                            >
+                              {reauthEmailCopied ? (
+                                <Check size={16} />
+                              ) : (
+                                <Copy size={16} />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       <p className="section-desc">
                         {t(
                           "codex.oauth.desc",
@@ -10859,7 +10964,7 @@ export function CodexAccountsPage() {
                           className="btn btn-secondary"
                           onClick={() => {
                             closeOAuthBindingModal();
-                            openAddModal("oauth");
+                            openCodexAddModal("oauth");
                           }}
                           disabled={oauthBindingSaving}
                         >
@@ -12082,6 +12187,7 @@ export function CodexAccountsPage() {
             onSetRuntimeMode={handleSetCodexRuntimeMode}
             onUpdateCustomRouting={handleUpdateLocalAccessCustomRouting}
             onUpdateAccessScope={handleUpdateLocalAccessAccessScope}
+            onUpdateUpstreamProxyMode={handleUpdateLocalAccessUpstreamProxyMode}
             onRotateApiKey={handleRotateLocalAccessApiKey}
             onKillPort={handleKillLocalAccessPort}
             onToggleEnabled={handleToggleLocalAccessEnabled}

@@ -1299,7 +1299,7 @@ export function WakeupTasksPage({ onNavigate }: WakeupPageProps) {
             detail: { app: 'antigravity', retry: { kind: 'default' } },
           }),
         );
-        const pathErrorText = t('appPath.modal.desc', { app: 'Antigravity' });
+        const pathErrorText = t('appPath.modal.desc', { app: 'Antigravity IDE' });
         if (options?.reportToTestModal) {
           reportTestModalError(pathErrorText);
         } else {
@@ -2324,7 +2324,7 @@ export function WakeupTasksPage({ onNavigate }: WakeupPageProps) {
             </div>
             <div className="modal-body">
               <div className="wakeup-form-group">
-                <label>Antigravity Version</label>
+                <label>{t('wakeup.form.antigravityVersion', 'Antigravity IDE Version')}</label>
                 <select
                   className="wakeup-input wakeup-select"
                   value={officialLsVersionMode}
@@ -2596,7 +2596,7 @@ export function WakeupTasksPage({ onNavigate }: WakeupPageProps) {
             </div>
             <div className="modal-body">
               <div className="wakeup-form-group">
-                <label>Antigravity Version</label>
+                <label>{t('wakeup.form.antigravityVersion', 'Antigravity IDE Version')}</label>
                 <select
                   className="wakeup-input wakeup-select"
                   value={officialLsVersionMode}
