@@ -35,6 +35,9 @@ const DETACHED_PROCESS: u32 = 0x0000_0008;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(target_os = "windows")]
 const WINDOWS_PROCESS_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(target_os = "windows")]
+static CODEX_STORE_APP_USER_MODEL_ID_CACHE: std::sync::OnceLock<String> =
+    std::sync::OnceLock::new();
 
 /// On macOS, extract the executable path from a `ps` command line output.
 /// Handles paths with spaces in .app bundles (e.g., "Visual Studio Code.app").
@@ -2669,7 +2672,7 @@ if ($pkg -and -not [string]::IsNullOrWhiteSpace($pkg.PackageFamilyName)) {
 }
 
 #[cfg(target_os = "windows")]
-fn detect_codex_store_app_user_model_id() -> Option<String> {
+fn detect_codex_store_app_user_model_id_uncached() -> Option<String> {
     if let Some(app_user_model_id) = detect_codex_store_app_user_model_id_by_startapps() {
         crate::modules::logger::log_info(&format!(
             "[Codex Store] StartApps 命中 AppUserModelId: {}",
@@ -2685,6 +2688,19 @@ fn detect_codex_store_app_user_model_id() -> Option<String> {
         return Some(app_user_model_id);
     }
     None
+}
+
+#[cfg(target_os = "windows")]
+fn detect_codex_store_app_user_model_id() -> Option<String> {
+    if let Some(app_user_model_id) = CODEX_STORE_APP_USER_MODEL_ID_CACHE.get() {
+        return Some(app_user_model_id.clone());
+    }
+
+    let detected = detect_codex_store_app_user_model_id_uncached();
+    if let Some(ref app_user_model_id) = detected {
+        let _ = CODEX_STORE_APP_USER_MODEL_ID_CACHE.set(app_user_model_id.clone());
+    }
+    detected
 }
 
 #[cfg(target_os = "windows")]
@@ -4524,12 +4540,16 @@ fn resolve_workbuddy_target_and_fallback(user_data_dir: Option<&str>) -> Option<
 #[cfg(target_os = "windows")]
 fn get_default_codex_windows_app_user_data_dir() -> Option<String> {
     let appdata = std::env::var("APPDATA").ok()?;
-    Some(
-        std::path::PathBuf::from(appdata)
-            .join("Codex")
-            .to_string_lossy()
-            .to_string(),
-    )
+    let legacy_dir = std::path::PathBuf::from(&appdata).join("Codex");
+    let modern_dir = legacy_dir.join("web").join("Codex");
+    let target = if modern_dir.exists() {
+        modern_dir
+    } else if legacy_dir.exists() {
+        legacy_dir
+    } else {
+        modern_dir
+    };
+    Some(target.to_string_lossy().to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -4541,6 +4561,103 @@ fn get_managed_codex_windows_app_user_data_dir(codex_home: &str) -> Option<Strin
     crate::modules::codex_instance::get_windows_app_user_data_dir(Path::new(trimmed))
         .ok()
         .map(|value| value.to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn is_codex_windows_main_process_command_line(cmdline: &str) -> bool {
+    let lower = cmdline.to_ascii_lowercase();
+    !lower.is_empty() && !is_helper_command_line(&lower) && !lower.contains("crashpad_handler")
+}
+
+#[cfg(target_os = "windows")]
+fn is_codex_windows_resource_process_command_line(cmdline: &str) -> bool {
+    let lower = cmdline.to_ascii_lowercase();
+    lower.contains(r"\app\resources\codex.exe") || lower.contains("resources\\codex.exe")
+}
+
+#[cfg(target_os = "windows")]
+fn get_codex_windows_resource_exec_path() -> Option<String> {
+    let launch_path = resolve_codex_launch_path().ok()?;
+    let resource_path = launch_path.parent()?.join("resources").join("codex.exe");
+    Some(resource_path.to_string_lossy().to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn collect_codex_windows_resource_process_pids() -> Vec<u32> {
+    let Some(expected_exe_path) = get_codex_windows_resource_exec_path() else {
+        return Vec::new();
+    };
+    let script = build_windows_path_filtered_process_probe_script("codex.exe", &expected_exe_path);
+    let mut pids = Vec::new();
+    let output = powershell_output_with_timeout(
+        &["-NoProfile", "-Command", &script],
+        WINDOWS_PROCESS_PROBE_TIMEOUT,
+    );
+    if let Ok(output) = output {
+        if output.status.success() {
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let mut parts = line.splitn(2, '|');
+                let pid_str = parts.next().unwrap_or("").trim();
+                let cmdline = parts.next().unwrap_or("").trim();
+                let Ok(pid) = pid_str.parse::<u32>() else {
+                    continue;
+                };
+                if is_codex_windows_resource_process_command_line(cmdline) {
+                    pids.push(pid);
+                }
+            }
+        }
+    }
+    if !pids.is_empty() {
+        pids.sort();
+        pids.dedup();
+        return pids;
+    }
+
+    let expected = normalize_path_for_compare(&expected_exe_path);
+    if expected.is_empty() {
+        return Vec::new();
+    }
+
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    let current_pid = std::process::id();
+    for (pid, process) in system.processes() {
+        let pid_u32 = pid.as_u32();
+        if pid_u32 == current_pid {
+            continue;
+        }
+        let name = process.name().to_string_lossy().to_ascii_lowercase();
+        if name != "codex.exe" {
+            continue;
+        }
+        let (resolved_exe, _) = resolve_windows_process_exe_for_match(process);
+        if resolved_exe.as_deref() != Some(expected.as_str()) {
+            continue;
+        }
+        let args_line = process
+            .cmd()
+            .iter()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<String>>()
+            .join(" ");
+        if is_codex_windows_resource_process_command_line(&args_line) {
+            pids.push(pid_u32);
+        }
+    }
+    pids.sort();
+    pids.dedup();
+    pids
 }
 
 #[cfg(target_os = "windows")]
@@ -6646,6 +6763,17 @@ fn wait_pids_exit(pids: &[u32], timeout_secs: u64) -> bool {
     }
 }
 
+fn collect_running_pids(pids: &[u32]) -> Vec<u32> {
+    let mut remaining: Vec<u32> = pids
+        .iter()
+        .copied()
+        .filter(|pid| *pid != 0 && is_pid_running(*pid))
+        .collect();
+    remaining.sort();
+    remaining.dedup();
+    remaining
+}
+
 fn close_pids(pids: &[u32], timeout_secs: u64) -> Result<(), String> {
     if pids.is_empty() {
         return Ok(());
@@ -7520,12 +7648,19 @@ pub fn start_codex_default(extra_args: &[String]) -> Result<u32, String> {
                         }
                         thread::sleep(Duration::from_millis(250));
                     }
-                    if let Some(pid) = resolve_codex_pid(None, None) {
-                        crate::modules::logger::log_info(&format!(
-                            "[Codex Start] 启动策略=system-store-entry app_id={} pid={}",
-                            app_user_model_id, pid
+                    if before_pids.is_empty() {
+                        if let Some(pid) = resolve_codex_pid(None, None) {
+                            crate::modules::logger::log_info(&format!(
+                                "[Codex Start] 启动策略=system-store-entry app_id={} pid={}",
+                                app_user_model_id, pid
+                            ));
+                            return Ok(pid);
+                        }
+                    } else {
+                        crate::modules::logger::log_warn(&format!(
+                            "[Codex Start] system-store-entry only reused existing instance, before_pids={}",
+                            summarize_pid_list_for_log(&before_pids.iter().copied().collect::<Vec<u32>>())
                         ));
-                        return Ok(pid);
                     }
                     crate::modules::logger::log_warn(
                         "[Codex Start] 系统入口已调用，但 15s 内未探测到 Codex 主进程，准备回退可执行路径",
@@ -7607,11 +7742,61 @@ pub fn close_codex_default(timeout_secs: u64) -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn request_codex_graceful_close(pid: u32) -> bool {
+    if pid == 0 || !is_pid_running(pid) {
+        return true;
+    }
+
+    let focus_script = format!(
+        "tell application \"System Events\" to set frontmost of (first process whose unix id is {}) to true",
+        pid
+    );
+    crate::modules::logger::log_info(&format!(
+        "[Codex Close] graceful osascript start pid={}",
+        pid
+    ));
+    match Command::new("osascript")
+        .args([
+            "-e",
+            &focus_script,
+            "-e",
+            "tell application \"System Events\" to keystroke \"q\" using command down",
+        ])
+        .output()
+    {
+        Ok(output) => {
+            if output.status.success() {
+                crate::modules::logger::log_info(&format!(
+                    "[Codex Close] graceful osascript success pid={}",
+                    pid
+                ));
+                true
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                crate::modules::logger::log_warn(&format!(
+                    "[Codex Close] graceful osascript failed pid={} err={}",
+                    pid,
+                    stderr.trim()
+                ));
+                false
+            }
+        }
+        Err(err) => {
+            crate::modules::logger::log_warn(&format!(
+                "[Codex Close] graceful osascript error pid={} err={}",
+                pid, err
+            ));
+            false
+        }
+    }
+}
+
 /// Request a normal Windows app shutdown before falling back to force close.
 #[cfg(target_os = "windows")]
-fn request_codex_graceful_close(pid: u32) {
+fn request_codex_graceful_close(pid: u32) -> bool {
     if pid == 0 || !is_pid_running(pid) {
-        return;
+        return true;
     }
 
     use std::os::windows::process::CommandExt;
@@ -7634,11 +7819,13 @@ fn request_codex_graceful_close(pid: u32) {
                     "[Codex Close] graceful taskkill success pid={} status={}",
                     pid, value.status
                 ));
+                true
             } else {
                 crate::modules::logger::log_warn(&format!(
                     "[Codex Close] graceful taskkill failed pid={} status={}",
                     pid, value.status
                 ));
+                false
             }
         }
         Err(err) => {
@@ -7646,6 +7833,7 @@ fn request_codex_graceful_close(pid: u32) {
                 "[Codex Close] graceful taskkill error pid={} err={}",
                 pid, err
             ));
+            false
         }
     }
 }
@@ -7705,7 +7893,36 @@ pub fn close_codex_instances(codex_homes: &[String], timeout_secs: u64) -> Resul
             "准备关闭 {} 个受管 Codex 主进程...",
             pids.len()
         ));
-        let _ = close_pids(&pids, timeout_secs);
+        let graceful_pids: Vec<u32> = pids
+            .iter()
+            .copied()
+            .filter(|pid| request_codex_graceful_close(*pid))
+            .collect();
+        if !graceful_pids.is_empty() {
+            let graceful_wait_secs = timeout_secs.min(2).max(1);
+            if wait_pids_exit(&graceful_pids, graceful_wait_secs) {
+                let remaining = collect_running_pids(&pids);
+                if remaining.is_empty() {
+                    crate::modules::logger::log_info(&format!(
+                        "[Codex Close] graceful close finished, targets={}",
+                        summarize_pid_list_for_log(&pids)
+                    ));
+                    return Ok(());
+                }
+            }
+        } else {
+            crate::modules::logger::log_warn(
+                "[Codex Close] graceful close request failed for all macOS targets, skip grace wait",
+            );
+        }
+        let remaining = collect_running_pids(&pids);
+        if !remaining.is_empty() {
+            crate::modules::logger::log_warn(&format!(
+                "[Codex Close] graceful close incomplete, fallback close_pids for remaining={}",
+                summarize_pid_list_for_log(&remaining)
+            ));
+            let _ = close_pids(&remaining, timeout_secs);
+        }
 
         let still_running = collect_codex_process_entries()
             .into_iter()
@@ -7781,6 +7998,18 @@ pub fn close_codex_instances(codex_homes: &[String], timeout_secs: u64) -> Resul
                 matches_target(dir.as_ref(), &target_app_dirs, includes_default).then_some(*pid)
             })
             .collect();
+        if pids.is_empty() && includes_default {
+            pids = entries
+                .iter()
+                .filter_map(|(pid, dir)| dir.is_none().then_some(*pid))
+                .collect();
+            if !pids.is_empty() {
+                crate::modules::logger::log_warn(&format!(
+                    "[Codex Close] default instance fallback matched main GUI pids without user-data-dir: {}",
+                    summarize_pid_list_for_log(&pids)
+                ));
+            }
+        }
         pids.sort();
         pids.dedup();
         if pids.is_empty() {
@@ -7792,27 +8021,46 @@ pub fn close_codex_instances(codex_homes: &[String], timeout_secs: u64) -> Resul
             "准备关闭 {} 个受管 Codex 主进程...",
             pids.len()
         ));
-        for pid in &pids {
-            request_codex_graceful_close(*pid);
-        }
-        let graceful_wait_secs = timeout_secs.min(8).max(1);
-        if wait_pids_exit(&pids, graceful_wait_secs) {
-            crate::modules::logger::log_info(&format!(
-                "[Codex Close] graceful close finished, targets={}",
-                summarize_pid_list_for_log(&pids)
-            ));
-            return Ok(());
-        }
-        let remaining: Vec<u32> = pids
+        let graceful_pids: Vec<u32> = pids
             .iter()
             .copied()
-            .filter(|pid| is_pid_running(*pid))
+            .filter(|pid| request_codex_graceful_close(*pid))
             .collect();
-        crate::modules::logger::log_warn(&format!(
-            "[Codex Close] graceful close timed out, retry force close for remaining pids={}",
-            summarize_pid_list_for_log(&remaining)
-        ));
-        let _ = close_pids(&remaining, timeout_secs);
+        if graceful_pids.is_empty() {
+            crate::modules::logger::log_warn(
+                "[Codex Close] graceful taskkill failed for all targets, skip grace wait and force close directly",
+            );
+        } else {
+            let graceful_wait_secs = timeout_secs.min(8).max(1);
+            if wait_pids_exit(&graceful_pids, graceful_wait_secs) {
+                let remaining = collect_running_pids(&pids);
+                if remaining.is_empty() {
+                    crate::modules::logger::log_info(&format!(
+                        "[Codex Close] graceful close finished, targets={}",
+                        summarize_pid_list_for_log(&pids)
+                    ));
+                    return Ok(());
+                }
+            }
+        }
+        let remaining = collect_running_pids(&pids);
+        if !remaining.is_empty() {
+            crate::modules::logger::log_warn(&format!(
+                "[Codex Close] graceful close incomplete, retry force close for remaining pids={}",
+                summarize_pid_list_for_log(&remaining)
+            ));
+            let _ = close_pids(&remaining, timeout_secs);
+        }
+        if includes_default {
+            let resource_pids = collect_codex_windows_resource_process_pids();
+            if !resource_pids.is_empty() {
+                crate::modules::logger::log_info(&format!(
+                    "[Codex Close] closing bundled resource codex processes for default instance: {}",
+                    summarize_pid_list_for_log(&resource_pids)
+                ));
+                let _ = close_pids(&resource_pids, timeout_secs.min(5).max(1));
+            }
+        }
 
         let still_running = collect_codex_process_entries()
             .into_iter()
