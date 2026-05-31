@@ -2427,7 +2427,7 @@ fn local_access_health_allows_elapsed_reset_recovery(
     now_seconds: i64,
 ) -> bool {
     let Some(health) = health else {
-        return true;
+        return false;
     };
     if matches!(
         health.status,

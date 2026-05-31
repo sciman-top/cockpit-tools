@@ -2,8 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   CodexLocalAccessPortCleanupResult,
   CodexLocalAccessRoutingStrategy,
+  CodexLocalAccessScope,
   CodexLocalAccessState,
   CodexLocalApiSafetyPresetId,
+  CodexLocalAccessTestResult,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
 } from '../types/codexLocalAccess';
@@ -75,6 +77,14 @@ export async function applyCodexLocalAccessSafetyPreset(
   return await invoke('codex_local_access_apply_safety_preset', { preset });
 }
 
+export async function updateCodexLocalAccessAccessScope(
+  accessScope: CodexLocalAccessScope,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_update_access_scope', {
+    accessScope,
+  });
+}
+
 export async function setCodexLocalAccessEnabled(
   enabled: boolean,
   options?: { force?: boolean },
@@ -101,4 +111,8 @@ export async function setCodexRuntimeMode(
 
 export async function activateCodexLocalAccess(): Promise<CodexLocalAccessState> {
   return await invoke('codex_local_access_activate');
+}
+
+export async function testCodexLocalAccess(): Promise<CodexLocalAccessTestResult> {
+  return await invoke('codex_local_access_test');
 }

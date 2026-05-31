@@ -157,7 +157,9 @@ import type { CodexAccount, CodexAppSpeed } from "../types/codex";
 import type {
   CodexLocalAccessAddressKind,
   CodexLocalAccessRoutingStrategy,
+  CodexLocalAccessScope,
   CodexLocalAccessState,
+  CodexLocalAccessTestResult,
   CodexLocalApiSafetyPresetId,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
@@ -4207,6 +4209,11 @@ export function CodexAccountsPage() {
       localAccessQuotaPreviewItems.length,
   );
   const overviewAccounts = accounts;
+  const localAccessScope = localAccessCollection?.accessScope ?? "localhost";
+  const localAccessScopeLabel =
+    localAccessScope === "lan"
+      ? t("codex.localAccess.accessScopeLanShort", "本机+局域网")
+      : t("codex.localAccess.accessScopeLocalhostShort", "仅本机");
   const localAccessBusy =
     localAccessSaving ||
     localAccessTesting ||
@@ -5095,6 +5102,32 @@ export function CodexAccountsPage() {
     [setMessage, t],
   );
 
+  const handleUpdateLocalAccessAccessScope = useCallback(
+    async (accessScope: CodexLocalAccessScope) => {
+      setLocalAccessSaving(true);
+      try {
+        const nextState =
+          await codexLocalAccessService.updateCodexLocalAccessAccessScope(
+            accessScope,
+          );
+        setLocalAccessState(nextState);
+        setMessage({
+          text: t(
+            "codex.localAccess.accessScopeSaveSuccess",
+            "API 服务访问范围已更新",
+          ),
+        });
+        return nextState;
+      } catch (error) {
+        console.error("Failed to update local access scope:", error);
+        throw new Error(String(error).replace(/^Error:\s*/, ""));
+      } finally {
+        setLocalAccessSaving(false);
+      }
+    },
+    [setMessage, t],
+  );
+
   const handleSetCodexRuntimeMode = useCallback(
     async (
       mode: CodexRuntimeIntegrationMode,
@@ -5173,68 +5206,24 @@ export function CodexAccountsPage() {
     }
   }, [localAccessCollection, requestLocalAccessRiskNotice, setMessage, t]);
 
-  const handleTestLocalAccess = useCallback(async () => {
+  const handleTestLocalAccess = useCallback(async (): Promise<
+    CodexLocalAccessTestResult
+  > => {
     if (!localAccessCollection) {
       throw new Error(
         t("codex.localAccess.testUnavailable", "当前 API 服务地址不可用"),
       );
     }
 
-    const baseUrl = resolveLocalAccessBaseUrl();
-    if (!baseUrl) {
-      throw new Error(
-        t("codex.localAccess.testUnavailable", "当前 API 服务地址不可用"),
-      );
-    }
-
     setLocalAccessTesting(true);
-    let timeoutId: number | null = null;
-
     try {
-      const controller = new AbortController();
-      timeoutId = window.setTimeout(() => controller.abort(), 10000);
-      const response = await fetch(`${baseUrl}/models`, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${localAccessCollection.apiKey}`,
-        },
-        signal: controller.signal,
-      });
-      const rawText = await response.text();
-      let payload: Record<string, unknown> | null = null;
-      if (rawText) {
-        try {
-          payload = JSON.parse(rawText) as Record<string, unknown>;
-        } catch {
-          payload = null;
-        }
-      }
-
-      if (!response.ok) {
-        const errorText =
-          (typeof payload?.error === "string" && payload.error) ||
-          rawText ||
-          response.statusText ||
-          `HTTP ${response.status}`;
-        throw new Error(errorText);
-      }
-
-      const modelCount = Array.isArray(payload?.data) ? payload.data.length : 0;
-      return modelCount;
+      return await codexLocalAccessService.testCodexLocalAccess();
     } catch (error) {
-      const rawError = String(error).replace(/^Error:\s*/, "");
-      const normalizedError =
-        rawError === "AbortError"
-          ? t("codex.localAccess.testTimeout", "测试超时，请确认本地服务已启动")
-          : rawError;
-      throw new Error(normalizedError);
+      throw new Error(String(error).replace(/^Error:\s*/, ""));
     } finally {
-      if (timeoutId != null) {
-        window.clearTimeout(timeoutId);
-      }
       setLocalAccessTesting(false);
     }
-  }, [localAccessCollection, resolveLocalAccessBaseUrl, t]);
+  }, [localAccessCollection, t]);
 
   const handleActivateLocalAccess = useCallback(
     async (options?: { showSuccessMessage?: boolean }) => {
@@ -6762,7 +6751,8 @@ export function CodexAccountsPage() {
           })
         : t("codex.localAccess.summaryMeta", {
             count: configuredMemberCount,
-            defaultValue: "{{count}} 个账号 · 仅本机",
+            scope: localAccessScopeLabel,
+            defaultValue: "{{count}} 个账号 · {{scope}}",
           });
     const apiKeyTitle =
       localAccessKeyVisible && localAccessCollection
@@ -6911,7 +6901,7 @@ export function CodexAccountsPage() {
                   </span>
                 </div>
                 <span className="folder-inline-count">
-                    {t("codex.localAccess.memberOnlyLocal", "仅本机")}
+                  {localAccessScopeLabel}
                 </span>
               </div>
             </>
@@ -6941,7 +6931,7 @@ export function CodexAccountsPage() {
                   </span>
                 </div>
                 <span className="folder-inline-count">
-                  {t("codex.localAccess.memberOnlyLocal", "仅本机")}
+                  {localAccessScopeLabel}
                 </span>
               </div>
             </button>
@@ -7266,13 +7256,15 @@ export function CodexAccountsPage() {
 
             <div className="codex-card-bottom codex-local-access-card-bottom">
               <span className="card-date">
-                {t("codex.localAccess.footerHint", "仅监听本机")}
+                {t("codex.localAccess.footerHint", {
+                  scope: localAccessScopeLabel,
+                  defaultValue: "监听范围：{{scope}}",
+                })}
               </span>
               <CodexSpeedSelect
                 value={apiServiceAppSpeed}
                 onChange={handleApiServiceAppSpeedChange}
                 busy={savingAppSpeedId === CODEX_API_SERVICE_BIND_ID}
-                compact
                 preferredPlacement="top"
                 ariaLabel={t("codex.speed.title", "速度")}
               />
@@ -11181,6 +11173,7 @@ export function CodexAccountsPage() {
             onUpdateRoutingStrategy={handleUpdateLocalAccessRoutingStrategy}
             onApplySafetyPreset={handleApplyLocalAccessSafetyPreset}
             onSetRuntimeMode={handleSetCodexRuntimeMode}
+            onUpdateAccessScope={handleUpdateLocalAccessAccessScope}
             onRotateApiKey={handleRotateLocalAccessApiKey}
             onKillPort={handleKillLocalAccessPort}
             onToggleEnabled={handleToggleLocalAccessEnabled}

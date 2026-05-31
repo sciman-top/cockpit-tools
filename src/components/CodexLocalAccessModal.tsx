@@ -34,10 +34,12 @@ import type {
   CodexLocalAccessAccountHealthView,
   CodexLocalAccessAddressKind,
   CodexLocalAccessRoutingStrategy,
+  CodexLocalAccessScope,
   CodexLocalAccessState,
   CodexLocalApiSafetyConfig,
   CodexLocalApiSafetyPresetId,
   CodexLocalAccessStatsWindow,
+  CodexLocalAccessTestResult,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
 } from '../types/codexLocalAccess';
@@ -120,10 +122,13 @@ interface CodexLocalAccessModalProps {
     mode: CodexRuntimeIntegrationMode,
     options?: { force?: boolean },
   ) => Promise<unknown> | unknown;
+  onUpdateAccessScope: (
+    accessScope: CodexLocalAccessScope,
+  ) => Promise<unknown> | unknown;
   onRotateApiKey: () => Promise<unknown> | unknown;
   onKillPort: () => Promise<unknown> | unknown;
   onToggleEnabled: () => Promise<unknown> | unknown;
-  onTest: () => Promise<number> | number;
+  onTest: () => Promise<CodexLocalAccessTestResult> | CodexLocalAccessTestResult;
   saving: boolean;
   refreshing: boolean;
   testing: boolean;
@@ -179,6 +184,10 @@ function isLocalAccessSelectionBlockedByIssue(
       isLocalAccessAuthHealthIssue(health) ||
       isCodexAccountErrorState(account),
   );
+}
+
+function normalizeAccessScope(value: string): CodexLocalAccessScope {
+  return value === 'lan' ? 'lan' : 'localhost';
 }
 
 function normalizeStatsRangeKey(value: string | null | undefined): StatsRangeKey {
@@ -296,6 +305,7 @@ export function CodexLocalAccessModal({
   onUpdateRoutingStrategy,
   onApplySafetyPreset,
   onSetRuntimeMode,
+  onUpdateAccessScope,
   onRotateApiKey,
   onKillPort,
   onToggleEnabled,
@@ -317,6 +327,11 @@ export function CodexLocalAccessModal({
   const [restrictFreeAccounts, setRestrictFreeAccounts] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [testDialogOpen, setTestDialogOpen] = useState(false);
+  const [testDialogRunning, setTestDialogRunning] = useState(false);
+  const [testDialogResult, setTestDialogResult] =
+    useState<CodexLocalAccessTestResult | null>(null);
+  const [testDialogError, setTestDialogError] = useState('');
   const [portInput, setPortInput] = useState('');
   const [keyVisible, setKeyVisible] = useState(false);
   const [copiedField, setCopiedField] = useState<CopyableField | null>(null);
@@ -407,6 +422,13 @@ export function CodexLocalAccessModal({
     [t],
   );
   const selectedRuntimeMode = runtimeMode?.mode ?? 'direct_projection';
+  const accessScope = collection?.accessScope ?? 'localhost';
+  const accessScopeAddress =
+    accessScope === 'lan' ? '0.0.0.0' : '127.0.0.1';
+  const accessScopeBadge =
+    accessScope === 'lan'
+      ? t('codex.localAccess.accessScopeLanShort', '本机+局域网')
+      : t('codex.localAccess.accessScopeLocalhostShort', '仅本机');
   const modelIdOptions = useMemo(
     () => modelIds.map((modelId) => ({ value: modelId, label: modelId })),
     [modelIds],
@@ -620,8 +642,15 @@ export function CodexLocalAccessModal({
       ),
     };
   }, [concurrencyDiagnostics, safetyPresetId, t]);
+  const testDialogBusy = testDialogRunning || testing;
   const actionBusy =
-    saving || refreshing || testing || starting || portCleanupBusy || statsRefreshing;
+    saving ||
+    refreshing ||
+    testing ||
+    starting ||
+    portCleanupBusy ||
+    statsRefreshing ||
+    testDialogRunning;
   const summaryStats = useMemo(
     () => [
       {
@@ -730,6 +759,10 @@ export function CodexLocalAccessModal({
     setRestrictFreeAccounts(collection?.restrictFreeAccounts ?? false);
     setError('');
     setNotice('');
+    setTestDialogOpen(false);
+    setTestDialogRunning(false);
+    setTestDialogResult(null);
+    setTestDialogError('');
     setKeyVisible(false);
     setCopiedField(null);
     setPortInput(collection?.port ? String(collection.port) : '');
@@ -1096,6 +1129,19 @@ export function CodexLocalAccessModal({
           label: t('codex.localAccess.runtimeMode.gateway', 'Cockpit API Service'),
         },
       ],
+    [t],
+  );
+  const accessScopeOptions = useMemo(
+    () => [
+      {
+        value: 'localhost',
+        label: t('codex.localAccess.accessScopeLocalhost', '仅本机'),
+      },
+      {
+        value: 'lan',
+        label: t('codex.localAccess.accessScopeLan', '局域网'),
+      },
+    ],
     [t],
   );
 
@@ -1660,6 +1706,19 @@ export function CodexLocalAccessModal({
     );
   };
 
+  const handleChangeAccessScope = async (nextValue: string) => {
+    if (!collection) return;
+    const nextAccessScope = normalizeAccessScope(nextValue);
+    if (nextAccessScope === accessScope) return;
+
+    await runAction(
+      async () => {
+        await onUpdateAccessScope(nextAccessScope);
+      },
+      t('codex.localAccess.accessScopeSaveSuccess', 'API 服务访问范围已更新'),
+    );
+  };
+
   const handleResetKey = async () => {
     const confirmed = await confirmDialog(
       t(
@@ -1775,20 +1834,23 @@ export function CodexLocalAccessModal({
     );
   };
 
+  const closeTestDialog = () => {
+    if (testDialogBusy) return;
+    setTestDialogOpen(false);
+  };
+
   const handleTest = async () => {
-    setError('');
-    setNotice('');
+    setTestDialogOpen(true);
+    setTestDialogRunning(true);
+    setTestDialogResult(null);
+    setTestDialogError('');
     try {
-      const modelCount = await onTest();
-      setNotice(
-        t('codex.localAccess.testSuccess', {
-          count: modelCount,
-          defaultValue:
-            modelCount > 0 ? 'API 服务测试成功（{{count}} 个模型）' : 'API 服务测试成功',
-        }),
-      );
+      const result = await onTest();
+      setTestDialogResult(result);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setTestDialogError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTestDialogRunning(false);
     }
   };
 
@@ -1798,15 +1860,18 @@ export function CodexLocalAccessModal({
   };
 
   if (!isOpen) return null;
+  const testFailure = testDialogResult?.failure ?? null;
+  const testSuccessResult = testDialogResult && !testFailure ? testDialogResult : null;
   const isMembersMode = mode === 'members';
 
   return (
-    <div
-      className={`modal-overlay codex-local-access-modal-overlay${
-        isMembersMode ? '' : ' codex-local-access-modal-overlay-panel'
-      }`}
-      onClick={handleRequestClose}
-    >
+    <>
+      <div
+        className={`modal-overlay codex-local-access-modal-overlay${
+          isMembersMode ? '' : ' codex-local-access-modal-overlay-panel'
+        }`}
+        onClick={handleRequestClose}
+      >
       <div
         className={`modal codex-local-access-modal${
           isMembersMode
@@ -1840,8 +1905,19 @@ export function CodexLocalAccessModal({
                       : t('codex.localAccess.statusDisabled', '已停用')}
                   </span>
                   <span className="codex-local-access-subtle-badge">
-                    {t('codex.localAccess.memberOnlyLocal', '仅本机')}
+                    {accessScopeBadge}
                   </span>
+                  <button
+                    type="button"
+                    className="codex-local-access-test-pill"
+                    onClick={() => void handleTest()}
+                    disabled={!collection || testDialogBusy || saving}
+                    title={t('codex.localAccess.testDialogTitle', '测试 API 服务')}
+                    aria-label={t('codex.localAccess.testDialogTitle', '测试 API 服务')}
+                  >
+                    <ShieldCheck size={13} className={testDialogBusy ? 'loading-spinner' : ''} />
+                    <span>{t('codex.localAccess.testAction', '测试')}</span>
+                  </button>
                 </div>
                 <div className="codex-local-access-header-tools">
                   <button
@@ -1865,16 +1941,6 @@ export function CodexLocalAccessModal({
                       />
                     </div>
                   )}
-                  <button
-                    type="button"
-                    className="folder-icon-btn codex-local-access-toolbar-btn"
-                    onClick={() => void handleTest()}
-                    disabled={!collection || actionBusy}
-                    title={t('codex.localAccess.testAction', '测试 API 服务')}
-                    aria-label={t('codex.localAccess.testAction', '测试 API 服务')}
-                  >
-                    <ShieldCheck size={14} className={testing ? 'loading-spinner' : ''} />
-                  </button>
                   <button
                     type="button"
                     className={`folder-icon-btn codex-local-access-toolbar-btn ${
@@ -2352,6 +2418,29 @@ export function CodexLocalAccessModal({
                           </button>
                         ))}
                       </div>
+                    </div>
+
+                    <div className="codex-local-access-config-card codex-local-access-config-card-scope">
+                      <div className="codex-local-access-config-head">
+                        <span className="codex-local-access-config-label">
+                          {t('codex.localAccess.accessScopeLabel', '访问范围')}
+                        </span>
+                        <div className="codex-local-access-config-actions">
+                          <SingleSelectDropdown
+                            value={accessScope}
+                            options={accessScopeOptions}
+                            onChange={(value) => void handleChangeAccessScope(value)}
+                            menuClassName="codex-local-access-scope-menu"
+                            menuWidth={132}
+                            menuMaxHeight={120}
+                            disabled={saving || testing || starting}
+                            ariaLabel={t('codex.localAccess.accessScopeLabel', '访问范围')}
+                          />
+                        </div>
+                      </div>
+                      <code className="codex-local-access-code" title={accessScopeAddress}>
+                        {accessScopeAddress}
+                      </code>
                     </div>
                   </div>
                 ) : (
@@ -2907,7 +2996,159 @@ export function CodexLocalAccessModal({
           )}
         </div>
       </div>
-    </div>
+      </div>
+
+      {testDialogOpen && (
+        <div
+          className="modal-overlay codex-local-access-test-dialog-overlay"
+          onClick={closeTestDialog}
+        >
+          <div
+            className="modal codex-local-access-test-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="codex-local-access-test-dialog-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-header codex-local-access-test-dialog-header">
+              <div>
+                <h3 id="codex-local-access-test-dialog-title">
+                  <ShieldCheck size={18} />
+                  <span>{t('codex.localAccess.testDialogTitle', '测试 API 服务')}</span>
+                </h3>
+                <p>{t('codex.localAccess.testDialogDesc', '通过 Codex CLI 发起一次真实请求，验证本地服务、密钥和上游响应。')}</p>
+              </div>
+              <button
+                className="modal-close codex-local-access-test-dialog-close"
+                onClick={closeTestDialog}
+                disabled={testDialogBusy}
+                aria-label={t('common.close')}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body codex-local-access-test-dialog-body">
+              {testDialogBusy && (
+                <div className="codex-local-access-test-progress" aria-live="polite">
+                  <RefreshCw size={18} className="loading-spinner" />
+                  <div>
+                    <strong>{t('codex.localAccess.testProgressTitle', '正在测试服务')}</strong>
+                    <span>{t('codex.localAccess.testProgressDesc', '正在向本地 API 服务发起真实请求，请稍候。')}</span>
+                  </div>
+                </div>
+              )}
+
+              {testSuccessResult && (
+                <>
+                  {testSuccessResult.output && (
+                    <div className="codex-local-access-test-output">
+                      <div className="codex-local-access-test-section-title">
+                        {t('codex.localAccess.testOutputTitle', '返回结果')}
+                      </div>
+                      <pre>{testSuccessResult.output}</pre>
+                    </div>
+                  )}
+
+                  <div className="codex-local-access-test-result">
+                    <div className="codex-local-access-test-section-title">
+                      {t('codex.localAccess.testResultTitle', '服务检测结果')}
+                    </div>
+                    <div className="codex-local-access-inline-success">
+                      <Check size={14} />
+                      <span>
+                        {t('codex.localAccess.testSuccess', {
+                          model: testSuccessResult.modelId ?? '--',
+                          latency: formatLatencyMs(testSuccessResult.latencyMs ?? 0),
+                          defaultValue:
+                            '服务检测成功：本地服务、密钥和上游响应正常（{{model}}，{{latency}}）。如果 Codex 仍报 502，请检查 Codex 的 Base URL、API Key 或运行环境。',
+                        })}
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {testFailure && (
+                <div className="codex-local-access-test-failure" aria-live="assertive">
+                  <div className="codex-local-access-test-failure-title">
+                    <CircleAlert size={16} />
+                    <strong>{testFailure.title}</strong>
+                  </div>
+                  <dl>
+                    <div>
+                      <dt>{t('codex.localAccess.testFailureStage', '定位阶段')}</dt>
+                      <dd>{testFailure.stage}</dd>
+                    </div>
+                    <div>
+                      <dt>{t('codex.localAccess.testFailureCause', '失败原因')}</dt>
+                      <dd>{testFailure.cause}</dd>
+                    </div>
+                    <div>
+                      <dt>{t('codex.localAccess.testFailureSuggestion', '处理建议')}</dt>
+                      <dd>{testFailure.suggestion}</dd>
+                    </div>
+                    {typeof testFailure.status === 'number' && (
+                      <div>
+                        <dt>{t('codex.localAccess.testFailureStatus', 'HTTP 状态')}</dt>
+                        <dd>{testFailure.status}</dd>
+                      </div>
+                    )}
+                    {testFailure.modelId && (
+                      <div>
+                        <dt>{t('codex.localAccess.testFailureModel', '检测模型')}</dt>
+                        <dd>{testFailure.modelId}</dd>
+                      </div>
+                    )}
+                  </dl>
+                  {testFailure.detail && (
+                    <div className="codex-local-access-test-output">
+                      <div className="codex-local-access-test-section-title">
+                        {t('codex.localAccess.testFailureDetail', '诊断详情')}
+                      </div>
+                      <pre>{testFailure.detail}</pre>
+                    </div>
+                  )}
+                  {testFailure.gatewayOutput && (
+                    <div className="codex-local-access-test-output">
+                      <div className="codex-local-access-test-section-title">
+                        {t('codex.localAccess.testFailureGatewayOutput', '网关返回')}
+                      </div>
+                      <pre>{testFailure.gatewayOutput}</pre>
+                    </div>
+                  )}
+                  {testFailure.cliOutput && (
+                    <div className="codex-local-access-test-output">
+                      <div className="codex-local-access-test-section-title">
+                        {t('codex.localAccess.testFailureCliOutput', 'CLI 输出')}
+                      </div>
+                      <pre>{testFailure.cliOutput}</pre>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {testDialogError && (
+                <div className="codex-local-access-inline-error" aria-live="assertive">
+                  <CircleAlert size={14} />
+                  <span>{testDialogError}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-footer codex-local-access-test-dialog-footer">
+              <button
+                className="btn btn-secondary"
+                onClick={closeTestDialog}
+                disabled={testDialogBusy}
+              >
+                {t('common.close')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

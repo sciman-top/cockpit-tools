@@ -1,4 +1,5 @@
 export type CodexLocalAccessAddressKind = 'local' | 'lan';
+export type CodexLocalAccessScope = 'localhost' | 'lan';
 
 export type CodexLocalAccessRoutingStrategy =
   | 'auto'
@@ -56,6 +57,7 @@ export interface CodexLocalAccessCollection {
   port: number;
   apiKey: string;
   safetyConfig: CodexLocalApiSafetyConfig;
+  accessScope: CodexLocalAccessScope;
   routingStrategy: CodexLocalAccessRoutingStrategy;
   restrictFreeAccounts: boolean;
   followCurrentAccount: boolean;
@@ -184,6 +186,25 @@ export interface CodexLocalAccessState {
   stats: CodexLocalAccessStats;
   health: CodexLocalAccessHealthSummary;
   concurrencyDiagnostics: CodexLocalAccessConcurrencyDiagnostics;
+}
+
+export interface CodexLocalAccessTestResult {
+  modelId: string | null;
+  latencyMs: number | null;
+  output: string | null;
+  failure: CodexLocalAccessTestFailure | null;
+}
+
+export interface CodexLocalAccessTestFailure {
+  title: string;
+  stage: string;
+  cause: string;
+  suggestion: string;
+  status: number | null;
+  modelId: string | null;
+  detail: string | null;
+  cliOutput: string | null;
+  gatewayOutput: string | null;
 }
 
 export interface CodexLocalAccessPortCleanupResult {

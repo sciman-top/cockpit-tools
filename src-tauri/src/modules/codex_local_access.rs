@@ -4,10 +4,12 @@ use crate::models::codex_local_access::{
     CodexLocalAccessAccountHealthView, CodexLocalAccessAccountStats, CodexLocalAccessCollection,
     CodexLocalAccessConcurrencyDiagnostics, CodexLocalAccessGlobalError,
     CodexLocalAccessHealthRegistry, CodexLocalAccessHealthSummary, CodexLocalAccessModelCooldown,
-    CodexLocalAccessPortCleanupResult, CodexLocalAccessRoutingStrategy, CodexLocalAccessState,
+    CodexLocalAccessPortCleanupResult, CodexLocalAccessRoutingStrategy, CodexLocalAccessScope,
+    CodexLocalAccessState,
     CodexLocalAccessStats, CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding,
-    CodexLocalAccessUsageEvent, CodexLocalAccessUsageStats, CodexLocalApiFallbackMode,
-    CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
+    CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessUsageEvent,
+    CodexLocalAccessUsageStats, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
+    CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
     CodexRuntimeIntegrationMode, CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
     CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
 };
@@ -44,6 +46,8 @@ const CODEX_LOCAL_ACCESS_AUDIT_FILE: &str = "codex_local_access_audit.jsonl";
 const CODEX_RUNTIME_MODE_FILE: &str = "codex_runtime_mode.json";
 const CODEX_LOCAL_ACCESS_DATA_ROOT_ENV: &str = "COCKPIT_LOCAL_ACCESS_DATA_ROOT";
 const CODEX_LOCAL_ACCESS_BIND_HOST: &str = "127.0.0.1";
+const CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST: &str = "127.0.0.1";
+const CODEX_LOCAL_ACCESS_LAN_BIND_HOST: &str = "0.0.0.0";
 const CODEX_LOCAL_ACCESS_URL_HOST: &str = "127.0.0.1";
 const LITELLM_GATEWAY_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_HTTP_REQUEST_BYTES: usize = 64 * 1024 * 1024;
@@ -78,6 +82,8 @@ const CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION: u32 = 1;
 const CODEX_LOCAL_ACCESS_AUDIT_MAX_BYTES: usize = 2 * 1024 * 1024;
 const CONCURRENCY_DIAGNOSTICS_AUDIT_WINDOW_MS: i64 = 10 * 60 * 1000;
 const RUNTIME_PROJECTION_RECENT_AUDIT_GRACE_MS: u128 = 5 * 60 * 1000;
+const GATEWAY_PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const GATEWAY_PORT_RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const UPSTREAM_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 const DEFAULT_CODEX_USER_AGENT: &str =
     "codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)";
@@ -134,9 +140,16 @@ struct GatewayRuntime {
     prepared_accounts: HashMap<String, CachedPreparedAccount>,
     running: bool,
     actual_port: Option<u16>,
+    actual_bind_host: Option<String>,
     last_error: Option<String>,
     shutdown_sender: Option<watch::Sender<bool>>,
     task: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone)]
+struct GatewayBindEndpoint {
+    bind_host: String,
+    port: u16,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -7010,6 +7023,17 @@ fn build_lan_base_url(port: u16) -> Option<String> {
     resolve_primary_lan_ipv4().map(|addr| format!("http://{addr}:{port}/v1"))
 }
 
+fn bind_host_for_access_scope(scope: CodexLocalAccessScope) -> &'static str {
+    match scope {
+        CodexLocalAccessScope::Localhost => CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST,
+        CodexLocalAccessScope::Lan => CODEX_LOCAL_ACCESS_LAN_BIND_HOST,
+    }
+}
+
+fn bind_host_for_collection(collection: &CodexLocalAccessCollection) -> &'static str {
+    bind_host_for_access_scope(collection.access_scope)
+}
+
 #[derive(Debug)]
 struct LanIpv4Candidate {
     interface_name: String,
@@ -7249,17 +7273,17 @@ fn generate_local_api_key() -> String {
     format!("agt_codex_{}", suffix)
 }
 
-fn allocate_random_local_port() -> Result<u16, String> {
-    let listener = StdTcpListener::bind((CODEX_LOCAL_ACCESS_BIND_HOST, 0))
-        .map_err(|e| format!("分配本地接入端口失败: {}", e))?;
+fn allocate_random_local_port(bind_host: &str) -> Result<u16, String> {
+    let listener =
+        StdTcpListener::bind((bind_host, 0)).map_err(|e| format!("分配本地接入端口失败: {}", e))?;
     listener
         .local_addr()
         .map(|addr| addr.port())
         .map_err(|e| format!("读取本地接入端口失败: {}", e))
 }
 
-fn is_local_port_bindable(port: u16) -> bool {
-    port != 0 && StdTcpListener::bind((CODEX_LOCAL_ACCESS_BIND_HOST, port)).is_ok()
+fn is_local_port_bindable(bind_host: &str, port: u16) -> bool {
+    port != 0 && StdTcpListener::bind((bind_host, port)).is_ok()
 }
 
 fn first_stable_local_access_port(
@@ -7273,10 +7297,13 @@ fn first_stable_local_access_port(
         .find(|port| is_bindable(*port))
 }
 
-fn allocate_stable_local_access_port(exclude_port: Option<u16>) -> Result<u16, String> {
-    first_stable_local_access_port(exclude_port, is_local_port_bindable)
+fn allocate_stable_local_access_port(
+    bind_host: &str,
+    exclude_port: Option<u16>,
+) -> Result<u16, String> {
+    first_stable_local_access_port(exclude_port, |port| is_local_port_bindable(bind_host, port))
         .map(Ok)
-        .unwrap_or_else(allocate_random_local_port)
+        .unwrap_or_else(|| allocate_random_local_port(bind_host))
 }
 
 fn load_collection_from_disk() -> Result<Option<CodexLocalAccessCollection>, String> {
@@ -7541,24 +7568,77 @@ async fn get_model_cooldown_wait(account_id: &str, model_key: &str) -> Option<Du
     Some(Duration::from_millis(wait_ms as u64))
 }
 
-fn ensure_local_port_available(port: u16, current_port: Option<u16>) -> Result<(), String> {
+fn ensure_local_port_available(
+    bind_host: &str,
+    port: u16,
+    current_port: Option<u16>,
+) -> Result<(), String> {
     if port == 0 {
         return Err("端口必须在 1 到 65535 之间".to_string());
     }
     if current_port == Some(port) {
         return Ok(());
     }
-    let listener = StdTcpListener::bind((CODEX_LOCAL_ACCESS_BIND_HOST, port))
+    let listener = StdTcpListener::bind((bind_host, port))
         .map_err(|e| format!("端口 {} 不可用: {}", port, e))?;
     drop(listener);
     Ok(())
 }
 
-fn format_gateway_bind_error(port: u16, error: &std::io::Error) -> String {
+fn is_local_access_port_bindable(bind_host: &str, port: u16) -> Result<bool, std::io::Error> {
+    match StdTcpListener::bind((bind_host, port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+async fn wait_for_gateway_port_release(bind_host: &str, port: u16) -> Result<(), String> {
+    let deadline = Instant::now() + GATEWAY_PORT_RELEASE_TIMEOUT;
+
+    loop {
+        match is_local_access_port_bindable(bind_host, port) {
+            Ok(true) => return Ok(()),
+            Ok(false) if Instant::now() < deadline => {
+                tokio::time::sleep(GATEWAY_PORT_RELEASE_POLL_INTERVAL).await;
+            }
+            Ok(false) => {
+                return Err(format!("API 服务端口 {} 停止后仍未释放，请稍后重试", port));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "检查 API 服务端口 {} 释放状态失败: {}",
+                    port, error
+                ));
+            }
+        }
+    }
+}
+
+async fn bind_gateway_listener(bind_host: &str, port: u16) -> Result<TcpListener, std::io::Error> {
+    let deadline = Instant::now() + GATEWAY_PORT_RELEASE_TIMEOUT;
+
+    loop {
+        match TcpListener::bind((bind_host, port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AddrInUse && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(GATEWAY_PORT_RELEASE_POLL_INTERVAL).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn format_gateway_bind_error(bind_host: &str, port: u16, error: &std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::AddrInUse {
         return format!(
-            "启动本地接入服务失败: 端口 {} 已被占用，请先清理端口或改用其他端口（{}）",
-            port, error
+            "启动本地接入服务失败: {}:{} 已被占用，请先清理端口或改用其他端口（{}）",
+            bind_host, port, error
         );
     }
     format!("启动本地接入服务失败: {}", error)
@@ -7765,7 +7845,7 @@ fn sanitize_collection(
     changed |= normalize_local_api_safety_config(collection);
 
     if collection.port == 0 || collection.port == LEGACY_DEFAULT_CODEX_LOCAL_ACCESS_PORT {
-        collection.port = allocate_stable_local_access_port(None)?;
+        collection.port = allocate_stable_local_access_port(bind_host_for_collection(collection), None)?;
         changed = true;
     }
     if collection.api_key.trim().is_empty() {
@@ -7819,9 +7899,10 @@ async fn ensure_runtime_loaded_without_start() -> Result<(), String> {
     if next_collection.is_none() {
         next_collection = Some(CodexLocalAccessCollection {
             enabled: false,
-            port: allocate_stable_local_access_port(None)?,
+            port: allocate_stable_local_access_port(CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST, None)?,
             api_key: generate_local_api_key(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -7882,7 +7963,7 @@ async fn ensure_runtime_loaded() -> Result<(), String> {
 }
 
 async fn ensure_gateway_matches_runtime() -> Result<(), String> {
-    let (collection, running, actual_port, external_running, stale_task) = {
+    let (collection, running, actual_port, actual_bind_host, external_running, stale_task) = {
         let mut runtime = gateway_runtime().lock().await;
         let stale_task = if !runtime.running {
             runtime.task.take()
@@ -7894,6 +7975,7 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
             runtime.collection.clone(),
             runtime.running,
             runtime.actual_port,
+            runtime.actual_bind_host.clone(),
             external_running,
             stale_task,
         )
@@ -7913,7 +7995,11 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
         return Ok(());
     }
 
-    if running && actual_port == Some(collection.port) {
+    let bind_host = bind_host_for_collection(&collection);
+    if running
+        && actual_port == Some(collection.port)
+        && actual_bind_host.as_deref() == Some(bind_host)
+    {
         if !external_running {
             return Ok(());
         }
@@ -7927,14 +8013,18 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
                 let mut runtime = gateway_runtime().lock().await;
                 runtime.running = false;
                 runtime.actual_port = None;
+                runtime.actual_bind_host = None;
                 runtime.last_error = Some(error);
             }
         }
     }
 
-    stop_gateway().await;
+    let stopped_endpoint = stop_gateway().await;
+    if let Some(endpoint) = stopped_endpoint {
+        wait_for_gateway_port_release(&endpoint.bind_host, endpoint.port).await?;
+    }
 
-    let listener = match TcpListener::bind((CODEX_LOCAL_ACCESS_BIND_HOST, collection.port)).await {
+    let listener = match bind_gateway_listener(bind_host, collection.port).await {
         Ok(listener) => listener,
         Err(error) => {
             if matches!(
@@ -7949,6 +8039,7 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
                         sync_runtime_collection(&mut runtime, collection.clone());
                         runtime.running = true;
                         runtime.actual_port = Some(original_port);
+                        runtime.actual_bind_host = Some(bind_host.to_string());
                         runtime.shutdown_sender = None;
                         runtime.task = None;
                         runtime.last_error = None;
@@ -7965,7 +8056,8 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
                         ));
                     }
                 }
-                collection.port = allocate_stable_local_access_port(Some(original_port))?;
+                collection.port =
+                    allocate_stable_local_access_port(bind_host, Some(original_port))?;
                 collection.updated_at = now_ms();
                 save_collection_to_disk(&collection)?;
                 {
@@ -7976,22 +8068,25 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
                     "[CodexLocalAccess] 端口 {} 不可绑定（{}），已自动切换到端口 {}",
                     original_port, error, collection.port
                 ));
-                match TcpListener::bind((CODEX_LOCAL_ACCESS_BIND_HOST, collection.port)).await {
+                match bind_gateway_listener(bind_host, collection.port).await {
                     Ok(listener) => listener,
                     Err(retry_error) => {
-                        let message = format_gateway_bind_error(collection.port, &retry_error);
+                        let message =
+                            format_gateway_bind_error(bind_host, collection.port, &retry_error);
                         let mut runtime = gateway_runtime().lock().await;
                         runtime.running = false;
                         runtime.actual_port = None;
+                        runtime.actual_bind_host = None;
                         runtime.last_error = Some(message.clone());
                         return Err(message);
                     }
                 }
             } else {
-                let message = format_gateway_bind_error(collection.port, &error);
+                let message = format_gateway_bind_error(bind_host, collection.port, &error);
                 let mut runtime = gateway_runtime().lock().await;
                 runtime.running = false;
                 runtime.actual_port = None;
+                runtime.actual_bind_host = None;
                 runtime.last_error = Some(message.clone());
                 return Err(message);
             }
@@ -7999,10 +8094,14 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
     };
     let (shutdown_sender, mut shutdown_receiver) = watch::channel(false);
     let port = collection.port;
+    let bind_host = bind_host.to_string();
+    let task_bind_host = bind_host.clone();
 
     let task = tokio::spawn(async move {
         logger::log_codex_api_info(&format!(
-            "[CodexLocalAccess] 本地接入服务已启动: {}",
+            "[CodexLocalAccess] 本地接入服务已启动: bind={}:{} base={}",
+            task_bind_host,
+            port,
             build_base_url(port)
         ));
 
@@ -8038,9 +8137,12 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
         }
 
         let mut runtime = gateway_runtime().lock().await;
-        if runtime.actual_port == Some(port) {
+        if runtime.actual_port == Some(port)
+            && runtime.actual_bind_host.as_deref() == Some(&task_bind_host)
+        {
             runtime.running = false;
             runtime.actual_port = None;
+            runtime.actual_bind_host = None;
             runtime.shutdown_sender = None;
         }
     });
@@ -8048,18 +8150,28 @@ async fn ensure_gateway_matches_runtime() -> Result<(), String> {
     let mut runtime = gateway_runtime().lock().await;
     runtime.running = true;
     runtime.actual_port = Some(collection.port);
+    runtime.actual_bind_host = Some(bind_host);
     runtime.last_error = None;
     runtime.shutdown_sender = Some(shutdown_sender);
     runtime.task = Some(task);
     Ok(())
 }
 
-async fn stop_gateway() {
-    let (shutdown_sender, task) = {
+async fn stop_gateway() -> Option<GatewayBindEndpoint> {
+    let (shutdown_sender, task, endpoint) = {
         let mut runtime = gateway_runtime().lock().await;
+        let endpoint = runtime
+            .actual_port
+            .zip(runtime.actual_bind_host.clone())
+            .map(|(port, bind_host)| GatewayBindEndpoint { bind_host, port });
         runtime.running = false;
         runtime.actual_port = None;
-        (runtime.shutdown_sender.take(), runtime.task.take())
+        runtime.actual_bind_host = None;
+        (
+            runtime.shutdown_sender.take(),
+            runtime.task.take(),
+            endpoint,
+        )
     };
 
     if let Some(sender) = shutdown_sender {
@@ -8077,6 +8189,8 @@ async fn stop_gateway() {
             }
         }
     }
+
+    endpoint
 }
 
 fn apply_usage_stats(
@@ -8201,9 +8315,13 @@ fn build_state_snapshot(runtime: &GatewayRuntime) -> CodexLocalAccessState {
         .as_ref()
         .map(|item| build_api_port_url(item.port));
     let base_url = collection.as_ref().map(|item| build_base_url(item.port));
-    let lan_base_url = collection
-        .as_ref()
-        .and_then(|item| build_lan_base_url(item.port));
+    let lan_base_url = collection.as_ref().and_then(|item| {
+        if item.access_scope == CodexLocalAccessScope::Lan {
+            build_lan_base_url(item.port)
+        } else {
+            None
+        }
+    });
     let model_ids = supported_codex_model_ids();
     let mut stats = runtime.stats.clone();
     stats.events.clear();
@@ -8299,6 +8417,457 @@ pub async fn activate_local_access_for_dir(
     Ok(state)
 }
 
+#[derive(Debug, Clone)]
+struct LocalAccessGatewayProbeFailure {
+    status: Option<u16>,
+    message: String,
+    detail: Option<String>,
+    gateway_output: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum LocalAccessGatewayProbeResult {
+    Passed,
+    Failed(LocalAccessGatewayProbeFailure),
+}
+
+fn truncate_diagnostic_text(value: &str, max_chars: usize) -> String {
+    let count = value.chars().count();
+    if count <= max_chars {
+        return value.to_string();
+    }
+    let mut result = value.chars().take(max_chars).collect::<String>();
+    result.push_str("...");
+    result
+}
+
+fn clean_diagnostic_text(value: impl Into<String>) -> Option<String> {
+    let text = value.into().trim().to_string();
+    if text.is_empty() {
+        None
+    } else {
+        Some(truncate_diagnostic_text(&text, 4000))
+    }
+}
+
+fn extract_gateway_error_message(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "网关未返回错误内容".to_string();
+    }
+
+    if let Ok(value) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(message) = value.get("error").and_then(Value::as_str) {
+            return message.to_string();
+        }
+        if let Some(message) = value
+            .get("error")
+            .and_then(|item| item.get("message"))
+            .and_then(Value::as_str)
+        {
+            return message.to_string();
+        }
+        if let Some(message) = value.get("message").and_then(Value::as_str) {
+            return message.to_string();
+        }
+    }
+
+    truncate_diagnostic_text(trimmed, 800)
+}
+
+fn build_failure_result(failure: CodexLocalAccessTestFailure) -> CodexLocalAccessTestResult {
+    CodexLocalAccessTestResult {
+        model_id: failure.model_id.clone(),
+        latency_ms: None,
+        output: None,
+        failure: Some(failure),
+    }
+}
+
+fn local_access_test_failure(
+    title: impl Into<String>,
+    stage: impl Into<String>,
+    cause: impl Into<String>,
+    suggestion: impl Into<String>,
+    model_id: Option<String>,
+) -> CodexLocalAccessTestFailure {
+    CodexLocalAccessTestFailure {
+        title: title.into(),
+        stage: stage.into(),
+        cause: cause.into(),
+        suggestion: suggestion.into(),
+        status: None,
+        model_id,
+        detail: None,
+        cli_output: None,
+        gateway_output: None,
+    }
+}
+
+async fn probe_local_access_gateway(
+    base_url: &str,
+    api_key: &str,
+    model_id: &str,
+) -> LocalAccessGatewayProbeResult {
+    let url = format!("{}/v1/responses", base_url.trim_end_matches('/'));
+    let client = match Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(90))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return LocalAccessGatewayProbeResult::Failed(LocalAccessGatewayProbeFailure {
+                status: None,
+                message: format!("创建本地网关诊断客户端失败: {}", error),
+                detail: Some(error.to_string()),
+                gateway_output: None,
+            });
+        }
+    };
+
+    let body = json!({
+        "model": model_id,
+        "stream": false,
+        "store": false,
+        "input": "Reply with exactly: pong"
+    });
+    let response = match client
+        .post(&url)
+        .header(AUTHORIZATION, format!("Bearer {}", api_key.trim()))
+        .header(CONTENT_TYPE, "application/json")
+        .header(ACCEPT, "application/json")
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return LocalAccessGatewayProbeResult::Failed(LocalAccessGatewayProbeFailure {
+                status: error.status().map(|status| status.as_u16()),
+                message: format!("无法连接本地网关 {}: {}", url, error),
+                detail: Some(error.to_string()),
+                gateway_output: None,
+            });
+        }
+    };
+
+    let status = response.status();
+    let body_text = match response.text().await {
+        Ok(text) => text,
+        Err(error) => {
+            return LocalAccessGatewayProbeResult::Failed(LocalAccessGatewayProbeFailure {
+                status: Some(status.as_u16()),
+                message: format!("读取本地网关响应失败: {}", error),
+                detail: Some(error.to_string()),
+                gateway_output: None,
+            });
+        }
+    };
+
+    if status.is_success() {
+        return LocalAccessGatewayProbeResult::Passed;
+    }
+
+    LocalAccessGatewayProbeResult::Failed(LocalAccessGatewayProbeFailure {
+        status: Some(status.as_u16()),
+        message: extract_gateway_error_message(&body_text),
+        detail: clean_diagnostic_text(body_text.clone()),
+        gateway_output: clean_diagnostic_text(format!("HTTP {}\n{}", status.as_u16(), body_text)),
+    })
+}
+
+fn format_cli_failure_output(
+    error: &codex_wakeup::CodexWakeupCliConversationDetailedError,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    if let Some(status) = error.status.as_deref() {
+        lines.push(format!("exit_status: {}", status));
+    }
+    if let Some(duration_ms) = error.duration_ms {
+        lines.push(format!("duration_ms: {}", duration_ms));
+    }
+    if let Some(stderr) = error.stderr.as_deref() {
+        lines.push(format!("stderr:\n{}", stderr));
+    }
+    if let Some(stdout) = error.stdout.as_deref() {
+        lines.push(format!("stdout:\n{}", stdout));
+    }
+    if let Some(last_message) = error.last_message.as_deref() {
+        lines.push(format!("last_message:\n{}", last_message));
+    }
+    clean_diagnostic_text(lines.join("\n\n"))
+}
+
+fn is_quota_or_rate_limit_message(status: Option<u16>, message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    matches!(status, Some(429))
+        || lower.contains("usage_limit_reached")
+        || lower.contains("limit reached")
+        || lower.contains("rate limit")
+        || lower.contains("quota")
+        || lower.contains("cooldown")
+        || lower.contains("额度")
+        || lower.contains("限流")
+        || lower.contains("冷却")
+}
+
+fn classify_gateway_probe_failure(
+    model_id: &str,
+    cli_error: &codex_wakeup::CodexWakeupCliConversationDetailedError,
+    probe_failure: LocalAccessGatewayProbeFailure,
+) -> CodexLocalAccessTestFailure {
+    let status = probe_failure.status;
+    let message = probe_failure.message.trim();
+    let lower = message.to_ascii_lowercase();
+    let (title, stage, suggestion) = if status.is_none() {
+        (
+            "无法连接本地网关",
+            "本地网关连接",
+            "确认 API 服务仍在运行，端口未被系统占用或安全软件拦截；如端口异常，可先清理端口或更换端口后重试。",
+        )
+    } else if matches!(status, Some(401)) {
+        if lower.contains("authorization") || message.contains("密钥") || lower.contains("api-key")
+        {
+            (
+                "本地 API 服务密钥无效",
+                "本地网关鉴权",
+                "重置 API 服务密钥后重新复制 Base URL/API Key，并确认 Codex CLI 使用的是最新配置。",
+            )
+        } else {
+            (
+                "Codex 账号鉴权失败",
+                "上游账号鉴权",
+                "刷新该 Codex 账号额度或重新导入账号；如果账号已退出登录或令牌过期，需要重新登录后再测试。",
+            )
+        }
+    } else if is_quota_or_rate_limit_message(status, message) {
+        (
+            "上游限流或额度不足",
+            "上游额度",
+            "查看账号额度池，切换到仍有额度的账号，或等待冷却窗口结束后重试。",
+        )
+    } else if matches!(status, Some(502) | Some(503) | Some(504)) {
+        if message.contains("暂无可用账号")
+            || message.contains("集合暂无")
+            || message.contains("Free 账号")
+            || message.contains("API Key 账号")
+        {
+            (
+                "账号池暂无可用账号",
+                "账号池路由",
+                "在 API 服务账号集合中加入可用的 Codex OAuth 账号，并确认未被 Free 账号限制或账号类型限制拦截。",
+            )
+        } else {
+            (
+                "上游服务或代理不可用",
+                "上游请求",
+                "检查全局代理、网络连通性和 Codex 上游服务状态；如只影响单个账号，刷新或移除该账号后重试。",
+            )
+        }
+    } else {
+        (
+            "本地网关请求失败",
+            "本地网关响应",
+            "根据 HTTP 状态和网关返回内容处理；如果是账号相关错误，优先刷新或重新导入对应账号。",
+        )
+    };
+
+    CodexLocalAccessTestFailure {
+        title: title.to_string(),
+        stage: stage.to_string(),
+        cause: if let Some(status) = status {
+            format!("本地网关返回 HTTP {}：{}", status, message)
+        } else {
+            message.to_string()
+        },
+        suggestion: suggestion.to_string(),
+        status,
+        model_id: Some(model_id.to_string()),
+        detail: probe_failure.detail,
+        cli_output: format_cli_failure_output(cli_error),
+        gateway_output: probe_failure.gateway_output,
+    }
+}
+
+fn build_cli_environment_failure(
+    model_id: &str,
+    cli_error: codex_wakeup::CodexWakeupCliConversationDetailedError,
+    gateway_passed: bool,
+) -> CodexLocalAccessTestFailure {
+    CodexLocalAccessTestFailure {
+        title: "Codex CLI 执行环境异常".to_string(),
+        stage: "Codex CLI".to_string(),
+        cause: if gateway_passed {
+            format!(
+                "本地网关直接诊断已通过，但 Codex CLI 真实请求失败：{}",
+                cli_error.message
+            )
+        } else {
+            cli_error.message.clone()
+        },
+        suggestion: "检查 Codex CLI 路径、版本、配置文件读取权限和运行时环境；如果刚升级过 CLI，请重启应用后再测。".to_string(),
+        status: None,
+        model_id: Some(model_id.to_string()),
+        detail: None,
+        cli_output: format_cli_failure_output(&cli_error),
+        gateway_output: None,
+    }
+}
+
+pub async fn test_local_access_with_cli() -> Result<CodexLocalAccessTestResult, String> {
+    ensure_runtime_loaded().await?;
+    let state = snapshot_state().await?;
+    let Some(collection) = state.collection.clone() else {
+        return Ok(build_failure_result(local_access_test_failure(
+            "API 服务集合尚未创建",
+            "检测前置条件",
+            "当前没有可用于本地 API 服务的账号集合配置。",
+            "先在 API 服务弹框中选择账号并保存，然后启用服务后再测试。",
+            None,
+        )));
+    };
+    if !collection.enabled {
+        return Ok(build_failure_result(local_access_test_failure(
+            "API 服务未启用",
+            "检测前置条件",
+            "当前 API 服务处于停用状态，CLI 无法通过本地网关发起请求。",
+            "先启用 API 服务，再重新执行健康检测。",
+            None,
+        )));
+    }
+    if !state.running {
+        return Ok(build_failure_result(local_access_test_failure(
+            "API 服务未运行",
+            "本地网关进程",
+            "API 服务配置已启用，但本地网关当前没有监听端口。",
+            "先启动 API 服务；如果端口被占用，清理端口或更换端口后重试。",
+            None,
+        )));
+    }
+    if collection.account_ids.is_empty() {
+        return Ok(build_failure_result(local_access_test_failure(
+            "账号集合为空",
+            "账号池配置",
+            "API 服务集合中没有账号，网关没有可路由的上游账号。",
+            "在 API 服务账号集合中加入可用的 Codex OAuth 账号后再测试。",
+            None,
+        )));
+    }
+
+    let base_url = state
+        .base_url
+        .clone()
+        .unwrap_or_else(|| build_base_url(collection.port));
+    let Some(model_id) = state.model_ids.first().cloned() else {
+        return Ok(build_failure_result(local_access_test_failure(
+            "API 服务暂无可用模型",
+            "模型配置",
+            "当前 API 服务没有可用于检测的模型 ID。",
+            "确认账号集合中至少有一个可用账号，并刷新模型/账号状态后再测试。",
+            None,
+        )));
+    };
+    if model_id.trim().is_empty() {
+        return Ok(build_failure_result(local_access_test_failure(
+            "API 服务暂无可用模型",
+            "模型配置",
+            "当前 API 服务没有可用于检测的模型 ID。",
+            "确认账号集合中至少有一个可用账号，并刷新模型/账号状态后再测试。",
+            None,
+        )));
+    }
+    let temp_home = std::env::temp_dir().join(format!(
+        "antigravity-codex-api-service-test-{}",
+        uuid::Uuid::new_v4()
+    ));
+
+    if let Err(error) = std::fs::create_dir_all(&temp_home) {
+        return Ok(build_failure_result(local_access_test_failure(
+            "创建 CLI 检测环境失败",
+            "Codex CLI 环境",
+            format!("无法创建临时 CODEX_HOME：{}", error),
+            "检查系统临时目录写入权限和磁盘空间后重试。",
+            Some(model_id),
+        )));
+    }
+    let projection_account = resolve_local_access_projection_account(&collection)?;
+    let runtime_account = build_runtime_account(
+        base_url.clone(),
+        collection.api_key.clone(),
+        &projection_account,
+    );
+    if let Err(err) = codex_account::write_account_bundle_to_dir(&temp_home, &runtime_account) {
+        let _ = std::fs::remove_dir_all(&temp_home);
+        return Ok(build_failure_result(local_access_test_failure(
+            "写入 CLI 检测账号失败",
+            "Codex CLI 环境",
+            format!("无法写入检测用 auth.json/config.toml：{}", err),
+            "检查临时目录写入权限；如果文件被安全软件拦截，放行后再重试。",
+            Some(model_id),
+        )));
+    }
+
+    let run_home = temp_home.clone();
+    let run_model_id = model_id.clone();
+    let cli_result = tokio::task::spawn_blocking(move || {
+        codex_wakeup::run_cli_conversation_in_home_detailed(
+            &run_home,
+            "Reply with exactly: pong",
+            &codex_wakeup::CodexWakeupExecutionConfig {
+                model: Some(run_model_id),
+                model_display_name: None,
+                model_reasoning_effort: None,
+            },
+        )
+    })
+    .await
+    .map_err(|e| {
+        local_access_test_failure(
+            "API 服务检测任务执行失败",
+            "检测任务",
+            format!("后台检测任务无法完成：{}", e),
+            "重试检测；如果持续发生，重启应用后再测试。",
+            Some(model_id.clone()),
+        )
+    });
+
+    if let Err(err) = std::fs::remove_dir_all(&temp_home) {
+        logger::log_codex_api_warn(&format!(
+            "[CodexLocalAccess] 清理 API 服务检测环境失败: path={}, error={}",
+            temp_home.display(),
+            err
+        ));
+    }
+
+    let cli_result = match cli_result {
+        Ok(result) => result,
+        Err(failure) => return Ok(build_failure_result(failure)),
+    };
+    let cli_result = match cli_result {
+        Ok(result) => result,
+        Err(cli_error) => {
+            let probe_result =
+                probe_local_access_gateway(&base_url, &collection.api_key, &model_id).await;
+            let failure = match probe_result {
+                LocalAccessGatewayProbeResult::Passed => {
+                    build_cli_environment_failure(&model_id, cli_error, true)
+                }
+                LocalAccessGatewayProbeResult::Failed(probe_failure) => {
+                    classify_gateway_probe_failure(&model_id, &cli_error, probe_failure)
+                }
+            };
+            return Ok(build_failure_result(failure));
+        }
+    };
+    Ok(CodexLocalAccessTestResult {
+        model_id: Some(model_id),
+        latency_ms: Some(cli_result.duration_ms),
+        output: Some(cli_result.reply),
+        failure: None,
+    })
+}
+
 pub async fn save_local_access_accounts(
     account_ids: Vec<String>,
     restrict_free_accounts: bool,
@@ -8312,9 +8881,13 @@ pub async fn save_local_access_accounts(
             .clone()
             .unwrap_or(CodexLocalAccessCollection {
                 enabled: false,
-                port: allocate_stable_local_access_port(None)?,
+                port: allocate_stable_local_access_port(
+                    CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST,
+                    None,
+                )?,
                 api_key: generate_local_api_key(),
                 safety_config: CodexLocalApiSafetyConfig::default(),
+                access_scope: CodexLocalAccessScope::Localhost,
                 routing_strategy: CodexLocalAccessRoutingStrategy::default(),
                 restrict_free_accounts: false,
                 follow_current_account: false,
@@ -8422,6 +8995,37 @@ pub async fn apply_local_access_safety_preset(
         return snapshot_state().await;
     }
 
+    collection.updated_at = now_ms();
+    save_collection_to_disk(&collection)?;
+
+    {
+        let mut runtime = gateway_runtime().lock().await;
+        sync_runtime_collection(&mut runtime, collection);
+    }
+
+    ensure_gateway_matches_runtime().await?;
+    snapshot_state().await
+}
+
+pub async fn update_local_access_scope(
+    access_scope: CodexLocalAccessScope,
+) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded().await?;
+
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    };
+
+    let Some(mut collection) = maybe_collection else {
+        return Err("本地接入集合尚未创建".to_string());
+    };
+
+    if collection.access_scope == access_scope {
+        return snapshot_state().await;
+    }
+
+    collection.access_scope = access_scope;
     collection.updated_at = now_ms();
     save_collection_to_disk(&collection)?;
 
@@ -8583,7 +9187,10 @@ pub async fn pause_local_access_health(account_id: &str) -> Result<CodexLocalAcc
 
 pub async fn prepare_local_access_gateway_for_restart() -> Result<CodexLocalAccessState, String> {
     ensure_runtime_loaded_without_start().await?;
-    stop_gateway().await;
+    let stopped_endpoint = stop_gateway().await;
+    if let Some(endpoint) = stopped_endpoint {
+        wait_for_gateway_port_release(&endpoint.bind_host, endpoint.port).await?;
+    }
 
     let runtime = gateway_runtime().lock().await;
     Ok(build_state_snapshot(&runtime))
@@ -8632,7 +9239,11 @@ pub async fn update_local_access_port(port: u16) -> Result<CodexLocalAccessState
         return Err("本地接入集合尚未创建".to_string());
     };
 
-    ensure_local_port_available(port, Some(collection.port))?;
+    ensure_local_port_available(
+        bind_host_for_collection(&collection),
+        port,
+        Some(collection.port),
+    )?;
     if collection.port == port {
         return snapshot_state().await;
     }
@@ -13734,8 +14345,9 @@ mod tests {
     use crate::models::codex_local_access::{
         CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
         CodexLocalAccessCollection, CodexLocalAccessHealthSummary, CodexLocalAccessModelCooldown,
-        CodexLocalAccessRoutingStrategy, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
-        CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
+        CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalApiFallbackMode,
+        CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
+        CodexRuntimeIntegrationMode,
     };
     use reqwest::header::{HeaderValue, RETRY_AFTER};
     use reqwest::StatusCode;
@@ -13851,6 +14463,7 @@ mod tests {
                 max_queue_wait_seconds: 4,
                 ..CodexLocalApiSafetyConfig::default()
             },
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -13930,6 +14543,7 @@ mod tests {
             port: 45335,
             api_key: "ck-test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -21160,6 +21774,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 fallback_mode: CodexLocalApiFallbackMode::NextRequestOnly,
                 ..CodexLocalApiSafetyConfig::default()
             },
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -21197,6 +21812,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 max_queue_wait_seconds: 10,
                 ..CodexLocalApiSafetyConfig::default()
             },
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -21539,6 +22155,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 2876,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -21624,6 +22241,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 2876,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -21693,6 +22311,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 2876,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -21932,6 +22551,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 2876,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -21957,6 +22577,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 2876,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -22009,6 +22630,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 fallback_mode: CodexLocalApiFallbackMode::NextRequestOnly,
                 ..CodexLocalApiSafetyConfig::default()
             },
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -22038,6 +22660,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 fallback_mode: CodexLocalApiFallbackMode::Disabled,
                 ..CodexLocalApiSafetyConfig::default()
             },
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -22152,6 +22775,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 45335,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -22173,6 +22797,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 45335,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: true,
@@ -22201,6 +22826,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 45335,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -22226,6 +22852,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: 45335,
             api_key: "agt_test".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
@@ -22614,6 +23241,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             port: external_port,
             api_key: "test-local-key".to_string(),
             safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
             restrict_free_accounts: false,
             follow_current_account: false,
