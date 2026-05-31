@@ -7,7 +7,7 @@ All notable changes to Cockpit Tools will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
-## [0.24.5] - 2026-05-23
+## [0.24.6] - 2026-05-23
 
 ### Added
 - **Codex API Service now runs through a bundled CLIProxyAPI sidecar**: Cockpit Tools builds and packages `cockpit-cliproxy`, generates sidecar config, manifest, and auth files from managed accounts and client keys, keeps the existing Base URL/API key workflow, and records sidecar usage events in Cockpit statistics and request logs.

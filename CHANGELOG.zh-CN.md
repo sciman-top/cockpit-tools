@@ -7,7 +7,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)。
 
 ---
-## [0.24.5] - 2026-05-23
+## [0.24.6] - 2026-05-23
 
 ### 新增
 - **Codex API 服务现改由内置 CLIProxyAPI sidecar 运行**：Cockpit Tools 会构建并打包 `cockpit-cliproxy`，根据受管账号和客户端 Key 生成 sidecar 配置、manifest 与认证文件，同时保持现有 Base URL/API Key 使用方式，并将 sidecar 用量事件写入 Cockpit 统计与请求日志。

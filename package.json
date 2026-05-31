@@ -1,7 +1,7 @@
 {
   "name": "cockpit-tools",
   "private": true,
-  "version": "0.24.5-local.1",
+  "version": "0.24.6-local.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
