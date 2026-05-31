@@ -50,3 +50,4 @@ target-test/
 **/*.rs.bk
 docs/plugin-architecture-proposal.md
 .aitasks
+.qoder/
