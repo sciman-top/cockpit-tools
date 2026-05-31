@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "選択した {{count}} 個のアカウントを削除してもよろしいですか？",
     "switched": "{{email}} に切り替えました",
     "switchFailed": "切り替えに失敗しました: {{error}}",
+    "antigravityLegacyUnsupported": "ここでは Antigravity 2.0.0 以降はサポートしていません。Antigravity 2.0.0 未満のバージョンを選ぶか、Antigravity IDE を使用してください。",
     "importSuccess": "{{count}} 個のアカウントをインポートしました",
     "importLocalSuccess": "アカウントをインポートしました: {{email}}",
     "importFailed": "インポートに失敗しました: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "現在の API サービス集合に設定可能なアカウントはありません",
       "customRoutingSave": "ルーティングを保存",
       "customRoutingSaveSuccess": "API サービスのカスタムルーティングを更新しました",
-      "upstreamProxyLabel": "上流接続",
-      "upstreamProxySaveSuccess": "API サービスの上流接続を更新しました",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "グローバルプロキシ",
-        "direct": "直接接続"
-      }
+      "upstreamProxyLabel": "API プロキシアドレス",
+      "upstreamProxySaveSuccess": "API プロキシアドレスを更新しました",
+      "upstreamProxyUrlPlaceholder": "API プロキシアドレス",
+      "upstreamProxySaveAction": "プロキシを保存"
     },
     "local": {
       "desc": "~/.codex/auth.json から現在ログイン中のアカウントをインポート",
@@ -2622,6 +2621,14 @@
       "inject": "ワンクリック切り替え: このツールはローカルの VS Code 暗号化情報（DPAPI/Keychain/Secret Service）を読み取り、state.vscdb 内の認証セッションを復号して GitHub Copilot トークンを置き換え、再暗号化します。処理はすべて端末内で完結します。",
       "reason": "必要な権限: VS Code 認証データベース（state.vscdb）を読み取り、システム暗号化機能（Windows DPAPI / macOS Keychain / Linux Secret Service）を呼び出して復号・再書き込みを行います。",
       "storage": "データ範囲: ローカルインポートは VS Code の GitHub ログインセッションを読み取り、切り替えは同じ種類のセッションを更新します。OAuth、トークンインポート、ローカルインポート検証、クォータ更新では GitHub 公式 API に必要な認証フィールドのみを送信し、state.vscdb やシステムキーはアップロードしません。"
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "インストール済みバージョンを検出中",
+      "missing": "インストール済みバージョンは検出されませんでした",
+      "detecting": "検出中",
+      "notFound": "バージョン未検出"
     }
   },
   "dashboard": {

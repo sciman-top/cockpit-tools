@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "Вы уверены, что хотите удалить {{count}} выбранных аккаунтов?",
     "switched": "Переключено на {{email}}",
     "switchFailed": "Ошибка переключения: {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 и новее здесь не поддерживаются. Выберите версию Antigravity ниже 2.0.0 или используйте Antigravity IDE.",
     "importSuccess": "Успешно импортировано {{count}} аккаунтов",
     "importLocalSuccess": "Аккаунт успешно импортирован: {{email}}",
     "importFailed": "Ошибка импорта: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "В текущей коллекции API-сервиса нет настраиваемых учетных записей",
       "customRoutingSave": "Сохранить маршрутизацию",
       "customRoutingSaveSuccess": "Настраиваемая маршрутизация API-сервиса обновлена",
-      "upstreamProxyLabel": "Внешнее соединение",
-      "upstreamProxySaveSuccess": "Подключение API-сервиса к внешнему узлу обновлено",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Глобальный прокси",
-        "direct": "Напрямую"
-      }
+      "upstreamProxyLabel": "URL API-прокси",
+      "upstreamProxySaveSuccess": "URL API-прокси обновлён",
+      "upstreamProxyUrlPlaceholder": "Адрес API-прокси",
+      "upstreamProxySaveAction": "Сохранить прокси"
     },
     "local": {
       "desc": "Импортировать текущий аккаунт из ~/.codex/auth.json",
@@ -2622,6 +2621,14 @@
       "inject": "Переключение в один клик: инструмент читает локальный криптографический материал VS Code (DPAPI/Keychain/Secret Service), расшифровывает сессию авторизации в state.vscdb, заменяет токен GitHub Copilot и шифрует обратно — всё локально на вашем устройстве.",
       "reason": "Объем разрешений: чтение базы аутентификации VS Code (state.vscdb) и вызов системного шифрования (Windows DPAPI / macOS Keychain / Linux Secret Service) для расшифровки и обратной записи.",
       "storage": "Область данных: локальный импорт читает сессии входа GitHub в VS Code, а переключение обновляет эти записи; OAuth, импорт токена, проверка локального импорта и обновление квот вызывают официальные API GitHub с необходимыми полями аутентификации. state.vscdb и системные ключи не загружаются."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Определение установленной версии",
+      "missing": "Установленная версия не обнаружена",
+      "detecting": "Определение",
+      "notFound": "Версия не обнаружена"
     }
   },
   "dashboard": {

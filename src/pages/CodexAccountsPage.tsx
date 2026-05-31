@@ -167,7 +167,6 @@ import type {
   CodexLocalApiSafetyPresetId,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
-  CodexLocalAccessUpstreamProxyMode,
 } from "../types/codexLocalAccess";
 import {
   CODEX_API_SERVICE_BIND_ID,
@@ -5653,24 +5652,24 @@ export function CodexAccountsPage() {
     [setMessage, t],
   );
 
-  const handleUpdateLocalAccessUpstreamProxyMode = useCallback(
-    async (upstreamProxyMode: CodexLocalAccessUpstreamProxyMode) => {
+  const handleUpdateLocalAccessUpstreamProxyConfig = useCallback(
+    async (upstreamProxyUrl: string | null) => {
       setLocalAccessSaving(true);
       try {
         const nextState =
-          await codexLocalAccessService.updateCodexLocalAccessUpstreamProxyMode(
-            upstreamProxyMode,
+          await codexLocalAccessService.updateCodexLocalAccessUpstreamProxyConfig(
+            upstreamProxyUrl,
           );
         setLocalAccessState(nextState);
         setMessage({
           text: t(
             "codex.localAccess.upstreamProxySaveSuccess",
-            "API 服务上游连接方式已更新",
+            "API 代理地址已更新",
           ),
         });
         return nextState;
       } catch (error) {
-        console.error("Failed to update local access upstream proxy mode:", error);
+        console.error("Failed to update local access upstream proxy config:", error);
         throw new Error(String(error).replace(/^Error:\s*/, ""));
       } finally {
         setLocalAccessSaving(false);
@@ -12187,7 +12186,7 @@ export function CodexAccountsPage() {
             onSetRuntimeMode={handleSetCodexRuntimeMode}
             onUpdateCustomRouting={handleUpdateLocalAccessCustomRouting}
             onUpdateAccessScope={handleUpdateLocalAccessAccessScope}
-            onUpdateUpstreamProxyMode={handleUpdateLocalAccessUpstreamProxyMode}
+            onUpdateUpstreamProxyConfig={handleUpdateLocalAccessUpstreamProxyConfig}
             onRotateApiKey={handleRotateLocalAccessApiKey}
             onKillPort={handleKillLocalAccessPort}
             onToggleEnabled={handleToggleLocalAccessEnabled}

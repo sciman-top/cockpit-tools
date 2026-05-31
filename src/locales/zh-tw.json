@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "確定要刪除選中的 {{count}} 個帳號嗎？",
     "switched": "已切換至 {{email}}",
     "switchFailed": "切換失敗：{{error}}",
+    "antigravityLegacyUnsupported": "暫不支援 Antigravity 2.0.0 及以上版本，請選擇小於 Antigravity 2.0.0 的版本，或使用 Antigravity IDE",
     "importSuccess": "成功匯入 {{count}} 個帳號",
     "importLocalSuccess": "成功匯入帳號: {{email}}",
     "importFailed": "匯入失敗: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "目前 API 服務集合沒有可設定的帳號",
       "customRoutingSave": "儲存自訂調度",
       "customRoutingSaveSuccess": "API 服務自訂調度已更新",
-      "upstreamProxyLabel": "上游連線",
-      "upstreamProxySaveSuccess": "API 服務上游連線方式已更新",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "跟隨全域代理",
-        "direct": "直連上游"
-      }
+      "upstreamProxyLabel": "API 代理位址",
+      "upstreamProxySaveSuccess": "API 代理位址已更新",
+      "upstreamProxyUrlPlaceholder": "API 代理位址",
+      "upstreamProxySaveAction": "儲存代理"
     },
     "api": {
       "baseUrl": "基礎網址",
@@ -2622,6 +2621,14 @@
       "inject": "一鍵切換：本工具會讀取本機 VS Code 加密材料（DPAPI/Keychain/Secret Service），解密 state.vscdb 中的驗證工作階段，替換 GitHub Copilot 權杖後再加密，全部流程都在本機完成。",
       "reason": "權限需求：讀取 VS Code 認證資料庫（state.vscdb），並呼叫系統加密能力（Windows DPAPI / macOS Keychain / Linux Secret Service）進行解密與寫回。",
       "storage": "資料範圍：本機匯入會讀取 VS Code 中的 GitHub 登入會話，切換帳號會更新同類會話；OAuth、Token 匯入、本機匯入校驗與配額刷新會呼叫 GitHub 官方 API，只傳送必要認證欄位，不會上傳 state.vscdb 或系統金鑰。"
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "正在檢測安裝版本",
+      "missing": "未檢測到已安裝版本",
+      "detecting": "檢測中",
+      "notFound": "未檢測到版本"
     }
   },
   "dashboard": {

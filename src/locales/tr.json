@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "Seçilen {{count}} hesabı silmek istediğinizden emin misiniz?",
     "switched": "{{email}} hesabına geçildi",
     "switchFailed": "Geçiş hatası: {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 ve sonrası burada desteklenmiyor. Antigravity 2.0.0 altı bir sürüm seçin veya Antigravity IDE'yi kullanın.",
     "importSuccess": "{{count}} hesap başarıyla içe aktarıldı",
     "importLocalSuccess": "Hesap başarıyla içe aktarıldı: {{email}}",
     "importFailed": "İçe aktarma hatası: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "Geçerli API hizmeti koleksiyonunda yapılandırılabilir hesap yok",
       "customRoutingSave": "Yönlendirmeyi kaydet",
       "customRoutingSaveSuccess": "API hizmeti özel yönlendirmesi güncellendi",
-      "upstreamProxyLabel": "Üst bağlantı",
-      "upstreamProxySaveSuccess": "API hizmetinin üst bağlantısı güncellendi",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Genel proxy",
-        "direct": "Doğrudan"
-      }
+      "upstreamProxyLabel": "API proxy URL'si",
+      "upstreamProxySaveSuccess": "API proxy URL'si güncellendi",
+      "upstreamProxyUrlPlaceholder": "API proxy adresi",
+      "upstreamProxySaveAction": "Proxy kaydet"
     },
     "local": {
       "desc": "~/.codex/auth.json'dan mevcut hesabı içe aktar",
@@ -2622,6 +2621,14 @@
       "inject": "Tek tıkla geçiş: Bu araç VS Code'un yerel şifreleme materyalini (DPAPI/Keychain/Secret Service) okur, state.vscdb içindeki kimlik doğrulama oturumunu çözer, GitHub Copilot belirtecini değiştirir ve yeniden şifreler — tüm işlem cihazınızda yerel olarak yapılır.",
       "reason": "İzin kapsamı: VS Code kimlik doğrulama veritabanını (state.vscdb) okumak ve şifre çözme/geri yazma için sistem şifreleme yeteneklerini (Windows DPAPI / macOS Keychain / Linux Secret Service) çağırmak.",
       "storage": "Veri kapsamı: yerel içe aktarma VS Code içindeki GitHub oturum açma oturumlarını okur, hesap değiştirme aynı kayıtları günceller; OAuth, token içe aktarma, yerel içe aktarma doğrulaması ve kota yenileme gerekli kimlik doğrulama alanlarıyla GitHub resmi API'lerini çağırır. state.vscdb ve sistem anahtarları yüklenmez."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Yüklü sürüm algılanıyor",
+      "missing": "Yüklü sürüm algılanmadı",
+      "detecting": "Algılanıyor",
+      "notFound": "Sürüm algılanmadı"
     }
   },
   "dashboard": {

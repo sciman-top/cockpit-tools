@@ -1400,6 +1400,7 @@
     "batchDeleteConfirm": "Are you sure you want to delete {{count}} selected accounts?",
     "switched": "Switched to {{email}}",
     "switchFailed": "Switch failed: {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 and later is not supported here. Choose an Antigravity version below 2.0.0, or use Antigravity IDE.",
     "importSuccess": "Successfully imported {{count}} accounts",
     "importLocalSuccess": "Successfully imported account: {{email}}",
     "importFailed": "Import failed: {{error}}",
@@ -2027,12 +2028,10 @@
       "customRoutingEmpty": "No configurable accounts in the current API service collection",
       "customRoutingSave": "Save Custom Routing",
       "customRoutingSaveSuccess": "API service custom routing updated",
-      "upstreamProxyLabel": "Upstream",
-      "upstreamProxySaveSuccess": "API service upstream connection updated",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Global Proxy",
-        "direct": "Direct"
-      }
+      "upstreamProxyLabel": "API proxy URL",
+      "upstreamProxySaveSuccess": "API proxy URL updated",
+      "upstreamProxyUrlPlaceholder": "API proxy URL",
+      "upstreamProxySaveAction": "Save proxy"
     },
     "api": {
       "baseUrl": "Base URL",
@@ -2768,6 +2767,14 @@
       "inject": "One-click switching: This tool reads local VS Code encryption material (DPAPI/Keychain/Secret Service), decrypts the auth session in state.vscdb, replaces the GitHub Copilot token, and re-encrypts it — all locally on your machine.",
       "reason": "Permission scope: read VS Code auth database (state.vscdb) and call system credential capability (Windows DPAPI / macOS Keychain / Linux Secret Service) for decrypt/write-back.",
       "storage": "Data scope: local import reads GitHub auth sessions from VS Code, and switching updates the same entries; OAuth, token import, local-import validation, and quota refresh call GitHub official APIs with required auth fields. state.vscdb and system keys are not uploaded."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Detecting installed version",
+      "missing": "No installed version detected",
+      "detecting": "Detecting",
+      "notFound": "No version detected"
     }
   },
   "dashboard": {

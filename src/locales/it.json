@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "Sei sicuro di voler eliminare i {{count}} account selezionati?",
     "switched": "Passato a {{email}}",
     "switchFailed": "Passaggio fallito: {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 e versioni successive non sono supportati qui. Scegli una versione di Antigravity precedente alla 2.0.0 oppure usa Antigravity IDE.",
     "importSuccess": "{{count}} account importati con successo",
     "importLocalSuccess": "Account importato con successo: {{email}}",
     "importFailed": "Importazione fallita: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "Nessun account configurabile nella raccolta attuale del servizio API",
       "customRoutingSave": "Salva routing",
       "customRoutingSaveSuccess": "Routing personalizzato del servizio API aggiornato",
-      "upstreamProxyLabel": "Connessione origine",
-      "upstreamProxySaveSuccess": "Connessione di origine del servizio API aggiornata",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Proxy globale",
-        "direct": "Diretto"
-      }
+      "upstreamProxyLabel": "URL proxy API",
+      "upstreamProxySaveSuccess": "URL proxy API aggiornato",
+      "upstreamProxyUrlPlaceholder": "Indirizzo proxy API",
+      "upstreamProxySaveAction": "Salva proxy"
     },
     "local": {
       "desc": "Importa l'account attuale da ~/.codex/auth.json",
@@ -2622,6 +2621,14 @@
       "inject": "Cambio con un clic: questo strumento legge il materiale di crittografia locale di VS Code (DPAPI/Keychain/Secret Service), decifra la sessione di autenticazione in state.vscdb, sostituisce il token GitHub Copilot e cifra di nuovo il tutto — interamente in locale sul tuo dispositivo.",
       "reason": "Ambito permessi: leggere il database di autenticazione di VS Code (state.vscdb) e usare la cifratura di sistema (Windows DPAPI / macOS Keychain / Linux Secret Service) per decifrare e riscrivere.",
       "storage": "Ambito dati: l’importazione locale legge le sessioni di accesso GitHub in VS Code e il cambio account aggiorna gli stessi record; OAuth, importazione token, verifica dell’importazione locale e aggiornamento quota chiamano le API ufficiali GitHub con i campi di autenticazione necessari. state.vscdb e chiavi di sistema non vengono caricati."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Rilevamento della versione installata",
+      "missing": "Nessuna versione installata rilevata",
+      "detecting": "Rilevamento",
+      "notFound": "Nessuna versione rilevata"
     }
   },
   "dashboard": {

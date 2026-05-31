@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "Sind Sie sicher, dass Sie die {{count}} ausgewählten Konten löschen möchten?",
     "switched": "Zu {{email}} gewechselt",
     "switchFailed": "Wechsel fehlgeschlagen: {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 und neuer wird hier nicht unterstützt. Wählen Sie eine Antigravity-Version unter 2.0.0 oder verwenden Sie Antigravity IDE.",
     "importSuccess": "{{count}} Konten erfolgreich importiert",
     "importLocalSuccess": "Konto erfolgreich importiert: {{email}}",
     "importFailed": "Import fehlgeschlagen: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "Keine konfigurierbaren Konten in der aktuellen API-Service-Sammlung",
       "customRoutingSave": "Routing speichern",
       "customRoutingSaveSuccess": "Benutzerdefiniertes Routing des API-Service wurde aktualisiert",
-      "upstreamProxyLabel": "Zielverbindung",
-      "upstreamProxySaveSuccess": "Upstream-Verbindung des API-Dienstes aktualisiert",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Globaler Proxy",
-        "direct": "Direkt"
-      }
+      "upstreamProxyLabel": "API-Proxy-URL",
+      "upstreamProxySaveSuccess": "API-Proxy-URL aktualisiert",
+      "upstreamProxyUrlPlaceholder": "API-Proxy-Adresse",
+      "upstreamProxySaveAction": "Proxy speichern"
     },
     "local": {
       "desc": "Aktuell eingeloggtes Konto aus ~/.codex/auth.json importieren",
@@ -2622,6 +2621,14 @@
       "inject": "Ein-Klick-Wechsel: Dieses Tool liest das lokale Verschlüsselungsmaterial von VS Code (DPAPI/Keychain/Secret Service), entschlüsselt die Auth-Sitzung in state.vscdb, ersetzt das GitHub-Copilot-Token und verschlüsselt sie erneut – alles lokal auf deinem Gerät.",
       "reason": "Berechtigungsumfang: Lesen der VS-Code-Auth-Datenbank (state.vscdb) und Aufruf der System-Verschlüsselung (Windows DPAPI / macOS Keychain / Linux Secret Service) zum Entschlüsseln und Zurückschreiben.",
       "storage": "Datenumfang: Der lokale Import liest GitHub-Anmeldesitzungen aus VS Code, der Wechsel aktualisiert dieselben Einträge; OAuth, Token-Import, lokale Importprüfung und Quotenaktualisierung rufen offizielle GitHub-APIs mit den erforderlichen Auth-Feldern auf. state.vscdb und Systemschlüssel werden nicht hochgeladen."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Installierte Version wird erkannt",
+      "missing": "Keine installierte Version erkannt",
+      "detecting": "Erkennung",
+      "notFound": "Keine Version erkannt"
     }
   },
   "dashboard": {

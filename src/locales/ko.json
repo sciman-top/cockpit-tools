@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "선택한 {{count}}개 계정을 삭제하시겠습니까?",
     "switched": "{{email}} 계정으로 전환되었습니다",
     "switchFailed": "전환 실패: {{error}}",
+    "antigravityLegacyUnsupported": "여기서는 Antigravity 2.0.0 이상을 지원하지 않습니다. Antigravity 2.0.0 미만 버전을 선택하거나 Antigravity IDE를 사용하세요.",
     "importSuccess": "{{count}}개 계정을 성공적으로 가져왔습니다",
     "importLocalSuccess": "계정을 가져왔습니다: {{email}}",
     "importFailed": "가져오기 실패: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "현재 API 서비스 모음에 설정 가능한 계정이 없습니다",
       "customRoutingSave": "라우팅 저장",
       "customRoutingSaveSuccess": "API 서비스 사용자 지정 라우팅이 업데이트되었습니다",
-      "upstreamProxyLabel": "상위 연결",
-      "upstreamProxySaveSuccess": "API 서비스 상위 연결 방식이 업데이트되었습니다",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "전역 프록시",
-        "direct": "직접 연결"
-      }
+      "upstreamProxyLabel": "API 프록시 주소",
+      "upstreamProxySaveSuccess": "API 프록시 주소가 업데이트되었습니다",
+      "upstreamProxyUrlPlaceholder": "API 프록시 주소",
+      "upstreamProxySaveAction": "프록시 저장"
     },
     "local": {
       "desc": "~/.codex/auth.json에서 현재 로그인된 계정 가져오기",
@@ -2622,6 +2621,14 @@
       "inject": "원클릭 전환: 이 도구는 로컬 VS Code 암호화 자료(DPAPI/Keychain/Secret Service)를 읽어 state.vscdb의 인증 세션을 복호화한 뒤 GitHub Copilot 토큰을 교체하고 다시 암호화합니다. 모든 처리는 로컬 장치에서만 수행됩니다.",
       "reason": "권한 범위: VS Code 인증 데이터베이스(state.vscdb)를 읽고 시스템 암호화 기능(Windows DPAPI / macOS Keychain / Linux Secret Service)을 호출해 복호화 및 재기록을 수행합니다.",
       "storage": "데이터 범위: 로컬 가져오기는 VS Code의 GitHub 로그인 세션을 읽고, 계정 전환은 같은 항목을 업데이트합니다. OAuth, 토큰 가져오기, 로컬 가져오기 검증, 할당량 새로고침은 필요한 인증 필드만 GitHub 공식 API로 전송합니다. state.vscdb와 시스템 키는 업로드하지 않습니다."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "설치된 버전 감지 중",
+      "missing": "설치된 버전을 감지하지 못했습니다",
+      "detecting": "감지 중",
+      "notFound": "버전 감지 안 됨"
     }
   },
   "dashboard": {

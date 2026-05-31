@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "Czy na pewno chcesz usunąć {{count}} wybrane konta?",
     "switched": "Przełączono na {{email}}",
     "switchFailed": "Błąd przełączania: {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 i nowsze nie są tutaj obsługiwane. Wybierz wersję Antigravity starszą niż 2.0.0 albo użyj Antigravity IDE.",
     "importSuccess": "Pomyślnie zaimportowano {{count}} kont",
     "importLocalSuccess": "Pomyślnie zaimportowano konto: {{email}}",
     "importFailed": "Błąd importu: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "Brak konfigurowalnych kont w bieżącej kolekcji usługi API",
       "customRoutingSave": "Zapisz routowanie",
       "customRoutingSaveSuccess": "Niestandardowe routowanie usługi API zostało zaktualizowane",
-      "upstreamProxyLabel": "Połączenie nadrzędne",
-      "upstreamProxySaveSuccess": "Zaktualizowano połączenie nadrzędne usługi API",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Proxy globalne",
-        "direct": "Bezpośrednio"
-      }
+      "upstreamProxyLabel": "Adres proxy API",
+      "upstreamProxySaveSuccess": "Adres proxy API zaktualizowany",
+      "upstreamProxyUrlPlaceholder": "Adres proxy API",
+      "upstreamProxySaveAction": "Zapisz proxy"
     },
     "local": {
       "desc": "Importuj bieżące konto z ~/.codex/auth.json",
@@ -2622,6 +2621,14 @@
       "inject": "Przełączanie jednym kliknięciem: to narzędzie odczytuje lokalny materiał szyfrujący VS Code (DPAPI/Keychain/Secret Service), odszyfrowuje sesję uwierzytelniania w state.vscdb, podmienia token GitHub Copilot i ponownie szyfruje dane — wszystko lokalnie na Twoim urządzeniu.",
       "reason": "Zakres uprawnień: odczyt bazy uwierzytelniania VS Code (state.vscdb) oraz użycie szyfrowania systemowego (Windows DPAPI / macOS Keychain / Linux Secret Service) do odszyfrowania i ponownego zapisu.",
       "storage": "Zakres danych: import lokalny odczytuje sesje logowania GitHub w VS Code, a przełączanie aktualizuje te wpisy; OAuth, import tokena, weryfikacja importu lokalnego i odświeżanie limitów wywołują oficjalne API GitHub z wymaganymi polami uwierzytelniania. state.vscdb i klucze systemowe nie są przesyłane."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Wykrywanie zainstalowanej wersji",
+      "missing": "Nie wykryto zainstalowanej wersji",
+      "detecting": "Wykrywanie",
+      "notFound": "Nie wykryto wersji"
     }
   },
   "dashboard": {

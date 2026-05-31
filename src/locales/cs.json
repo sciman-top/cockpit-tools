@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "Opravdu chcete smazat {{count}} vybraných účtů?",
     "switched": "Přepnuto na {{email}}",
     "switchFailed": "Přepnutí selhalo: {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 a novější zde není podporováno. Vyberte verzi Antigravity nižší než 2.0.0, nebo použijte Antigravity IDE.",
     "importSuccess": "Úspěšně importováno {{count}} účtů",
     "importLocalSuccess": "Úspěšně importován účet: {{email}}",
     "importFailed": "Import selhal: {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "V aktuální kolekci služby API nejsou žádné nastavitelné účty",
       "customRoutingSave": "Uložit směrování",
       "customRoutingSaveSuccess": "Vlastní směrování služby API bylo aktualizováno",
-      "upstreamProxyLabel": "Nadřazené připojení",
-      "upstreamProxySaveSuccess": "Nadřazené připojení služby API bylo aktualizováno",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Globální proxy",
-        "direct": "Přímo"
-      }
+      "upstreamProxyLabel": "Adresa API proxy",
+      "upstreamProxySaveSuccess": "Adresa API proxy byla aktualizována",
+      "upstreamProxyUrlPlaceholder": "Adresa API proxy",
+      "upstreamProxySaveAction": "Uložit proxy"
     },
     "local": {
       "desc": "Importovat aktuální účet z ~/.codex/auth.json",
@@ -2622,6 +2621,14 @@
       "inject": "Přepnutí jedním kliknutím: Tento nástroj načte lokální šifrovací materiál VS Code (DPAPI/Keychain/Secret Service), dešifruje autentizační relaci ve state.vscdb, nahradí token GitHub Copilot a znovu ji zašifruje — vše lokálně na vašem zařízení.",
       "reason": "Rozsah oprávnění: čtení databáze ověření VS Code (state.vscdb) a volání systémového šifrování (Windows DPAPI / macOS Keychain / Linux Secret Service) pro dešifrování a zpětný zápis.",
       "storage": "Rozsah dat: místní import čte relace přihlášení GitHub ve VS Code a přepnutí účtu aktualizuje stejné záznamy; OAuth, import tokenu, ověření místního importu a obnovení kvót volají oficiální API GitHub s nezbytnými autentizačními poli. state.vscdb ani systémové klíče se neodesílají."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Zjišťuji nainstalovanou verzi",
+      "missing": "Nebyla zjištěna nainstalovaná verze",
+      "detecting": "Zjišťuji",
+      "notFound": "Verze nenalezena"
     }
   },
   "dashboard": {

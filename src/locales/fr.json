@@ -1354,6 +1354,7 @@
     "batchDeleteConfirm": "Êtes-vous sûr de vouloir supprimer les {{count}} comptes sélectionnés ?",
     "switched": "Basculé vers {{email}}",
     "switchFailed": "Échec du basculement : {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 et versions ultérieures ne sont pas pris en charge ici. Choisissez une version d’Antigravity antérieure à 2.0.0 ou utilisez Antigravity IDE.",
     "importSuccess": "{{count}} comptes importés avec succès",
     "importLocalSuccess": "Compte importé avec succès : {{email}}",
     "importFailed": "Échec de l'importation : {{error}}",
@@ -1956,12 +1957,10 @@
       "customRoutingEmpty": "Aucun compte configurable dans la collection actuelle du service API",
       "customRoutingSave": "Enregistrer le routage",
       "customRoutingSaveSuccess": "Routage personnalisé du service API mis à jour",
-      "upstreamProxyLabel": "Connexion amont",
-      "upstreamProxySaveSuccess": "Connexion amont du service API mise à jour",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Proxy global",
-        "direct": "Connexion directe"
-      }
+      "upstreamProxyLabel": "URL du proxy API",
+      "upstreamProxySaveSuccess": "URL du proxy API mise à jour",
+      "upstreamProxyUrlPlaceholder": "Adresse proxy API",
+      "upstreamProxySaveAction": "Enregistrer proxy"
     },
     "local": {
       "desc": "Importer le compte connecté depuis ~/.codex/auth.json",
@@ -2622,6 +2621,14 @@
       "inject": "Changement en un clic : cet outil lit le matériel de chiffrement local de VS Code (DPAPI/Keychain/Secret Service), déchiffre la session d’authentification dans state.vscdb, remplace le jeton GitHub Copilot puis rechiffre le tout — entièrement en local sur votre machine.",
       "reason": "Portée des autorisations : lire la base d’authentification VS Code (state.vscdb) et appeler le chiffrement système (Windows DPAPI / macOS Keychain / Linux Secret Service) pour déchiffrer et réécrire.",
       "storage": "Portée des données : l’import local lit les sessions de connexion GitHub dans VS Code, et le changement met à jour ces entrées ; OAuth, l’import de jeton, la validation de l’import local et l’actualisation des quotas appellent les API officielles GitHub avec les champs d’authentification requis. state.vscdb et les clés système ne sont pas téléversés."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Détection de la version installée",
+      "missing": "Aucune version installée détectée",
+      "detecting": "Détection",
+      "notFound": "Aucune version détectée"
     }
   },
   "dashboard": {

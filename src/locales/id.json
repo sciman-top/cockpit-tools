@@ -1400,6 +1400,7 @@
     "batchDeleteConfirm": "Yakin ingin menghapus {{count}} akun yang dipilih?",
     "switched": "Beralih ke {{email}}",
     "switchFailed": "Penggantian gagal: {{error}}",
+    "antigravityLegacyUnsupported": "Antigravity 2.0.0 dan yang lebih baru tidak didukung di sini. Pilih versi Antigravity di bawah 2.0.0, atau gunakan Antigravity IDE.",
     "importSuccess": "Berhasil mengimpor {{count}} akun",
     "importLocalSuccess": "Berhasil mengimpor akun: {{email}}",
     "importFailed": "Impor gagal: {{error}}",
@@ -2005,12 +2006,10 @@
       "customRoutingEmpty": "Tidak ada akun yang dapat dikonfigurasi di koleksi layanan API saat ini",
       "customRoutingSave": "Simpan routing",
       "customRoutingSaveSuccess": "Routing kustom layanan API diperbarui",
-      "upstreamProxyLabel": "Koneksi hulu",
-      "upstreamProxySaveSuccess": "Koneksi hulu layanan API diperbarui",
-      "upstreamProxyMode": {
-        "followGlobalProxy": "Proxy global",
-        "direct": "Langsung"
-      }
+      "upstreamProxyLabel": "URL proxy API",
+      "upstreamProxySaveSuccess": "URL proxy API diperbarui",
+      "upstreamProxyUrlPlaceholder": "Alamat proxy API",
+      "upstreamProxySaveAction": "Simpan proxy"
     },
     "api": {
       "baseUrl": "URL Dasar",
@@ -2768,6 +2767,14 @@
       "inject": "One-click switching: This tool reads local VS Code encryption material (DPAPI/Keychain/Secret Service), decrypts the auth session in state.vscdb, replaces the GitHub Copilot token, and re-encrypts it Ã¢â‚¬â€ all locally on your machine.",
       "reason": "Permission scope: read VS Code auth database (state.vscdb) and call system credential capability (Windows DPAPI / macOS Keychain / Linux Secret Service) for decrypt/write-back.",
       "storage": "Cakupan data: impor lokal membaca sesi masuk GitHub di VS Code, dan pergantian akun memperbarui entri yang sama; OAuth, impor token, validasi impor lokal, dan penyegaran kuota memanggil API resmi GitHub dengan bidang autentikasi yang diperlukan. state.vscdb dan kunci sistem tidak diunggah."
+    }
+  },
+  "runtime": {
+    "installedVersion": {
+      "loading": "Mendeteksi versi terpasang",
+      "missing": "Tidak ada versi terpasang yang terdeteksi",
+      "detecting": "Mendeteksi",
+      "notFound": "Versi tidak terdeteksi"
     }
   },
   "dashboard": {

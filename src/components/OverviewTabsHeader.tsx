@@ -4,6 +4,7 @@ import { AlarmClock, Fingerprint, Layers, ShieldCheck } from 'lucide-react';
 import { Page } from '../types/navigation';
 import { RobotIcon } from './icons/RobotIcon';
 import { ManualHelpIconButton } from './ManualHelpIconButton';
+import { AntigravityInstalledVersionBadge } from './AntigravityInstalledVersionBadge';
 import { PlatformId } from '../types/platform';
 import {
   findGroupByPlatform,
@@ -12,6 +13,7 @@ import {
 } from '../stores/usePlatformLayoutStore';
 import { getPlatformLabel } from '../utils/platformMeta';
 import { PlatformGroupSwitcher } from './platform/PlatformGroupSwitcher';
+import { useAntigravityRuntimeTarget } from '../hooks/useAntigravityRuntimeTarget';
 
 interface OverviewTabsHeaderProps {
   active: Page;
@@ -37,7 +39,7 @@ export function OverviewTabsHeader({
   void subtitle;
   const { t } = useTranslation();
   const { platformGroups } = usePlatformLayoutStore();
-  const currentPlatformId: PlatformId = 'antigravity';
+  const currentPlatformId: PlatformId = useAntigravityRuntimeTarget();
   const currentGroup = useMemo(
     () => findGroupByPlatform(platformGroups, currentPlatformId),
     [platformGroups, currentPlatformId],
@@ -100,7 +102,9 @@ export function OverviewTabsHeader({
           </span>
           <ManualHelpIconButton className="platform-header-help" onClick={onOpenManual} />
         </div>
-        <div className="page-top-strip-right-placeholder" aria-hidden="true" />
+        <div className="page-top-strip-right">
+          <AntigravityInstalledVersionBadge />
+        </div>
       </div>
       <div className="page-tabs-row page-tabs-center page-tabs-row-with-leading">
         <div className="page-tabs-leading">
