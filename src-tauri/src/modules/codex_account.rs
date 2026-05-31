@@ -2469,6 +2469,8 @@ fn is_codex_quota_exhaustion_code(code: &str) -> bool {
         "usage_limit_reached"
             | "workspace_owner_usage_limit_reached"
             | "workspace_member_usage_limit_reached"
+            | "workspace_owner_credits_depleted"
+            | "workspace_member_credits_depleted"
             | "rate_limit_reached"
             | "insufficient_quota"
             | "credits_depleted"

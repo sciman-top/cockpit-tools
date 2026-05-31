@@ -6092,6 +6092,9 @@ fn parse_upstream_body_retry_after(status: StatusCode, error_body: &str) -> Opti
         "quota",
         "model_capacity",
         "capacity",
+        "workspace_owner_credits_depleted",
+        "workspace_member_credits_depleted",
+        "credits_depleted",
     ]
     .iter()
     .any(|marker| provider_code.contains(marker) || body_lower.contains(marker));
@@ -6174,6 +6177,20 @@ fn classify_codex_upstream_error(
             CodexLocalAccessErrorScope::Account,
             true,
             "上游拒绝该账号或请求，请手动确认账号状态".to_string(),
+        )
+    } else if has_marker(&[
+        "workspace_owner_credits_depleted",
+        "workspace_member_credits_depleted",
+        "workspace_owner_usage_limit_reached",
+        "workspace_member_usage_limit_reached",
+        "credits_depleted",
+    ]) {
+        (
+            CodexLocalAccessErrorType::UsageLimitReached,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Account,
+            false,
+            "上游返回工作区或账号额度耗尽，请更换或恢复账号额度".to_string(),
         )
     } else if provider_code_lower == "usage_limit_reached"
         || has_marker(&["usage_limit_reached", "limit reached"])
@@ -6279,6 +6296,22 @@ fn should_persist_account_quota_exhaustion(classified: &ClassifiedCodexUpstreamE
         classified.error_type,
         CodexLocalAccessErrorType::UsageLimitReached | CodexLocalAccessErrorType::InsufficientQuota
     )
+}
+
+fn should_persist_account_quota_exhaustion_for_request(
+    classified: &ClassifiedCodexUpstreamError,
+    request: &ParsedRequest,
+) -> bool {
+    if !should_persist_account_quota_exhaustion(classified) {
+        return false;
+    }
+
+    let model_key = build_request_routing_hint(request).model_key;
+    if is_model_scoped_cooldown(classified, Some(model_key.as_str())) {
+        return false;
+    }
+
+    true
 }
 
 fn normalize_unix_timestamp_seconds(value: i64) -> i64 {
@@ -6484,7 +6517,7 @@ fn persist_account_quota_exhaustion_with_audit(
     classified: &ClassifiedCodexUpstreamError,
     error_body: &str,
 ) {
-    if !should_persist_account_quota_exhaustion(classified) {
+    if !should_persist_account_quota_exhaustion_for_request(classified, request) {
         return;
     }
 
@@ -6833,7 +6866,10 @@ fn update_health_registry_from_classified_error(
         },
     );
 
-    if let (Some(model), Some(cooldown_until)) = (safe_model, cooldown_until) {
+    if model_scoped_cooldown {
+        let (Some(model), Some(cooldown_until)) = (safe_model, cooldown_until) else {
+            return;
+        };
         let key = health_registry_model_key(safe_account_id, model);
         registry.model_cooldowns.insert(
             key,
@@ -23056,14 +23092,15 @@ mod tests {
         upsert_successful_account_health, validate_client_model_visible,
         visible_codex_model_ids_for_api_key, websocket_accept_value,
         websocket_connect_error_from_http_response, AccountQuotaSortHint, ActiveStreamTerminal,
-        AuditContext, AuditTrailStatus, CodexLocalAccessErrorType, GatewayResponseAdapter,
-        LocalApiBackpressureState, OfficialCodexStickyRoutingBoundary, ParsedRequest,
-        ProxyDispatchError, ResolvedLocalApiKey, ResponseUsageCollector, RoutingCandidate,
-        RuntimeProjectionContinuityRisk, SidecarUsageDetails, SidecarUsageEvent, StreamWriteState,
-        UpstreamHttpClientSignature, UpstreamProxySource, UsageCapture, CODEX_AUTO_REVIEW_MODEL_ID,
-        CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID, CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME,
-        DAY_WINDOW_MS, MAX_HTTP_REQUEST_BYTES, PREFERRED_CODEX_LOCAL_ACCESS_PORTS,
-        X_CODEX_TURN_METADATA_HEADER, X_CODEX_TURN_STATE_HEADER,
+        AuditContext, AuditTrailStatus, CodexLocalAccessErrorScope, CodexLocalAccessErrorType,
+        GatewayResponseAdapter, LocalApiBackpressureState, OfficialCodexStickyRoutingBoundary,
+        ParsedRequest, ProxyDispatchError, ResolvedLocalApiKey, ResponseUsageCollector,
+        RoutingCandidate, RuntimeProjectionContinuityRisk, SidecarUsageDetails, SidecarUsageEvent,
+        StreamWriteState, UpstreamHttpClientSignature, UpstreamProxySource, UsageCapture,
+        CODEX_AUTO_REVIEW_MODEL_ID, CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID,
+        CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME, DAY_WINDOW_MS, MAX_HTTP_REQUEST_BYTES,
+        PREFERRED_CODEX_LOCAL_ACCESS_PORTS, X_CODEX_TURN_METADATA_HEADER,
+        X_CODEX_TURN_STATE_HEADER,
     };
     use crate::models::codex::{
         CodexAccount, CodexApiProviderMode, CodexAppSpeed, CodexQuota, CodexTokens,
@@ -24368,6 +24405,161 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 "quota snapshot leaked {secret}"
             );
         }
+    }
+
+    #[test]
+    fn api_service_model_scoped_usage_limit_request_skips_account_quota_snapshot() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::new(),
+            body: br#"{"model":"gpt-5.5","input":"continue"}"#.to_vec(),
+            gateway_request_id: "gw-model-scoped-usage-limit".to_string(),
+        };
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":360}}"#,
+        );
+
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Model);
+        assert!(!super::should_persist_account_quota_exhaustion_for_request(
+            &classified,
+            &request,
+        ));
+    }
+
+    #[test]
+    fn api_service_usage_limit_without_model_keeps_account_quota_snapshot_fallback() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::new(),
+            body: br#"{"input":"continue"}"#.to_vec(),
+            gateway_request_id: "gw-usage-limit-no-model".to_string(),
+        };
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":360}}"#,
+        );
+
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Model);
+        assert!(super::should_persist_account_quota_exhaustion_for_request(
+            &classified,
+            &request,
+        ));
+    }
+
+    #[test]
+    fn api_service_workspace_credits_depleted_writes_account_quota_snapshot() {
+        let now_ms = 1_700_000_000_000;
+        let mut account = test_codex_account("api-service-workspace-credits");
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 64,
+            hourly_reset_time: Some(111),
+            hourly_window_minutes: Some(300),
+            hourly_window_present: Some(true),
+            weekly_percentage: 27,
+            weekly_reset_time: Some(222),
+            weekly_window_minutes: Some(10080),
+            weekly_window_present: Some(true),
+            raw_data: None,
+        });
+        let body = r#"{"error":{"type":"workspace_member_credits_depleted","resets_in_seconds":360,"message":"raw prompt text sk-secret user@example.com"}}"#;
+        let classified = classify_codex_upstream_error(StatusCode::TOO_MANY_REQUESTS, None, body);
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::UsageLimitReached
+        );
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Account);
+        assert_eq!(classified.retry_after, Some(Duration::from_secs(360)));
+        assert!(classified.safe_for_request_failover());
+        assert!(super::apply_account_quota_exhaustion_snapshot(
+            &mut account,
+            &classified,
+            body,
+            now_ms,
+        ));
+
+        let quota = account.quota.as_ref().expect("quota snapshot");
+        assert_eq!(quota.hourly_percentage, 0);
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.hourly_reset_time, Some(1_700_000_360));
+        assert_eq!(quota.weekly_reset_time, Some(1_700_000_360));
+        assert_eq!(
+            account
+                .quota_error
+                .as_ref()
+                .and_then(|error| error.code.as_deref()),
+            Some("workspace_member_credits_depleted")
+        );
+    }
+
+    #[test]
+    fn health_registry_workspace_usage_limit_is_account_scoped() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"workspace_member_usage_limit_reached","resets_in_seconds":60}}"#,
+        );
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::UsageLimitReached
+        );
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Account);
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-workspace-scope",
+            Some("gpt-5.5"),
+            Some("req-workspace-limit"),
+            &classified,
+            now,
+        );
+
+        let account = registry
+            .accounts
+            .get("account-workspace-scope")
+            .expect("account health should be recorded");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::CoolingDown
+        );
+        assert_eq!(account.exhausted_at_ms, Some(now));
+        assert_eq!(account.estimated_reset_at_ms, Some(now + 60_000));
+        assert_eq!(account.estimated_remaining_percentage, Some(0));
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-workspace-scope",
+            Some("gpt-5.5-mini"),
+            now
+        ));
+        assert!(
+            registry.model_cooldowns.is_empty(),
+            "account-scoped quota exhaustion must not be replayed as a model cooldown"
+        );
+
+        let normalized = normalize_health_registry(registry, now + 1);
+        let account = normalized
+            .accounts
+            .get("account-workspace-scope")
+            .expect("account health should survive normalization");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::CoolingDown
+        );
+        assert_eq!(account.estimated_remaining_percentage, Some(0));
+        assert!(!health_registry_account_is_schedulable(
+            &normalized,
+            "account-workspace-scope",
+            Some("gpt-5.5-mini"),
+            now + 1
+        ));
     }
 
     #[test]
