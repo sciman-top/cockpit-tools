@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-05-31T14:04:25.3201194+08:00",
+  "timestamp": "2026-05-31T14:05:50.0443532+08:00",
   "pid": 5236,
   "desiredInstance": "Debug",
   "debugSwitchMode": "PrebuildThenStop",
@@ -71,15 +71,18 @@
   },
   "periodicStableLocalAccessGateway": null,
   "activeCodexStreamGuard": {
-    "activeStreamCount": 0,
-    "activeLeaseIds": [],
+    "activeStreamCount": 2,
+    "activeLeaseIds": [
+      "22",
+      "28"
+    ],
     "auditPaths": [
       "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl.1",
       "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl"
     ],
     "dataRoot": "C:\\Users\\sciman\\.antigravity_cockpit",
     "windowMinutes": 720,
-    "lastEventTimestampMs": 1780207464393,
+    "lastEventTimestampMs": 1780207549272,
     "parseErrorCount": 0
   },
   "launchCount": 1,
