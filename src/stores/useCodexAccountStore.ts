@@ -10,6 +10,10 @@ import {
 } from '../types/codex';
 import * as codexService from '../services/codexService';
 import { emitAccountsChanged, emitCurrentAccountChanged } from '../utils/accountSyncEvents';
+import {
+  sanitizeAccountForLocalCache,
+  sanitizeAccountsForLocalCache,
+} from '../utils/accountCacheSanitizer';
 
 const APP_PROFILE = (import.meta.env.VITE_COCKPIT_TOOLS_PROFILE || '').trim();
 const STORAGE_PROFILE_SUFFIX =
@@ -23,12 +27,27 @@ const CODEX_PROFILE_SYNC_RETRY_INTERVAL_MS = 5 * 60 * 1000;
 let allowNextEmptyCodexAccountList = false;
 let allowNextEmptyCodexCurrentAccount = false;
 
+const sanitizeCodexAccountForCache = (account: CodexAccount): CodexAccount => ({
+  ...sanitizeAccountForLocalCache(account),
+  openai_api_key: undefined,
+  tokens: {
+    id_token: '',
+    access_token: '',
+  },
+});
+
+const sanitizeCodexAccountsForCache = (accounts: CodexAccount[]): CodexAccount[] =>
+  sanitizeAccountsForLocalCache(accounts).map(sanitizeCodexAccountForCache);
+
 const loadCachedCodexAccounts = () => {
   try {
     const raw = localStorage.getItem(CODEX_ACCOUNTS_CACHE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    const sanitized = sanitizeCodexAccountsForCache(parsed as CodexAccount[]);
+    localStorage.setItem(CODEX_ACCOUNTS_CACHE_KEY, JSON.stringify(sanitized));
+    return sanitized;
   } catch {
     return [];
   }
@@ -38,7 +57,9 @@ const loadCachedCodexCurrentAccount = () => {
   try {
     const raw = localStorage.getItem(CODEX_CURRENT_ACCOUNT_CACHE_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as CodexAccount;
+    const sanitized = sanitizeCodexAccountForCache(JSON.parse(raw) as CodexAccount);
+    localStorage.setItem(CODEX_CURRENT_ACCOUNT_CACHE_KEY, JSON.stringify(sanitized));
+    return sanitized;
   } catch {
     return null;
   }
@@ -46,7 +67,10 @@ const loadCachedCodexCurrentAccount = () => {
 
 const persistCodexAccountsCache = (accounts: CodexAccount[]) => {
   try {
-    localStorage.setItem(CODEX_ACCOUNTS_CACHE_KEY, JSON.stringify(accounts));
+    localStorage.setItem(
+      CODEX_ACCOUNTS_CACHE_KEY,
+      JSON.stringify(sanitizeCodexAccountsForCache(accounts)),
+    );
   } catch {
     // ignore cache write failures
   }
@@ -58,7 +82,10 @@ const persistCodexCurrentAccountCache = (account: CodexAccount | null) => {
       localStorage.removeItem(CODEX_CURRENT_ACCOUNT_CACHE_KEY);
       return;
     }
-    localStorage.setItem(CODEX_CURRENT_ACCOUNT_CACHE_KEY, JSON.stringify(account));
+    localStorage.setItem(
+      CODEX_CURRENT_ACCOUNT_CACHE_KEY,
+      JSON.stringify(sanitizeCodexAccountForCache(account)),
+    );
   } catch {
     // ignore cache write failures
   }

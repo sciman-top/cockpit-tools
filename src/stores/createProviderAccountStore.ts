@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { PlatformId } from '../types/platform';
 import { emitAccountsChanged, emitCurrentAccountChanged } from '../utils/accountSyncEvents';
+import { sanitizeAccountsForLocalCache } from '../utils/accountCacheSanitizer';
 
 type ProviderUsage = {
   inlineSuggestionsUsedPercent: number | null;
@@ -89,7 +90,10 @@ export function createProviderAccountStore<TAccount extends ProviderAccountAugme
       const raw = localStorage.getItem(cacheKey);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as TAccount[]) : [];
+      if (!Array.isArray(parsed)) return [];
+      const sanitized = sanitizeAccountsForLocalCache(parsed as TAccount[]);
+      localStorage.setItem(cacheKey, JSON.stringify(sanitized));
+      return sanitized;
     } catch {
       return [];
     }
@@ -97,7 +101,7 @@ export function createProviderAccountStore<TAccount extends ProviderAccountAugme
 
   const persistAccountsCache = (accounts: TAccount[]) => {
     try {
-      localStorage.setItem(cacheKey, JSON.stringify(accounts));
+      localStorage.setItem(cacheKey, JSON.stringify(sanitizeAccountsForLocalCache(accounts)));
     } catch {
       // ignore cache write failures
     }

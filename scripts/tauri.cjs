@@ -17,21 +17,27 @@ function run(command, args, options = {}) {
     throw result.error;
   }
 
-  if (typeof result.status === 'number') {
-    process.exit(result.status);
-  }
+  return typeof result.status === 'number' ? result.status : 1;
+}
 
-  process.exit(1);
+function runChecked(command, args, options = {}) {
+  const status = run(command, args, options);
+  if (status !== 0) {
+    process.exit(status);
+  }
+  return status;
 }
 
 function runTauriDirect() {
-  run('npm.cmd', ['run', 'sync-version'], { shell: process.platform === 'win32' });
-  run('npx.cmd', ['tauri', ...process.argv.slice(2)], { shell: process.platform === 'win32' });
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  const spawnOptions = { shell: process.platform === 'win32' };
+  runChecked(npmCommand, ['run', 'sync-version'], spawnOptions);
+  process.exit(run(npxCommand, ['tauri', ...process.argv.slice(2)], spawnOptions));
 }
 
 if (process.platform !== 'win32') {
-  run('npm', ['run', 'sync-version']);
-  run('npx', ['tauri', ...process.argv.slice(2)]);
+  runTauriDirect();
 }
 
 const vcvars64Path = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat';
@@ -51,12 +57,8 @@ if (!fs.existsSync(tauriCliPath)) {
   runTauriDirect();
 }
 
-const quotedArgs = tauriArgs.map((arg) => {
-  if (/[\s"]/u.test(arg)) {
-    return `"${arg.replace(/"/g, '""')}"`;
-  }
-  return arg;
-});
+const quoteCmdArg = (arg) => `"${String(arg).replace(/"/g, '""').replace(/%/g, '%%')}"`;
+const quotedArgs = tauriArgs.map(quoteCmdArg);
 const scriptBody = [
   '@echo off',
   `set "PATH=${goBinPath};%PATH%"`,
