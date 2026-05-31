@@ -6,6 +6,7 @@ use serde_json::json;
 
 // 使用 wham/usage 端点（Quotio 使用的）
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
+const WEEKLY_WINDOW_MINUTES_THRESHOLD: i64 = 6 * 24 * 60;
 
 fn get_header_value(headers: &HeaderMap, name: &str) -> String {
     headers
@@ -209,6 +210,8 @@ struct UsageResponse {
     rate_limit: Option<RateLimitInfo>,
     #[serde(rename = "code_review_rate_limit")]
     code_review_rate_limit: Option<RateLimitInfo>,
+    #[serde(rename = "rate_limit_reached_type")]
+    rate_limit_reached_type: Option<serde_json::Value>,
 }
 
 fn normalize_remaining_percentage(window: &WindowInfo) -> i32 {
@@ -224,6 +227,12 @@ fn normalize_window_minutes(window: &WindowInfo) -> Option<i64> {
     Some((seconds + 59) / 60)
 }
 
+fn is_weekly_window(window: &WindowInfo) -> bool {
+    normalize_window_minutes(window)
+        .map(|minutes| minutes >= WEEKLY_WINDOW_MINUTES_THRESHOLD)
+        .unwrap_or(false)
+}
+
 fn normalize_reset_time(window: &WindowInfo) -> Option<i64> {
     if let Some(reset_at) = window.reset_at {
         return Some(reset_at);
@@ -235,6 +244,97 @@ fn normalize_reset_time(window: &WindowInfo) -> Option<i64> {
     }
 
     Some(chrono::Utc::now().timestamp() + reset_after_seconds)
+}
+
+fn read_rate_limit_reached_type(value: &serde_json::Value) -> Option<String> {
+    if let Some(kind) = value.as_str() {
+        return Some(kind.trim().to_ascii_lowercase());
+    }
+
+    value
+        .get("type")
+        .or_else(|| value.get("kind"))
+        .and_then(|item| item.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn is_exhausted_rate_limit_reached_type(value: Option<&serde_json::Value>) -> bool {
+    let Some(kind) = value.and_then(read_rate_limit_reached_type) else {
+        return false;
+    };
+
+    matches!(
+        kind.as_str(),
+        "rate_limit_reached"
+            | "workspace_owner_credits_depleted"
+            | "workspace_member_credits_depleted"
+            | "workspace_owner_usage_limit_reached"
+            | "workspace_member_usage_limit_reached"
+            | "usage_limit_reached"
+            | "credits_depleted"
+    )
+}
+
+fn rate_limit_reached_type_forces_all_windows_exhausted(value: Option<&serde_json::Value>) -> bool {
+    let Some(kind) = value.and_then(read_rate_limit_reached_type) else {
+        return false;
+    };
+
+    matches!(
+        kind.as_str(),
+        "workspace_owner_credits_depleted"
+            | "workspace_member_credits_depleted"
+            | "workspace_owner_usage_limit_reached"
+            | "workspace_member_usage_limit_reached"
+            | "credits_depleted"
+    )
+}
+
+fn rate_limit_marks_exhausted(rate_limit: Option<&RateLimitInfo>) -> bool {
+    let Some(rate_limit) = rate_limit else {
+        return false;
+    };
+
+    rate_limit.limit_reached == Some(true) || rate_limit.allowed == Some(false)
+}
+
+fn usage_window_should_force_exhausted(
+    window: &WindowInfo,
+    top_level_exhausted: bool,
+    force_all_windows_exhausted: bool,
+    only_reported_window: bool,
+) -> bool {
+    force_all_windows_exhausted
+        || (top_level_exhausted && (only_reported_window || window.used_percent.is_none()))
+}
+
+fn apply_window_to_quota_slots(
+    window: &WindowInfo,
+    force_exhausted: bool,
+    hourly: &mut (i32, Option<i64>, Option<i64>, bool),
+    weekly: &mut (i32, Option<i64>, Option<i64>, bool),
+) {
+    let remaining = if force_exhausted {
+        0
+    } else {
+        normalize_remaining_percentage(window)
+    };
+    let reset_time = normalize_reset_time(window);
+    let window_minutes = normalize_window_minutes(window);
+    let target = if is_weekly_window(window) {
+        weekly
+    } else {
+        hourly
+    };
+
+    if !target.3 || remaining < target.0 {
+        target.0 = remaining;
+        target.1 = reset_time;
+        target.2 = window_minutes;
+        target.3 = true;
+    }
 }
 
 /// 配额查询结果（包含 plan_type）
@@ -359,43 +459,46 @@ fn parse_quota_from_usage(usage: &UsageResponse, raw_body: &str) -> Result<Codex
     let rate_limit = usage.rate_limit.as_ref();
     let primary_window = rate_limit.and_then(|r| r.primary_window.as_ref());
     let secondary_window = rate_limit.and_then(|r| r.secondary_window.as_ref());
+    let top_level_exhausted = rate_limit_marks_exhausted(rate_limit)
+        || is_exhausted_rate_limit_reached_type(usage.rate_limit_reached_type.as_ref());
+    let force_all_windows_exhausted = rate_limit_reached_type_forces_all_windows_exhausted(
+        usage.rate_limit_reached_type.as_ref(),
+    );
 
-    // Primary window = 5小时配额（session）
-    let (hourly_percentage, hourly_reset_time, hourly_window_minutes) =
-        if let Some(primary) = primary_window {
-            (
-                normalize_remaining_percentage(primary),
-                normalize_reset_time(primary),
-                normalize_window_minutes(primary),
-            )
-        } else {
-            (100, None, None)
-        };
+    let mut hourly = (100, None, None, false);
+    let mut weekly = (100, None, None, false);
+    let windows: Vec<&WindowInfo> = [primary_window, secondary_window]
+        .into_iter()
+        .flatten()
+        .collect();
+    let only_reported_window = windows.len() == 1;
 
-    // Secondary window = 周配额
-    let (weekly_percentage, weekly_reset_time, weekly_window_minutes) =
-        if let Some(secondary) = secondary_window {
-            (
-                normalize_remaining_percentage(secondary),
-                normalize_reset_time(secondary),
-                normalize_window_minutes(secondary),
-            )
-        } else {
-            (100, None, None)
-        };
+    for window in windows {
+        apply_window_to_quota_slots(
+            window,
+            usage_window_should_force_exhausted(
+                window,
+                top_level_exhausted,
+                force_all_windows_exhausted,
+                only_reported_window,
+            ),
+            &mut hourly,
+            &mut weekly,
+        );
+    }
 
     // 保存原始响应
     let raw_data: Option<serde_json::Value> = serde_json::from_str(raw_body).ok();
 
     Ok(CodexQuota {
-        hourly_percentage,
-        hourly_reset_time,
-        hourly_window_minutes,
-        hourly_window_present: Some(primary_window.is_some()),
-        weekly_percentage,
-        weekly_reset_time,
-        weekly_window_minutes,
-        weekly_window_present: Some(secondary_window.is_some()),
+        hourly_percentage: hourly.0,
+        hourly_reset_time: hourly.1,
+        hourly_window_minutes: hourly.2,
+        hourly_window_present: Some(hourly.3),
+        weekly_percentage: weekly.0,
+        weekly_reset_time: weekly.1,
+        weekly_window_minutes: weekly.2,
+        weekly_window_present: Some(weekly.3),
         raw_data,
     })
 }
@@ -548,6 +651,33 @@ mod tests {
                 refresh_token: None,
             },
         )
+    }
+
+    #[test]
+    fn quota_usage_single_generic_limit_reached_zeroes_stale_window() {
+        let usage: UsageResponse = serde_json::from_str(
+            r#"{
+              "plan_type":"free",
+              "rate_limit":{
+                "allowed":false,
+                "limit_reached":true,
+                "primary_window":{
+                  "used_percent":3,
+                  "limit_window_seconds":604800,
+                  "reset_at":1700604800
+                }
+              },
+              "rate_limit_reached_type":{"type":"rate_limit_reached","details":"default"}
+            }"#,
+        )
+        .expect("usage payload should parse");
+
+        let quota = parse_quota_from_usage(&usage, "{}").expect("quota should parse");
+
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.weekly_reset_time, Some(1_700_604_800));
+        assert_eq!(quota.weekly_window_present, Some(true));
     }
 
     #[test]

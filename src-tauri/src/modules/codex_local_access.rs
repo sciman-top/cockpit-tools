@@ -6770,7 +6770,7 @@ fn update_health_registry_from_classified_error(
     } else {
         cooldown_until
     };
-    let account_quota_zero_signal = is_quota_zero_signal;
+    let account_quota_zero_signal = is_quota_zero_signal && !model_scoped_cooldown;
 
     let (status, manual_required) = if classified.manual_required {
         (CodexLocalAccessAccountHealthStatus::ManualRequired, true)
@@ -6810,16 +6810,12 @@ fn update_health_registry_from_classified_error(
             status,
             cooldown_until_ms: account_cooldown_until,
             exhausted_at_ms: account_quota_zero_signal.then_some(now),
-            estimated_reset_at_ms: cooldown_until.filter(|_| {
-                matches!(
-                    classified.error_type,
-                    CodexLocalAccessErrorType::UsageLimitReached
-                        | CodexLocalAccessErrorType::InsufficientQuota
-                )
-            }),
+            estimated_reset_at_ms: cooldown_until.filter(|_| account_quota_zero_signal),
             estimated_remaining_percentage: account_quota_zero_signal.then_some(0),
             last_observed_remaining_percentage: account_quota_zero_signal.then_some(0),
-            reset_source: cooldown_until.and_then(|_| health_registry_reset_source(classified)),
+            reset_source: cooldown_until
+                .filter(|_| !model_scoped_cooldown)
+                .and_then(|_| health_registry_reset_source(classified)),
             confidence: account_quota_zero_signal.then_some("confirmed".to_string()),
             manual_required,
             last_status: Some(classified.status),
@@ -24498,11 +24494,12 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         );
         assert_eq!(account.last_request_id.as_deref(), Some("req-1"));
         assert_eq!(account.cooldown_until_ms, None);
-        assert_eq!(account.exhausted_at_ms, Some(1_700_000_000_000));
-        assert_eq!(account.estimated_reset_at_ms, Some(1_700_000_060_000));
-        assert_eq!(account.estimated_remaining_percentage, Some(0));
-        assert_eq!(account.last_observed_remaining_percentage, Some(0));
-        assert_eq!(account.last_quota_exhausted_at_ms, Some(1_700_000_000_000));
+        assert_eq!(account.exhausted_at_ms, None);
+        assert_eq!(account.estimated_reset_at_ms, None);
+        assert_eq!(account.estimated_remaining_percentage, None);
+        assert_eq!(account.last_observed_remaining_percentage, None);
+        assert_eq!(account.last_quota_exhausted_at_ms, None);
+        assert_eq!(account.reset_source, None);
         assert!(!health_registry_account_is_schedulable(
             &registry,
             "account-1",
@@ -24643,6 +24640,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             account.last_error_type.as_deref(),
             Some("upstream_rate_limit")
         );
+        assert_eq!(account.estimated_reset_at_ms, None);
+        assert_eq!(account.estimated_remaining_percentage, None);
+        assert_eq!(account.last_observed_remaining_percentage, None);
     }
 
     #[test]
@@ -29388,7 +29388,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             .expect("request should be written");
 
         let mut response = Vec::new();
-        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+        // Full-suite Windows runs can be briefly scheduler-bound; this remains well below
+        // the 30s start interval that the continuation must bypass.
+        tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut response))
             .await
             .expect("continuation must not wait behind the new-request start interval")
             .expect("response read should succeed");

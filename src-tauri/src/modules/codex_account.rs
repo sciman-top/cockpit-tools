@@ -5,7 +5,7 @@ use crate::models::codex::{
 };
 use crate::models::codex_local_access::{
     CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
-    CodexLocalAccessHealthRegistry,
+    CodexLocalAccessHealthRegistry, CodexLocalAccessModelCooldown,
 };
 use crate::modules::{account, codex_oauth, logger};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -2408,10 +2408,12 @@ fn load_account_after_index_repair(account_id: &str) -> Option<CodexAccount> {
 }
 
 fn normalize_account_for_runtime(account: &mut CodexAccount) -> bool {
+    let mut changed = false;
     if let Some(quota) = account.quota.as_mut() {
-        return quota.normalize_window_slots();
+        changed |= quota.normalize_window_slots();
     }
-    false
+    changed |= crate::modules::codex_quota::repair_account_quota_from_embedded_rate_limit(account);
+    changed
 }
 
 fn sync_loaded_account_summaries(index: &mut CodexAccountIndex, accounts: &[CodexAccount]) -> bool {
@@ -2471,7 +2473,6 @@ fn is_codex_quota_exhaustion_code(code: &str) -> bool {
             | "insufficient_quota"
             | "credits_depleted"
             | "quota_exhausted"
-            | "upstream_rate_limit"
     )
 }
 
@@ -2627,6 +2628,51 @@ fn local_access_health_allows_elapsed_reset_recovery(
         .is_some_and(|reset_at_ms| reset_at_ms <= now_seconds.saturating_mul(1000))
 }
 
+fn account_has_local_access_health_quota_replay(account: &CodexAccount) -> bool {
+    account
+        .quota
+        .as_ref()
+        .and_then(|quota| quota.raw_data.as_ref())
+        .and_then(|raw_data| raw_data.get("source"))
+        .and_then(|value| value.as_str())
+        .map(|source| source == "codex_local_access_health_registry")
+        .unwrap_or(false)
+}
+
+fn repair_stale_paid_local_access_health_quota_replay(
+    account: &mut CodexAccount,
+    registry: &CodexLocalAccessHealthRegistry,
+    now_seconds: i64,
+) -> bool {
+    if account.is_api_key_auth()
+        || !is_paid_codex_plan_type(account.plan_type.as_deref())
+        || !account_has_local_access_health_quota_replay(account)
+    {
+        return false;
+    }
+
+    let active_account_quota_evidence = registry
+        .accounts
+        .get(&account.id)
+        .and_then(|health| {
+            local_access_health_quota_exhaustion_evidence(account, registry, health, now_seconds)
+        })
+        .is_some();
+    if active_account_quota_evidence {
+        return false;
+    }
+
+    account.quota = None;
+    if account.quota_error.as_ref().is_some_and(|error| {
+        error
+            .message
+            .contains("local access quota exhaustion replayed")
+    }) {
+        account.quota_error = None;
+    }
+    true
+}
+
 fn repair_account_quota_elapsed_reset_recovery(
     account: &mut CodexAccount,
     registry: &CodexLocalAccessHealthRegistry,
@@ -2692,12 +2738,47 @@ fn repair_account_quota_elapsed_reset_recovery(
     true
 }
 
+fn model_cooldown_matches_quota_error(
+    cooldown: &CodexLocalAccessModelCooldown,
+    account_id: &str,
+    error_code: &str,
+    now_seconds: i64,
+) -> bool {
+    if cooldown.account_id.trim() != account_id.trim() {
+        return false;
+    }
+    if cooldown.cooldown_until_ms <= now_seconds.saturating_mul(1000) {
+        return false;
+    }
+
+    cooldown
+        .last_error_type
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(error_code))
+}
+
+fn active_model_scoped_quota_cooldown_exists(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    error_code: &str,
+    now_seconds: i64,
+) -> bool {
+    registry.model_cooldowns.values().any(|cooldown| {
+        model_cooldown_matches_quota_error(cooldown, account_id, error_code, now_seconds)
+    })
+}
+
 fn local_access_health_quota_exhaustion_evidence(
     account: &CodexAccount,
+    registry: &CodexLocalAccessHealthRegistry,
     health: &CodexLocalAccessAccountHealth,
     now_seconds: i64,
 ) -> Option<(String, Option<i64>)> {
     let error_code = codex_local_access_quota_error_code(health)?;
+    if active_model_scoped_quota_cooldown_exists(registry, &account.id, &error_code, now_seconds) {
+        return None;
+    }
+
     let reset_at = health
         .estimated_reset_at_ms
         .map(|value| value.div_euclid(1000))
@@ -2730,7 +2811,7 @@ fn repair_account_quota_from_local_access_health(
         return false;
     };
     let Some((error_code, reset_at)) =
-        local_access_health_quota_exhaustion_evidence(account, health, now_seconds)
+        local_access_health_quota_exhaustion_evidence(account, registry, health, now_seconds)
     else {
         return false;
     };
@@ -2818,6 +2899,10 @@ pub(crate) fn repair_account_quota_from_local_access_health_for_refresh(
         return Ok(false);
     };
     let now_seconds = chrono::Utc::now().timestamp();
+    if repair_stale_paid_local_access_health_quota_replay(account, &registry, now_seconds) {
+        save_account(account)?;
+        return Ok(true);
+    }
     if repair_account_quota_elapsed_reset_recovery(account, &registry, now_seconds) {
         save_account(account)?;
         return Ok(true);
@@ -2833,7 +2918,8 @@ pub(crate) fn repair_account_quota_from_local_access_health_for_refresh(
             .and_then(effective_codex_quota_remaining)
             == Some(0)
         && registry.accounts.get(&account.id).is_some_and(|health| {
-            local_access_health_quota_exhaustion_evidence(account, health, now_seconds).is_some()
+            local_access_health_quota_exhaustion_evidence(account, &registry, health, now_seconds)
+                .is_some()
         })
     {
         return Ok(true);
@@ -2848,7 +2934,8 @@ fn repair_accounts_quota_from_local_access_health(accounts: &mut [CodexAccount])
     let now_seconds = chrono::Utc::now().timestamp();
     let mut repaired = 0usize;
     for account in accounts {
-        if repair_account_quota_elapsed_reset_recovery(account, &registry, now_seconds)
+        if repair_stale_paid_local_access_health_quota_replay(account, &registry, now_seconds)
+            || repair_account_quota_elapsed_reset_recovery(account, &registry, now_seconds)
             || repair_account_quota_from_local_access_health(account, &registry, now_seconds)
         {
             match save_account(account) {
@@ -3184,11 +3271,12 @@ pub fn sync_local_quota_observations() -> Result<usize, String> {
     let direct_log_sync_state_path =
         get_codex_accounts_data_dir().join(CODEX_DIRECT_QUOTA_LOG_SYNC_STATE_FILE);
 
-    Ok(repair_accounts_quota_from_local_access_health(&mut accounts)
-        + crate::modules::codex_quota::repair_direct_oauth_observations_for_accounts_incremental(
+    let direct_repairs =
+        crate::modules::codex_quota::repair_direct_oauth_observations_for_accounts_incremental(
             &mut accounts,
             &direct_log_sync_state_path,
-        ))
+        );
+    Ok(direct_repairs + repair_accounts_quota_from_local_access_health(&mut accounts))
 }
 
 /// 刷新账号资料（团队名/结构）
@@ -5925,7 +6013,7 @@ mod tests {
     };
     use crate::models::codex_local_access::{
         CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
-        CodexLocalAccessHealthRegistry,
+        CodexLocalAccessHealthRegistry, CodexLocalAccessModelCooldown,
     };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use rusqlite::Connection;
@@ -6063,6 +6151,108 @@ mod tests {
                 .map(|quota| (quota.hourly_percentage, quota.hourly_reset_time)),
             original_remaining
         );
+    }
+
+    #[test]
+    fn health_registry_quota_repair_skips_model_scoped_usage_limit_cooldown() {
+        let now = 1_700_000_000;
+        let reset_at = now + 3_600;
+        let mut account = test_codex_account_with_quota(
+            "codex_model_scoped_usage_limit",
+            CodexQuota {
+                hourly_percentage: 64,
+                hourly_reset_time: Some(now + 300),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 27,
+                weekly_reset_time: Some(now + 86_400),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                exhausted_at_ms: Some(now * 1000),
+                estimated_reset_at_ms: Some(reset_at * 1000),
+                estimated_remaining_percentage: Some(0),
+                last_observed_remaining_percentage: Some(0),
+                last_quota_exhausted_at_ms: Some(now * 1000),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        registry.model_cooldowns.insert(
+            format!("{}::gpt-5.5", account.id),
+            CodexLocalAccessModelCooldown {
+                account_id: account.id.clone(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: reset_at * 1000,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_request_id: Some("req-model-limit".to_string()),
+                updated_at: now * 1000,
+            },
+        );
+
+        assert!(!repair_account_quota_from_local_access_health(
+            &mut account,
+            &registry,
+            now
+        ));
+
+        let quota = account.quota.expect("quota should stay");
+        assert_eq!(quota.hourly_percentage, 64);
+        assert_eq!(quota.weekly_percentage, 27);
+        assert!(account.quota_error.is_none());
+    }
+
+    #[test]
+    fn health_registry_quota_repair_skips_generic_upstream_rate_limit_cooldown() {
+        let now = 1_700_000_000;
+        let mut account = test_codex_account_with_quota(
+            "codex_generic_upstream_rate_limit",
+            CodexQuota {
+                hourly_percentage: 64,
+                hourly_reset_time: None,
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 27,
+                weekly_reset_time: None,
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        let original_quota = account.quota.clone();
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some((now + 90) * 1000),
+                last_error_type: Some("upstream_rate_limit".to_string()),
+                reset_source: Some("upstream_reset_hint".to_string()),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+
+        assert!(!repair_account_quota_from_local_access_health(
+            &mut account,
+            &registry,
+            now
+        ));
+        assert_eq!(
+            serde_json::to_value(&account.quota).expect("quota should serialize"),
+            serde_json::to_value(&original_quota).expect("quota should serialize")
+        );
+        assert!(account.quota_error.is_none());
     }
 
     #[test]
@@ -6244,6 +6434,150 @@ mod tests {
         assert_eq!(quota.hourly_reset_time, None);
         assert_eq!(quota.weekly_reset_time, None);
         assert!(repaired.quota_error.is_none());
+    }
+
+    #[test]
+    fn list_accounts_clears_stale_paid_health_registry_quota_replay_when_health_is_healthy() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-stale-paid-health-replay");
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 7 * 24 * 60 * 60;
+        let mut account = test_codex_account_with_quota(
+            "codex_stale_paid_health_replay",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(reset_at),
+                weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_health_registry",
+                    "error_type": "usage_limit_reached",
+                    "plan_type": "plus",
+                })),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: format!(
+                "Codex local access quota exhaustion replayed from health registry: error_type=usage_limit_reached, reset_at={}",
+                reset_at
+            ),
+            timestamp: now - 60,
+        });
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: account.plan_type.clone(),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        let listed = list_accounts_checked().expect("accounts should load");
+        let repaired = listed
+            .iter()
+            .find(|item| item.id == account.id)
+            .expect("account should be listed");
+        assert!(repaired.quota.is_none());
+        assert!(repaired.quota_error.is_none());
+
+        let persisted = load_account(&account.id).expect("account should persist");
+        assert!(persisted.quota.is_none());
+        assert!(persisted.quota_error.is_none());
+    }
+
+    #[test]
+    fn load_account_repairs_stale_plus_weekly_zero_from_embedded_rate_limit_raw() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = TestEnvGuard::new("codex-stale-plus-raw-rate-limit");
+        let now = chrono::Utc::now().timestamp();
+        let mut account = test_codex_account_with_quota(
+            "codex_stale_plus_raw_rate_limit",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: Some(now + 18_000),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(now + 604_800),
+                weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "plan_type": "plus",
+                    "rate_limit": {
+                        "allowed": false,
+                        "limit_reached": true,
+                        "primary_window": {
+                            "used_percent": 100,
+                            "limit_window_seconds": 18_000,
+                            "reset_after_seconds": 16_155,
+                            "reset_at": now + 16_155,
+                        },
+                        "secondary_window": {
+                            "used_percent": 16,
+                            "limit_window_seconds": 604_800,
+                            "reset_after_seconds": 602_955,
+                            "reset_at": now + 602_955,
+                        }
+                    },
+                    "rate_limit_reached_type": {
+                        "type": "rate_limit_reached",
+                        "details": "default"
+                    }
+                })),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: account.plan_type.clone(),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        fs::write(
+            get_accounts_dir().join(format!("{}.json", account.id)),
+            serde_json::to_string_pretty(&account).expect("account should serialize"),
+        )
+        .expect("stale account should be written");
+
+        let loaded = load_account(&account.id).expect("account should load");
+        let quota = loaded.quota.expect("quota should be repaired");
+        assert_eq!(quota.hourly_percentage, 0);
+        assert_eq!(quota.hourly_window_minutes, Some(300));
+        assert_eq!(quota.weekly_percentage, 84);
+        assert_eq!(quota.weekly_window_minutes, Some(CODEX_WEEK_WINDOW_MINUTES));
     }
 
     #[test]

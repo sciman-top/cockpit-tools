@@ -336,6 +336,21 @@ fn is_exhausted_rate_limit_reached_type(value: Option<&serde_json::Value>) -> bo
     )
 }
 
+fn rate_limit_reached_type_forces_all_windows_exhausted(value: Option<&serde_json::Value>) -> bool {
+    let Some(kind) = value.and_then(read_rate_limit_reached_type) else {
+        return false;
+    };
+
+    matches!(
+        kind.as_str(),
+        "workspace_owner_credits_depleted"
+            | "workspace_member_credits_depleted"
+            | "workspace_owner_usage_limit_reached"
+            | "workspace_member_usage_limit_reached"
+            | "credits_depleted"
+    )
+}
+
 fn rate_limit_marks_exhausted(rate_limit: Option<&RateLimitInfo>) -> bool {
     let Some(rate_limit) = rate_limit else {
         return false;
@@ -344,13 +359,23 @@ fn rate_limit_marks_exhausted(rate_limit: Option<&RateLimitInfo>) -> bool {
     rate_limit.limit_reached == Some(true) || rate_limit.allowed == Some(false)
 }
 
+fn usage_window_should_force_exhausted(
+    window: &WindowInfo,
+    top_level_exhausted: bool,
+    force_all_windows_exhausted: bool,
+    only_reported_window: bool,
+) -> bool {
+    force_all_windows_exhausted
+        || (top_level_exhausted && (only_reported_window || window.used_percent.is_none()))
+}
+
 fn apply_window_to_quota_slots(
     window: &WindowInfo,
-    exhausted: bool,
+    force_exhausted: bool,
     hourly: &mut (i32, Option<i64>, Option<i64>, bool),
     weekly: &mut (i32, Option<i64>, Option<i64>, bool),
 ) {
-    let remaining = if exhausted {
+    let remaining = if force_exhausted {
         0
     } else {
         normalize_remaining_percentage(window)
@@ -970,14 +995,32 @@ fn parse_quota_from_usage(usage: &UsageResponse, raw_body: &str) -> Result<Codex
     let rate_limit = usage.rate_limit.as_ref();
     let primary_window = rate_limit.and_then(|r| r.primary_window.as_ref());
     let secondary_window = rate_limit.and_then(|r| r.secondary_window.as_ref());
-    let exhausted = rate_limit_marks_exhausted(rate_limit)
+    let top_level_exhausted = rate_limit_marks_exhausted(rate_limit)
         || is_exhausted_rate_limit_reached_type(usage.rate_limit_reached_type.as_ref());
+    let force_all_windows_exhausted = rate_limit_reached_type_forces_all_windows_exhausted(
+        usage.rate_limit_reached_type.as_ref(),
+    );
 
     let mut hourly = (100, None, None, false);
     let mut weekly = (100, None, None, false);
+    let windows: Vec<&WindowInfo> = [primary_window, secondary_window]
+        .into_iter()
+        .flatten()
+        .collect();
+    let only_reported_window = windows.len() == 1;
 
-    for window in [primary_window, secondary_window].into_iter().flatten() {
-        apply_window_to_quota_slots(window, exhausted, &mut hourly, &mut weekly);
+    for window in windows {
+        apply_window_to_quota_slots(
+            window,
+            usage_window_should_force_exhausted(
+                window,
+                top_level_exhausted,
+                force_all_windows_exhausted,
+                only_reported_window,
+            ),
+            &mut hourly,
+            &mut weekly,
+        );
     }
 
     // 保存原始响应
@@ -1015,6 +1058,54 @@ fn quota_effective_remaining_percentage(quota: &CodexQuota) -> Option<i32> {
         percentages.push(quota.weekly_percentage.clamp(0, 100));
     }
     percentages.into_iter().min()
+}
+
+fn quota_snapshots_are_equivalent(left: &CodexQuota, right: &CodexQuota) -> bool {
+    left.hourly_percentage == right.hourly_percentage
+        && left.hourly_reset_time == right.hourly_reset_time
+        && left.hourly_window_minutes == right.hourly_window_minutes
+        && left.hourly_window_present == right.hourly_window_present
+        && left.weekly_percentage == right.weekly_percentage
+        && left.weekly_reset_time == right.weekly_reset_time
+        && left.weekly_window_minutes == right.weekly_window_minutes
+        && left.weekly_window_present == right.weekly_window_present
+        && left.raw_data == right.raw_data
+}
+
+pub(crate) fn repair_account_quota_from_embedded_rate_limit(account: &mut CodexAccount) -> bool {
+    if account.is_api_key_auth() {
+        return false;
+    }
+    let Some(existing_quota) = account.quota.as_ref() else {
+        return false;
+    };
+    let Some(raw_data) = existing_quota.raw_data.as_ref() else {
+        return false;
+    };
+    if raw_data.get("rate_limit").is_none() {
+        return false;
+    }
+
+    let Ok(usage) = serde_json::from_value::<UsageResponse>(raw_data.clone()) else {
+        return false;
+    };
+    if usage.rate_limit.is_none() {
+        return false;
+    }
+
+    let Ok(raw_body) = serde_json::to_string(raw_data) else {
+        return false;
+    };
+    let Ok(mut repaired_quota) = parse_quota_from_usage(&usage, &raw_body) else {
+        return false;
+    };
+    repaired_quota.normalize_window_slots();
+    if quota_snapshots_are_equivalent(existing_quota, &repaired_quota) {
+        return false;
+    }
+
+    account.quota = Some(repaired_quota);
+    true
 }
 
 fn rate_limit_json_marks_exhausted(rate_limit: &serde_json::Value) -> bool {
@@ -1217,6 +1308,9 @@ fn parse_direct_rate_limits_observation(
     let reached_type_exhausted = rate_limits
         .get("rate_limit_reached_type")
         .is_some_and(|value| is_exhausted_rate_limit_reached_type(Some(value)));
+    let force_all_windows_exhausted = rate_limits
+        .get("rate_limit_reached_type")
+        .is_some_and(|value| rate_limit_reached_type_forces_all_windows_exhausted(Some(value)));
     let limit_reached_exhausted = rate_limits
         .get("limit_reached")
         .and_then(|value| value.as_bool())
@@ -1228,7 +1322,11 @@ fn parse_direct_rate_limits_observation(
 
     let primary = rate_limits.get("primary");
     let secondary = rate_limits.get("secondary");
-    let windows: Vec<&serde_json::Value> = [primary, secondary].into_iter().flatten().collect();
+    let windows: Vec<&serde_json::Value> = [primary, secondary]
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_null())
+        .collect();
     if windows.is_empty() {
         return None;
     }
@@ -1246,10 +1344,14 @@ fn parse_direct_rate_limits_observation(
     let exhausted = reached_type_exhausted || limit_reached_exhausted || exhausted_window.is_some();
     let mut hourly = (100, None, None, false);
     let mut weekly = (100, None, None, false);
+    let only_reported_window = windows.len() == 1;
     for window in &windows {
+        let force_window_exhausted = force_all_windows_exhausted
+            || ((reached_type_exhausted || limit_reached_exhausted)
+                && (only_reported_window || read_f64_field(window, "used_percent").is_none()));
         apply_direct_window_to_quota_slots(
             window,
-            exhausted,
+            force_window_exhausted,
             observed_at,
             &mut hourly,
             &mut weekly,
@@ -3320,6 +3422,62 @@ mod tests {
     }
 
     #[test]
+    fn quota_usage_single_generic_limit_reached_zeroes_stale_window() {
+        let usage: UsageResponse = serde_json::from_str(
+            r#"{
+              "plan_type":"free",
+              "rate_limit":{
+                "allowed":false,
+                "limit_reached":true,
+                "primary_window":{
+                  "used_percent":3,
+                  "limit_window_seconds":604800,
+                  "reset_at":1700604800
+                }
+              },
+              "rate_limit_reached_type":{"type":"rate_limit_reached","details":"default"}
+            }"#,
+        )
+        .expect("usage payload should parse");
+
+        let quota = parse_quota_from_usage(&usage, "{}").expect("quota should parse");
+
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.weekly_reset_time, Some(1_700_604_800));
+        assert_eq!(quota.weekly_window_present, Some(true));
+    }
+
+    #[test]
+    fn embedded_rate_limit_repair_ignores_code_review_only_raw_data() {
+        let mut account = test_account();
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 42,
+            hourly_reset_time: Some(1_700_001_800),
+            hourly_window_minutes: Some(300),
+            hourly_window_present: Some(true),
+            weekly_percentage: 84,
+            weekly_reset_time: Some(1_700_604_800),
+            weekly_window_minutes: Some(10_080),
+            weekly_window_present: Some(true),
+            raw_data: Some(json!({
+                "plan_type": "plus",
+                "code_review_rate_limit": {
+                    "allowed": false,
+                    "limit_reached": true
+                }
+            })),
+        });
+        let before = account.quota.clone();
+
+        assert!(!repair_account_quota_from_embedded_rate_limit(&mut account));
+        assert_eq!(
+            serde_json::to_value(&account.quota).expect("quota should serialize"),
+            serde_json::to_value(&before).expect("quota should serialize")
+        );
+    }
+
+    #[test]
     fn active_direct_quota_exhaustion_snapshot_blocks_stale_success_overwrite() {
         let mut account = test_account();
         account.quota_error = Some(CodexQuotaErrorInfo {
@@ -3493,6 +3651,40 @@ mod tests {
                 .map(|quota| quota.weekly_percentage),
             Some(0)
         );
+    }
+
+    #[test]
+    fn direct_session_single_generic_limit_reached_zeroes_stale_window() {
+        let line = serde_json::json!({
+            "timestamp": "2026-05-25T11:42:31.809Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "rate_limits": {
+                    "limit_id": "codex",
+                    "allowed": false,
+                    "limit_reached": true,
+                    "primary": {
+                        "used_percent": 3.0,
+                        "window_minutes": 10080,
+                        "resets_at": 1780604800
+                    },
+                    "plan_type": "free",
+                    "rate_limit_reached_type": "rate_limit_reached"
+                }
+            }
+        })
+        .to_string();
+
+        let observation =
+            parse_direct_quota_observation_from_session_line(&line).expect("observation");
+        let quota = observation.quota.as_ref().expect("quota snapshot");
+
+        assert!(observation.exhausted);
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.weekly_reset_time, Some(1_780_604_800));
+        assert_eq!(quota.weekly_window_present, Some(true));
     }
 
     #[test]
