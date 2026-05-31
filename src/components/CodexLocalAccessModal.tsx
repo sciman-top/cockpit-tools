@@ -12,6 +12,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  ExternalLink,
   FolderPlus,
   Gauge,
   Info,
@@ -98,6 +99,7 @@ interface CodexLocalAccessModalProps {
   currentAccountId?: string | null;
   maskAccountText: (value?: string | null) => string;
   onClose: () => void;
+  onOpenFullPage?: () => void;
   onSaveAccounts: (payload: {
     accountIds: string[];
     restrictFreeAccounts: boolean;
@@ -326,6 +328,7 @@ export function CodexLocalAccessModal({
   currentAccountId,
   maskAccountText,
   onClose,
+  onOpenFullPage,
   onSaveAccounts,
   onRefreshAccounts,
   onClearStats,
@@ -847,6 +850,7 @@ export function CodexLocalAccessModal({
     }
   }, [
     collection?.accountIds,
+    collection?.apiKeys,
     collection?.customRoutingRules,
     collection?.port,
     collection?.restrictFreeAccounts,
@@ -930,7 +934,7 @@ export function CodexLocalAccessModal({
   );
 
   const tierCounts = useMemo(() => {
-    const counts = { all: serviceAccounts.length, VALID: 0, FREE: 0, PLUS: 0, PRO: 0, TEAM: 0, ENTERPRISE: 0, ERROR: 0 };
+    const counts = { all: serviceAccounts.length, VALID: 0, FREE: 0, API_KEY: 0, PLUS: 0, PRO: 0, TEAM: 0, ENTERPRISE: 0, ERROR: 0 };
     serviceAccounts.forEach((account) => {
       const hasAccountError = isLocalAccessSelectionBlockedByIssue(
         account,
@@ -968,6 +972,15 @@ export function CodexLocalAccessModal({
         label: formatQuotaPoolLabel(
           `FREE (${tierCounts.FREE})`,
           quotaPoolSummary.byPlan.FREE,
+          quotaPoolLabels.hourly,
+          quotaPoolLabels.weekly,
+        ),
+      },
+      {
+        value: 'API_KEY',
+        label: formatQuotaPoolLabel(
+          `API Key (${tierCounts.API_KEY})`,
+          quotaPoolSummary.byPlan.API_KEY,
           quotaPoolLabels.hourly,
           quotaPoolLabels.weekly,
         ),
@@ -2392,6 +2405,18 @@ export function CodexLocalAccessModal({
                   )}
                 </div>
                 <div className="codex-local-access-header-tools">
+                  {onOpenFullPage && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm codex-local-access-full-page-btn"
+                      onClick={onOpenFullPage}
+                      title={t('codex.apiService.openFullPage', '查看全部功能')}
+                      aria-label={t('codex.apiService.openFullPage', '查看全部功能')}
+                    >
+                      <ExternalLink size={14} />
+                      <span>{t('codex.apiService.openFullPage', '查看全部功能')}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="folder-icon-btn codex-local-access-toolbar-btn"
@@ -2928,6 +2953,7 @@ export function CodexLocalAccessModal({
                         {accessScopeAddress}
                       </code>
                     </div>
+
                   </div>
                 ) : (
                   <div className="group-account-empty">
@@ -3106,6 +3132,7 @@ export function CodexLocalAccessModal({
                   )}
                 </div>
               </section>
+
             </div>
           )}
 
