@@ -222,7 +222,6 @@ struct CachedPreparedAccount {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct UpstreamHttpClientSignature {
-    require_proxy: bool,
     proxy_source: UpstreamProxySource,
     proxy_url: Option<String>,
 }
@@ -232,7 +231,7 @@ enum UpstreamProxySource {
     ApiService,
     Global,
     SystemEnv,
-    Missing,
+    SystemAuto,
 }
 
 #[derive(Debug, Clone)]
@@ -1250,14 +1249,12 @@ fn reset_active_stream_leases_for_tests() {
 
 fn current_upstream_http_client_signature(
     upstream_proxy_url: Option<&str>,
-    require_proxy: bool,
 ) -> UpstreamHttpClientSignature {
     if let Some(proxy_url) = upstream_proxy_url
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         return UpstreamHttpClientSignature {
-            require_proxy,
             proxy_source: UpstreamProxySource::ApiService,
             proxy_url: Some(proxy_url.to_string()),
         };
@@ -1268,7 +1265,6 @@ fn current_upstream_http_client_signature(
         let proxy_url = config.global_proxy_url.trim();
         if !proxy_url.is_empty() {
             return UpstreamHttpClientSignature {
-                require_proxy,
                 proxy_source: UpstreamProxySource::Global,
                 proxy_url: Some(proxy_url.to_string()),
             };
@@ -1277,15 +1273,13 @@ fn current_upstream_http_client_signature(
 
     if let Some(proxy_url) = upstream_env_proxy_url() {
         return UpstreamHttpClientSignature {
-            require_proxy,
             proxy_source: UpstreamProxySource::SystemEnv,
             proxy_url: Some(proxy_url),
         };
     }
 
     UpstreamHttpClientSignature {
-        require_proxy,
-        proxy_source: UpstreamProxySource::Missing,
+        proxy_source: UpstreamProxySource::SystemAuto,
         proxy_url: None,
     }
 }
@@ -1308,7 +1302,7 @@ fn redact_proxy_url_for_log(proxy_url: &str) -> String {
 fn current_upstream_proxy_diagnostics(
     upstream_proxy_url: Option<&str>,
 ) -> UpstreamProxyDiagnostics {
-    let signature = current_upstream_http_client_signature(upstream_proxy_url, true);
+    let signature = current_upstream_http_client_signature(upstream_proxy_url);
     UpstreamProxyDiagnostics {
         proxy_source: signature.proxy_source,
         proxy_url: signature.proxy_url.as_deref().map(redact_proxy_url_for_log),
@@ -1321,10 +1315,6 @@ fn build_upstream_http_client(signature: &UpstreamHttpClientSignature) -> Result
     if let Some(proxy_url) = signature.proxy_url.as_deref() {
         let proxy = Proxy::all(proxy_url).map_err(|e| format!("Codex 上游代理地址无效: {}", e))?;
         builder = builder.proxy(proxy);
-    } else if signature.require_proxy {
-        return Err("Codex API 服务必须通过代理访问官方上游：请填写 API 代理地址、启用全局代理并配置代理地址，或设置 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY 环境代理。已拒绝直连请求。".to_string());
-    } else {
-        builder = builder.no_proxy();
     }
 
     builder
@@ -1346,20 +1336,15 @@ fn log_upstream_http_client_signature(signature: &UpstreamHttpClientSignature) {
             "[CodexLocalAccess] 上游 HTTP 客户端已使用环境代理 proxy_url={}，API 服务上游请求不应用 no_proxy 绕过",
             redact_proxy_url_for_log(proxy_url)
         )),
-        (UpstreamProxySource::Missing, None) if signature.require_proxy => logger::log_warn(
-            "[CodexLocalAccess] 未配置 API 服务代理、全局代理或环境代理，已拒绝直连官方上游",
+        (UpstreamProxySource::SystemAuto, None) => logger::log_info(
+            "[CodexLocalAccess] 未配置 API 服务代理、全局代理或环境代理，已回退到 reqwest 系统自动代理配置",
         ),
-        _ => logger::log_info(
-            "[CodexLocalAccess] 未配置 API 服务代理、全局代理或环境代理，自定义 API Key 上游使用直连",
-        ),
+        _ => logger::log_warn("[CodexLocalAccess] 上游 HTTP 客户端代理状态异常"),
     }
 }
 
-fn upstream_http_client(
-    upstream_proxy_url: Option<&str>,
-    require_proxy: bool,
-) -> Result<Client, String> {
-    let signature = current_upstream_http_client_signature(upstream_proxy_url, require_proxy);
+fn upstream_http_client(upstream_proxy_url: Option<&str>) -> Result<Client, String> {
+    let signature = current_upstream_http_client_signature(upstream_proxy_url);
     let mut cache = upstream_http_client_cache()
         .lock()
         .map_err(|_| "Codex 上游 HTTP 客户端缓存已损坏".to_string())?;
@@ -10557,8 +10542,8 @@ fn gateway_proxy_diagnostics_message(diagnostics: &UpstreamProxyDiagnostics) -> 
                 "当前 API 代理地址为空，且全局代理未启用或未配置，已尝试使用环境代理。".to_string()
             }
         },
-        UpstreamProxySource::Missing => {
-            "当前 API 代理地址为空，且全局代理与环境代理均未配置，已拒绝直连官方上游。".to_string()
+        UpstreamProxySource::SystemAuto => {
+            "当前 API 代理地址为空，且全局代理与环境代理均未配置，已回退到系统自动代理配置；如仍失败，请在 API 代理地址中填写 Clash 的 HTTP/mixed 端口。".to_string()
         }
     }
 }
@@ -10568,7 +10553,7 @@ fn upstream_proxy_source_code(source: UpstreamProxySource) -> &'static str {
         UpstreamProxySource::ApiService => "api_service",
         UpstreamProxySource::Global => "global",
         UpstreamProxySource::SystemEnv => "system_env",
-        UpstreamProxySource::Missing => "missing_proxy",
+        UpstreamProxySource::SystemAuto => "system_auto",
     }
 }
 
@@ -10585,7 +10570,7 @@ fn gateway_user_visible_error_message(
         .map(|diagnostics| format!(" {}", gateway_proxy_diagnostics_message(diagnostics)))
         .unwrap_or_default();
     format!(
-        "Codex API 服务连接官方上游失败。API 代理地址留空时会依次使用全局代理、环境代理；如需单独出口，可填写 API 代理地址（例如 http://127.0.0.1:7890）后重试。{} 如果 Codex 客户端仍显示 502 且 API 服务没有请求记录，请检查代理工具是否拦截或屏蔽 localhost / 127.0.0.1。原始错误：{}",
+        "Codex API 服务连接官方上游失败。API 代理地址留空时会依次使用全局代理、环境代理、系统自动代理；如需固定出口，建议填写 API 代理地址（例如 http://127.0.0.1:7890）后重试。{} 如果 Codex 客户端仍显示 502 且 API 服务没有请求记录，请检查代理工具是否拦截或屏蔽 localhost / 127.0.0.1。原始错误：{}",
         proxy_context, message
     )
 }
@@ -12833,7 +12818,7 @@ async fn send_upstream_request(
     } else {
         format!("{}{}", UPSTREAM_CODEX_BASE_URL, target)
     };
-    let client = upstream_http_client(upstream_proxy_url, !use_api_key_upstream)?;
+    let client = upstream_http_client(upstream_proxy_url)?;
     for retry_attempt in 0..=UPSTREAM_SEND_RETRY_ATTEMPTS {
         let mut request = client.request(method.clone(), &url);
 
@@ -15079,34 +15064,15 @@ mod tests {
     }
 
     #[test]
-    fn official_upstream_missing_proxy_is_rejected() {
+    fn missing_explicit_proxy_falls_back_to_system_auto_client() {
         let signature = UpstreamHttpClientSignature {
-            require_proxy: true,
-            proxy_source: UpstreamProxySource::Missing,
-            proxy_url: None,
-        };
-        let result = build_upstream_http_client(&signature);
-        match result {
-            Ok(_) => panic!("official upstream must not create a direct client without proxy"),
-            Err(err) => assert!(
-                err.contains("必须通过代理访问官方上游"),
-                "unexpected error: {}",
-                err
-            ),
-        }
-    }
-
-    #[test]
-    fn custom_api_key_upstream_missing_proxy_allows_direct_client() {
-        let signature = UpstreamHttpClientSignature {
-            require_proxy: false,
-            proxy_source: UpstreamProxySource::Missing,
+            proxy_source: UpstreamProxySource::SystemAuto,
             proxy_url: None,
         };
         let result = build_upstream_http_client(&signature);
         assert!(
             result.is_ok(),
-            "custom API Key upstream should allow explicit direct client when no proxy is configured: {:?}",
+            "missing explicit proxy should let reqwest use its system/default proxy behavior: {:?}",
             result.err()
         );
     }
