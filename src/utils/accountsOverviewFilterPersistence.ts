@@ -22,9 +22,6 @@ const QUICK_SETTINGS_SCOPE_MAP: Record<string, string> = {
   zed: 'zed',
 };
 
-type PersistableFilterPrimitive = string | number | boolean | null;
-type PersistableFilterValue = PersistableFilterPrimitive | PersistableFilterPrimitive[];
-
 function getScopeBase(scope: string): string {
   return `agtools.${scope}.accounts_overview_filters`;
 }
@@ -118,44 +115,13 @@ export function readAccountsOverviewFilterStringArray(
     .filter(Boolean);
 }
 
-function sanitizePersistableFilterValue(value: unknown): PersistableFilterValue | undefined {
-  if (
-    value == null ||
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'boolean'
-  ) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    const next = value.filter((item): item is PersistableFilterPrimitive => (
-      item == null ||
-      typeof item === 'string' ||
-      typeof item === 'number' ||
-      typeof item === 'boolean'
-    ));
-    return next.length === value.length ? next : undefined;
-  }
-  return undefined;
-}
-
 export function writeAccountsOverviewFilterField(
   rawScope: string,
   field: string,
-  value: unknown,
+  _value: unknown,
 ): void {
   const scope = normalizeAccountsOverviewScope(rawScope);
-  try {
-    const safeValue = sanitizePersistableFilterValue(value);
-    const key = getFieldStorageKey(scope, field);
-    if (safeValue === undefined) {
-      localStorage.removeItem(key);
-      return;
-    }
-    localStorage.setItem(key, JSON.stringify(safeValue));
-  } catch {
-    // ignore persistence failures
-  }
+  removeAccountsOverviewFilterField(scope, field);
 }
 
 export function removeAccountsOverviewFilterField(rawScope: string, field: string): void {
