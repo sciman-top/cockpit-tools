@@ -1,7 +1,7 @@
 # Cockpit Tools Local 自用差异清单
 
-状态：Accepted  
-日期：2026-05-31  
+状态：Accepted
+日期：2026-05-31
 适用范围：`sciman-top/cockpit-tools-local` 自用主线
 
 ## 1. 归宿
@@ -63,4 +63,3 @@
 - `evidence`：构建、测试、contract/invariant、hotspot review 和必要 live/screenshot 证据。
 
 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 应使用同一个 `local_app_version`。更新官方基线但尚未完成合并和门禁时，不提前 bump 版本。
-

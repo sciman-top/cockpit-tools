@@ -1,7 +1,7 @@
 # 官方上游吸收策略
 
-状态：Accepted  
-日期：2026-05-31  
+状态：Accepted
+日期：2026-05-31
 适用范围：从 `jlcodes99/cockpit-tools` 吸收更新到 Cockpit Tools Local 自用版
 
 ## 1. 分支模型
@@ -103,4 +103,3 @@ git branch -D codex/upstream-sync-v<upstream>-<date>
 ```
 
 若已合入 `main` 但未发布，优先用 Git revert 回滚合并提交。若涉及 release exe、updater、账号/provider/live config，还必须记录备份路径、restore 命令和进程/会话连续性复测。
-
