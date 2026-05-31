@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   CodexLocalAccessCustomRoutingRule,
+  CodexLocalAccessGatewayMode,
   CodexLocalAccessImageGenerationMode,
   CodexLocalAccessModelAlias,
   CodexLocalAccessModelPricing,
@@ -75,6 +76,7 @@ export async function queryCodexLocalAccessRequestLogs(
     modelQuery: query.modelQuery ?? null,
     accountQuery: query.accountQuery ?? null,
     apiKeyQuery: query.apiKeyQuery ?? null,
+    gatewayMode: query.gatewayMode ?? null,
     requestKind: query.requestKind ?? null,
     success: query.success ?? null,
     errorCategory: query.errorCategory ?? null,
@@ -146,6 +148,22 @@ export async function updateCodexLocalAccessUpstreamProxyConfig(
 ): Promise<CodexLocalAccessState> {
   return await invoke('codex_local_access_update_upstream_proxy_config', {
     upstreamProxyUrl,
+  });
+}
+
+export async function updateCodexLocalAccessGatewayMode(
+  gatewayMode: CodexLocalAccessGatewayMode,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_update_gateway_mode', {
+    gatewayMode,
+  });
+}
+
+export async function updateCodexLocalAccessDebugLogs(
+  debugLogs: boolean,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_update_debug_logs', {
+    debugLogs,
   });
 }
 

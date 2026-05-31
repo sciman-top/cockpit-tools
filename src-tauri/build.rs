@@ -50,6 +50,35 @@ fn go_toolchain_available() -> bool {
     Command::new("go").arg("version").status().is_ok()
 }
 
+fn emit_sidecar_rerun_inputs(path: &Path) {
+    if path.file_name().and_then(|name| name.to_str()) == Some("bin") {
+        return;
+    }
+
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+
+    if metadata.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            emit_sidecar_rerun_inputs(&entry.path());
+        }
+        return;
+    }
+
+    let should_track = matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("go.mod") | Some("go.sum")
+    ) || path.extension().and_then(|extension| extension.to_str()) == Some("go");
+
+    if should_track {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
+
 fn build_go_sidecar(
     sidecar_dir: &Path,
     output_dir: &Path,
@@ -130,18 +159,7 @@ fn build_cockpit_cliproxy_sidecar() {
 
     println!("cargo:rerun-if-env-changed=COCKPIT_SKIP_CLIPROXY_BUILD");
     println!("cargo:rerun-if-env-changed=COCKPIT_REQUIRE_CLIPROXY_BUILD");
-    println!(
-        "cargo:rerun-if-changed={}",
-        sidecar_dir.join("go.mod").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        sidecar_dir.join("go.sum").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        sidecar_dir.join("main.go").display()
-    );
+    emit_sidecar_rerun_inputs(&sidecar_dir);
     if std::env::var("COCKPIT_SKIP_CLIPROXY_BUILD").ok().as_deref() == Some("1") {
         println!(
             "cargo:warning=COCKPIT_SKIP_CLIPROXY_BUILD=1; skipping cockpit-cliproxy sidecar build"
