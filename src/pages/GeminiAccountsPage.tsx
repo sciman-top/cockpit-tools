@@ -1659,7 +1659,7 @@ export function GeminiAccountsPage() {
           />
 
           {showAddModal && (
-            <div className="modal-overlay" onClick={closeAddModal}>
+            <div className="modal-overlay">
               <div
                 className="modal-content ghcp-add-modal"
                 onClick={(e) => e.stopPropagation()}

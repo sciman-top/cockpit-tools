@@ -36,6 +36,7 @@ import type { CodexAccountGroup } from '../services/codexAccountGroupService';
 import type {
   CodexLocalAccessAccountHealthView,
   CodexLocalAccessAddressKind,
+  CodexLocalAccessChatMessage,
   CodexLocalAccessCustomRoutingRule,
   CodexLocalAccessRoutingStrategy,
   CodexLocalAccessScope,
@@ -142,6 +143,11 @@ interface CodexLocalAccessModalProps {
   onRotateApiKey: () => Promise<unknown> | unknown;
   onKillPort: () => Promise<unknown> | unknown;
   onToggleEnabled: () => Promise<unknown> | unknown;
+  onStreamTestMessage?: (payload: {
+    sessionId: string;
+    modelId: string;
+    messages: CodexLocalAccessChatMessage[];
+  }) => Promise<unknown> | unknown;
   onTest: () => Promise<CodexLocalAccessTestResult> | CodexLocalAccessTestResult;
   saving: boolean;
   refreshing: boolean;
@@ -4007,14 +4013,6 @@ export function CodexLocalAccessModal({
                         {t('codex.localAccess.testFailureGatewayOutput', '网关返回')}
                       </div>
                       <pre>{testFailure.gatewayOutput}</pre>
-                    </div>
-                  )}
-                  {testFailure.cliOutput && (
-                    <div className="codex-local-access-test-output">
-                      <div className="codex-local-access-test-section-title">
-                        {t('codex.localAccess.testFailureCliOutput', 'CLI 输出')}
-                      </div>
-                      <pre>{testFailure.cliOutput}</pre>
                     </div>
                   )}
                 </div>

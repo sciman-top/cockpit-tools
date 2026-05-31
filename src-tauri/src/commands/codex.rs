@@ -3,6 +3,7 @@ use crate::models::codex::{
     CodexQuota, CodexTokens,
 };
 use crate::models::codex_local_access::{
+    CodexLocalAccessChatMessage, CodexLocalAccessChatResult, CodexLocalAccessClientBaseUrlHost,
     CodexLocalAccessCustomRoutingRule, CodexLocalAccessGatewayMode, CodexLocalAccessModelAlias,
     CodexLocalAccessModelPricing, CodexLocalAccessPortCleanupResult, CodexLocalAccessRequestKind,
     CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessState,
@@ -279,7 +280,7 @@ pub async fn switch_codex_account(
 
     // 默认实例始终跟随当前账号，具体 direct/API Service 投影由 runtime mode 决定。
     if let Err(e) =
-        crate::modules::codex_instance::update_default_settings(None, None, Some(true), None)
+        crate::modules::codex_instance::update_default_settings(None, None, Some(true), None, None)
     {
         logger::log_warn(&format!("更新 Codex 默认实例跟随当前账号失败: {}", e));
     } else {
@@ -1094,6 +1095,13 @@ pub async fn codex_local_access_update_access_scope(
 }
 
 #[tauri::command]
+pub async fn codex_local_access_update_client_base_url_host(
+    client_base_url_host: CodexLocalAccessClientBaseUrlHost,
+) -> Result<CodexLocalAccessState, String> {
+    codex_local_access::update_local_access_client_base_url_host(client_base_url_host).await
+}
+
+#[tauri::command]
 pub async fn codex_local_access_update_image_generation_mode(
     image_generation_mode: crate::models::codex_local_access::CodexLocalAccessImageGenerationMode,
 ) -> Result<CodexLocalAccessState, String> {
@@ -1232,28 +1240,24 @@ pub async fn codex_local_access_activate(app: AppHandle) -> Result<CodexLocalAcc
 
 #[tauri::command]
 pub async fn codex_local_access_test() -> Result<CodexLocalAccessTestResult, String> {
-    codex_local_access::test_local_access_with_cli().await
+    codex_local_access::test_local_access_with_dialog().await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::codex_history_provider_changed;
+#[tauri::command]
+pub async fn codex_local_access_chat_test(
+    model_id: String,
+    messages: Vec<CodexLocalAccessChatMessage>,
+) -> Result<CodexLocalAccessChatResult, String> {
+    codex_local_access::chat_local_access_with_dialog(model_id, messages).await
+}
 
-    #[test]
-    fn codex_history_provider_changed_only_when_both_known_and_different() {
-        assert!(codex_history_provider_changed(
-            Some("openai"),
-            Some("codex_local_access")
-        ));
-        assert!(codex_history_provider_changed(
-            Some("codex_local_access"),
-            Some("openai")
-        ));
-        assert!(!codex_history_provider_changed(
-            Some("codex_local_access"),
-            Some("codex_local_access")
-        ));
-        assert!(!codex_history_provider_changed(None, Some("openai")));
-        assert!(!codex_history_provider_changed(Some("openai"), None));
-    }
+#[tauri::command]
+pub async fn codex_local_access_chat_test_stream(
+    app: AppHandle,
+    session_id: String,
+    model_id: String,
+    messages: Vec<CodexLocalAccessChatMessage>,
+) -> Result<(), String> {
+    codex_local_access::stream_chat_local_access_with_dialog(app, session_id, model_id, messages)
+        .await
 }

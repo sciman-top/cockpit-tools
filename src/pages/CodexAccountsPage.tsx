@@ -164,7 +164,6 @@ import type {
   CodexLocalAccessRoutingStrategy,
   CodexLocalAccessScope,
   CodexLocalAccessState,
-  CodexLocalAccessTestResult,
   CodexLocalApiSafetyPresetId,
   CodexRuntimeIntegrationMode,
   CodexRuntimeModeState,
@@ -354,6 +353,32 @@ function shouldIgnoreAccountDragStart(target: EventTarget | null): boolean {
 type CodexOverviewLayoutMode = "compact" | "list" | "grid";
 type OAuthBindingSortBy = "account" | "created_at" | "last_used" | "plan";
 type OAuthBindingTargetKind = "api_key_account" | "local_access";
+
+interface LocalAccessAccountPoolHealthSummary {
+  total: number;
+  available: number;
+  abnormal: number;
+  cooldown: number;
+  missing: number;
+  authError: number;
+  quotaLimited: number;
+}
+
+const BLOCKING_LOCAL_ACCESS_ACCOUNT_FAILURE_CATEGORIES = new Set([
+  "auth_unavailable",
+  "auth_refresh_failed",
+  "account_prepare_failed",
+  "free_account_restricted",
+]);
+
+function isBlockingLocalAccessAccountFailureCategory(
+  category?: string | null,
+): boolean {
+  return Boolean(
+    category && BLOCKING_LOCAL_ACCESS_ACCOUNT_FAILURE_CATEGORIES.has(category),
+  );
+}
+
 function normalizeLocalAccessAddressKind(
   value: string | null | undefined,
 ): CodexLocalAccessAddressKind {
@@ -690,7 +715,6 @@ export function CodexAccountsPage() {
     "panel" | "members"
   >("panel");
   const [localAccessSaving, setLocalAccessSaving] = useState(false);
-  const [localAccessTesting, setLocalAccessTesting] = useState(false);
   const [localAccessStarting, setLocalAccessStarting] = useState(false);
   const [localAccessRefreshing, setLocalAccessRefreshing] = useState(false);
   const [localAccessPortKilling, setLocalAccessPortKilling] = useState(false);
@@ -2279,16 +2303,9 @@ export function CodexAccountsPage() {
     () => accounts.filter((account) => !isCodexApiKeyAccount(account)),
     [accounts],
   );
-  const isOAuthBindingEligibleAccount = useCallback(
-    (account: CodexAccount) => {
-      const subscription = getCodexSubscriptionPresentation(
-        account.subscription_active_until,
-        t,
-      );
-      return subscription.timestampMs != null;
-    },
-    [t],
-  );
+  const isOAuthBindingEligibleAccount = useCallback((account: CodexAccount) => {
+    return Boolean(account.tokens.refresh_token?.trim());
+  }, []);
   const oauthBindingEligibleAccounts = useMemo(
     () => oauthAccounts.filter(isOAuthBindingEligibleAccount),
     [isOAuthBindingEligibleAccount, oauthAccounts],
@@ -2331,7 +2348,8 @@ export function CodexAccountsPage() {
   ]);
   const oauthBindingTargetActive =
     oauthBindingTargetKind === "local_access" ||
-    (oauthBindingTargetKind === "api_key_account" && Boolean(oauthBindingAccount));
+    (oauthBindingTargetKind === "api_key_account" &&
+      Boolean(oauthBindingAccount));
   const cockpitApiPanelAccount = useMemo(
     () =>
       cockpitApiPanelAccountId
@@ -3362,10 +3380,7 @@ export function CodexAccountsPage() {
     if (!oauthBindingTargetKind) return;
     if (!selectedOAuthBindingAccount) {
       setOauthBindingError(
-        t(
-          "codex.api.oauthBinding.validationRequired",
-          "请选择 OAuth 账号",
-        ),
+        t("codex.api.oauthBinding.validationRequired", "请选择 OAuth 账号"),
       );
       return;
     }
@@ -3373,7 +3388,7 @@ export function CodexAccountsPage() {
       setOauthBindingError(
         t(
           "codex.api.oauthBinding.validationSubscriptionRequired",
-          "只能绑定带订阅时间的 OAuth 账号",
+          "只能绑定带 refresh_token 的 OAuth 账号",
         ),
       );
       return;
@@ -4195,12 +4210,7 @@ export function CodexAccountsPage() {
         </div>
       );
     },
-    [
-      maskAccountText,
-      openOAuthBindingModal,
-      resolveBoundOAuthAccount,
-      t,
-    ],
+    [maskAccountText, openOAuthBindingModal, resolveBoundOAuthAccount, t],
   );
 
   const resolveApiProviderDisplayName = useCallback(
@@ -4642,6 +4652,69 @@ export function CodexAccountsPage() {
     () => summarizeCodexQuotaPool(localAccessAccounts),
     [localAccessAccounts],
   );
+  const localAccessAccountPoolHealthSummary =
+    useMemo<LocalAccessAccountPoolHealthSummary>(() => {
+      const accountById = new Map(
+        accounts.map((account) => [account.id, account]),
+      );
+      const healthById = new Map(
+        (localAccessState?.accountHealth ?? []).map((health) => [
+          health.accountId,
+          health,
+        ]),
+      );
+      const summary: LocalAccessAccountPoolHealthSummary = {
+        total: localAccessCollection?.accountIds.length ?? 0,
+        available: 0,
+        abnormal: 0,
+        cooldown: 0,
+        missing: 0,
+        authError: 0,
+        quotaLimited: 0,
+      };
+
+      (localAccessCollection?.accountIds ?? []).forEach((accountId) => {
+        const account = accountById.get(accountId);
+        const health = healthById.get(accountId);
+        if (!account) {
+          summary.missing += 1;
+          summary.abnormal += 1;
+          return;
+        }
+        if (health?.cooldowns?.length) {
+          summary.cooldown += 1;
+          return;
+        }
+        if (account.quota_error) {
+          summary.quotaLimited += 1;
+          summary.abnormal += 1;
+          return;
+        }
+        if (
+          isBlockingLocalAccessAccountFailureCategory(
+            health?.lastFailureCategory,
+          )
+        ) {
+          summary.authError += 1;
+          summary.abnormal += 1;
+          return;
+        }
+        if (health && !health.available) {
+          summary.abnormal += 1;
+          return;
+        }
+        summary.available += 1;
+      });
+
+      return summary;
+    }, [
+      accounts,
+      localAccessCollection?.accountIds,
+      localAccessState?.accountHealth,
+    ]);
+  const localAccessAccountPoolHealthHasIssue =
+    localAccessAccountPoolHealthSummary.abnormal > 0 ||
+    localAccessAccountPoolHealthSummary.cooldown > 0;
   const localAccessQuotaPoolLabels = useMemo(
     () => ({
       hourly: t("codex.localAccess.quotaPool.hourlyShort", "5h"),
@@ -4667,7 +4740,6 @@ export function CodexAccountsPage() {
       : t("codex.localAccess.accessScopeLocalhostShort", "仅本机");
   const localAccessBusy =
     localAccessSaving ||
-    localAccessTesting ||
     localAccessStarting ||
     localAccessRefreshing ||
     localAccessPortKilling;
@@ -5110,9 +5182,7 @@ export function CodexAccountsPage() {
 
   const toggleOAuthBindingTagFilterValue = useCallback((tag: string) => {
     setOauthBindingTagFilter((prev) =>
-      prev.includes(tag)
-        ? prev.filter((item) => item !== tag)
-        : [...prev, tag],
+      prev.includes(tag) ? prev.filter((item) => item !== tag) : [...prev, tag],
     );
   }, []);
 
@@ -5139,8 +5209,9 @@ export function CodexAccountsPage() {
     }
 
     if (oauthBindingFilterTypes.length > 0) {
-      const { requireValidAccounts, selectedTypes } =
-        splitValidityFilterValues(oauthBindingFilterTypes);
+      const { requireValidAccounts, selectedTypes } = splitValidityFilterValues(
+        oauthBindingFilterTypes,
+      );
       if (requireValidAccounts) {
         result = result.filter((account) => !isAbnormalAccount(account));
       }
@@ -5776,7 +5847,10 @@ export function CodexAccountsPage() {
         });
         return nextState;
       } catch (error) {
-        console.error("Failed to update local access upstream proxy config:", error);
+        console.error(
+          "Failed to update local access upstream proxy config:",
+          error,
+        );
         throw new Error(String(error).replace(/^Error:\s*/, ""));
       } finally {
         setLocalAccessSaving(false);
@@ -5848,7 +5922,10 @@ export function CodexAccountsPage() {
 
   const handleUpdateLocalAccessGatewayMode = useCallback(
     async (gatewayMode: CodexLocalAccessGatewayMode) => {
-      if (!localAccessCollection || localAccessCollection.gatewayMode === gatewayMode) {
+      if (
+        !localAccessCollection ||
+        localAccessCollection.gatewayMode === gatewayMode
+      ) {
         return;
       }
       setLocalAccessSaving(true);
@@ -5918,25 +5995,6 @@ export function CodexAccountsPage() {
       setLocalAccessSaving(false);
     }
   }, [localAccessCollection, requestLocalAccessRiskNotice, setMessage, t]);
-
-  const handleTestLocalAccess = useCallback(async (): Promise<
-    CodexLocalAccessTestResult
-  > => {
-    if (!localAccessCollection) {
-      throw new Error(
-        t("codex.localAccess.testUnavailable", "当前 API 服务地址不可用"),
-      );
-    }
-
-    setLocalAccessTesting(true);
-    try {
-      return await codexLocalAccessService.testCodexLocalAccess();
-    } catch (error) {
-      throw new Error(String(error).replace(/^Error:\s*/, ""));
-    } finally {
-      setLocalAccessTesting(false);
-    }
-  }, [localAccessCollection, t]);
 
   const handleActivateLocalAccess = useCallback(
     async (options?: { showSuccessMessage?: boolean }) => {
@@ -6733,10 +6791,7 @@ export function CodexAccountsPage() {
 
       if (targetIds.length === 0) {
         setMessage({
-          text: t(
-            "accounts.groups.refreshEmpty",
-            "当前分组没有可刷新的账号",
-          ),
+          text: t("accounts.groups.refreshEmpty", "当前分组没有可刷新的账号"),
           tone: "error",
         });
         return;
@@ -6745,7 +6800,9 @@ export function CodexAccountsPage() {
       setRefreshingGroupId(group.id);
       try {
         const results = await Promise.allSettled(
-          targetIds.map((accountId) => codexService.refreshCodexQuota(accountId)),
+          targetIds.map((accountId) =>
+            codexService.refreshCodexQuota(accountId),
+          ),
         );
         const successCount = results.filter(
           (result) => result.status === "fulfilled",
@@ -6786,13 +6843,7 @@ export function CodexAccountsPage() {
         setRefreshingGroupId(null);
       }
     },
-    [
-      fetchAccounts,
-      fetchCurrentAccount,
-      resolveGroupAccounts,
-      setMessage,
-      t,
-    ],
+    [fetchAccounts, fetchCurrentAccount, resolveGroupAccounts, setMessage, t],
   );
 
   useEffect(() => {
@@ -7749,10 +7800,7 @@ export function CodexAccountsPage() {
             <X size={12} />
           </button>
           <div className="codex-local-access-gateway-guide-title">
-            {t(
-              "codex.localAccess.gatewayGuideTitle",
-              "这里可以切换网关",
-            )}
+            {t("codex.localAccess.gatewayGuideTitle", "这里可以切换网关")}
           </div>
           <p>
             {t(
@@ -8193,6 +8241,44 @@ export function CodexAccountsPage() {
               <div className="quota-error-inline">
                 <CircleAlert size={14} />
                 <span>{localAccessEstimatedAvailableMessage}</span>
+              </div>
+            )}
+
+            {localAccessAccountPoolHealthSummary.total > 0 && (
+              <div
+                className={`codex-local-access-health-summary${
+                  localAccessAccountPoolHealthHasIssue ? " has-issue" : ""
+                }`}
+                title={t("codex.localAccess.accountPoolHealth.detail", {
+                  available: localAccessAccountPoolHealthSummary.available,
+                  total: localAccessAccountPoolHealthSummary.total,
+                  abnormal: localAccessAccountPoolHealthSummary.abnormal,
+                  cooldown: localAccessAccountPoolHealthSummary.cooldown,
+                  missing: localAccessAccountPoolHealthSummary.missing,
+                  authError: localAccessAccountPoolHealthSummary.authError,
+                  quotaLimited:
+                    localAccessAccountPoolHealthSummary.quotaLimited,
+                  defaultValue:
+                    "可用 {{available}}/{{total}}，异常 {{abnormal}}，冷却 {{cooldown}}，缺失 {{missing}}，鉴权 {{authError}}，额度 {{quotaLimited}}",
+                })}
+              >
+                <span className="codex-local-access-health-summary-title">
+                  {t("codex.localAccess.accountPoolHealth.title", "账号池")}
+                </span>
+                <span className="codex-local-access-health-summary-value">
+                  {t("codex.localAccess.accountPoolHealth.availableRatio", {
+                    available: localAccessAccountPoolHealthSummary.available,
+                    total: localAccessAccountPoolHealthSummary.total,
+                    defaultValue: "可用 {{available}}/{{total}}",
+                  })}
+                </span>
+                <span className="codex-local-access-health-summary-value">
+                  {t("codex.localAccess.accountPoolHealth.issueSummary", {
+                    abnormal: localAccessAccountPoolHealthSummary.abnormal,
+                    cooldown: localAccessAccountPoolHealthSummary.cooldown,
+                    defaultValue: "异常 {{abnormal}} · 冷却 {{cooldown}}",
+                  })}
+                </span>
               </div>
             )}
 
@@ -9344,7 +9430,10 @@ export function CodexAccountsPage() {
                           "quota_display",
                         );
                         return (
-                          <div className="cockpit-api-usage-row" key={modelName}>
+                          <div
+                            className="cockpit-api-usage-row"
+                            key={modelName}
+                          >
                             <div>
                               <span className="cockpit-api-usage-name">
                                 {modelName}
@@ -10271,7 +10360,7 @@ export function CodexAccountsPage() {
           />
 
           {showAddModal && (
-            <div className="modal-overlay" onClick={closeCodexAddModal}>
+            <div className="modal-overlay">
               <div
                 className="modal-content codex-add-modal"
                 onClick={(e) => e.stopPropagation()}
@@ -11124,11 +11213,11 @@ export function CodexAccountsPage() {
                         {oauthBindingTargetKind === "local_access"
                           ? t(
                               "codex.localAccess.oauthBinding.desc",
-                              "可选绑定。只能选择带订阅时间（有效期标识）的 OAuth 账号，已过期也可绑定；未绑定时 API 服务按原 API Key 逻辑运行；绑定后登录态使用 OAuth 账号，Provider 使用当前 API 服务配置。",
+                              "可选绑定。只能选择带 refresh_token、可自动续期的 OAuth 账号；未绑定时 API 服务按原 API Key 逻辑运行；绑定后登录态使用 OAuth 账号，Provider 使用当前 API 服务配置。",
                             )
                           : t(
                               "codex.api.oauthBinding.desc",
-                              "可选绑定。只能选择带订阅时间（有效期标识）的 OAuth 账号，已过期也可绑定；未绑定时该账号按原 API Key 逻辑切换；绑定后登录态使用 OAuth 账号，Provider 使用当前 API Key 账号配置。",
+                              "可选绑定。只能选择带 refresh_token、可自动续期的 OAuth 账号；未绑定时该账号按原 API Key 逻辑切换；绑定后登录态使用 OAuth 账号，Provider 使用当前 API Key 账号配置。",
                             )}
                       </p>
                       <div className="section-desc codex-oauth-binding-current-target">
@@ -11171,7 +11260,7 @@ export function CodexAccountsPage() {
                           <span>
                             {t(
                               "codex.api.oauthBinding.emptyEligible",
-                              "没有带订阅时间的 OAuth 账号，请先刷新配额或添加符合条件的 OAuth 账号。",
+                              "没有带 refresh_token 的 OAuth 账号，请重新 OAuth 授权或添加符合条件的 OAuth 账号。",
                             )}
                           </span>
                         </div>
@@ -11188,9 +11277,7 @@ export function CodexAccountsPage() {
                                 )}
                                 value={oauthBindingSearchQuery}
                                 onChange={(event) =>
-                                  setOauthBindingSearchQuery(
-                                    event.target.value,
-                                  )
+                                  setOauthBindingSearchQuery(event.target.value)
                                 }
                                 disabled={oauthBindingSaving}
                               />
@@ -11205,15 +11292,9 @@ export function CodexAccountsPage() {
                                 "common.shared.filterLabel",
                                 "筛选",
                               )}
-                              clearLabel={t(
-                                "accounts.clearFilter",
-                                "清空筛选",
-                              )}
+                              clearLabel={t("accounts.clearFilter", "清空筛选")}
                               emptyLabel={t("common.none", "暂无")}
-                              ariaLabel={t(
-                                "common.shared.filterLabel",
-                                "筛选",
-                              )}
+                              ariaLabel={t("common.shared.filterLabel", "筛选")}
                               onToggleValue={toggleOAuthBindingFilterTypeValue}
                               onClear={() => setOauthBindingFilterTypes([])}
                             />
@@ -11396,9 +11477,7 @@ export function CodexAccountsPage() {
                             }
                             rangeStart={oauthBindingPagination.rangeStart}
                             rangeEnd={oauthBindingPagination.rangeEnd}
-                            canGoPrevious={
-                              oauthBindingPagination.canGoPrevious
-                            }
+                            canGoPrevious={oauthBindingPagination.canGoPrevious}
                             canGoNext={oauthBindingPagination.canGoNext}
                             onPageSizeChange={
                               oauthBindingPagination.setPageSize
@@ -11433,10 +11512,7 @@ export function CodexAccountsPage() {
                           onClick={() => void handleClearOAuthBinding()}
                           disabled={oauthBindingSaving}
                         >
-                          {t(
-                            "codex.api.oauthBinding.clearAction",
-                            "解除绑定",
-                          )}
+                          {t("codex.api.oauthBinding.clearAction", "解除绑定")}
                         </button>
                       )}
                       <button
@@ -12655,10 +12731,17 @@ export function CodexAccountsPage() {
             onRotateApiKey={handleRotateLocalAccessApiKey}
             onKillPort={handleKillLocalAccessPort}
             onToggleEnabled={handleToggleLocalAccessEnabled}
-            onTest={handleTestLocalAccess}
+            onStreamTestMessage={({ sessionId, modelId, messages }) =>
+              codexLocalAccessService.streamCodexLocalAccessChatTest(
+                sessionId,
+                modelId,
+                messages,
+              )
+            }
+            onTest={codexLocalAccessService.testCodexLocalAccess}
             saving={localAccessSaving}
             refreshing={localAccessRefreshing}
-            testing={localAccessTesting}
+            testing={false}
             starting={localAccessStarting}
             portCleanupBusy={localAccessPortKilling}
           />

@@ -13,8 +13,19 @@ import { useWorkbuddyAccountStore } from '../stores/useWorkbuddyAccountStore';
 import { useQoderAccountStore } from '../stores/useQoderAccountStore';
 import { useTraeAccountStore } from '../stores/useTraeAccountStore';
 import { useZedAccountStore } from '../stores/useZedAccountStore';
+import { getGitHubCopilotAccountDisplayEmail } from '../types/githubCopilot';
+import { getWindsurfAccountDisplayEmail } from '../types/windsurf';
+import { getKiroAccountDisplayEmail } from '../types/kiro';
+import { getCursorAccountDisplayEmail } from '../types/cursor';
+import { getGeminiAccountDisplayEmail } from '../types/gemini';
+import { getCodebuddyAccountDisplayEmail } from '../types/codebuddy';
+import { getWorkbuddyAccountDisplayEmail } from '../types/workbuddy';
+import { getQoderAccountDisplayEmail } from '../types/qoder';
+import { getTraeAccountDisplayEmail } from '../types/trae';
+import { getZedAccountDisplayEmail } from '../types/zed';
 import {
   loadCurrentAccountRefreshMinutesMap,
+  getAccountRefreshMinutes,
   type CurrentAccountRefreshPlatform,
 } from '../utils/currentAccountRefresh';
 import { isCodexApiKeyAccount } from '../types/codex';
@@ -111,6 +122,44 @@ function clampCodexAutoRefreshMinutes(value: number): number {
   return Math.max(value, CODEX_AUTO_REFRESH_MIN_INTERVAL_MINUTES);
 }
 
+function resolveCurrentMinutes(
+  platform: CurrentAccountRefreshPlatform,
+  email: string | null,
+  defaultMap: Record<CurrentAccountRefreshPlatform, number>,
+): number {
+  return email
+    ? getAccountRefreshMinutes(platform, email, defaultMap[platform])
+    : defaultMap[platform];
+}
+
+function getCurrentAccountEmails(): Record<CurrentAccountRefreshPlatform, string | null> {
+  const getProviderEmail = <T extends { id: string; email?: string | null }>(
+    store: { getState: () => { currentAccountId: string | null; accounts: T[] } },
+    getDisplayEmail: (account: T) => string,
+  ): string | null => {
+    const state = store.getState();
+    const account = state.accounts.find((a) => a.id === state.currentAccountId);
+    if (!account) return null;
+    return account.email ?? getDisplayEmail(account);
+  };
+
+  return {
+    antigravity: useAccountStore.getState().currentAccount?.email ?? null,
+    codex: useCodexAccountStore.getState().currentAccount?.email ?? null,
+    ghcp: getProviderEmail(useGitHubCopilotAccountStore, getGitHubCopilotAccountDisplayEmail),
+    windsurf: getProviderEmail(useWindsurfAccountStore, getWindsurfAccountDisplayEmail),
+    kiro: getProviderEmail(useKiroAccountStore, getKiroAccountDisplayEmail),
+    cursor: getProviderEmail(useCursorAccountStore, getCursorAccountDisplayEmail),
+    gemini: getProviderEmail(useGeminiAccountStore, getGeminiAccountDisplayEmail),
+    codebuddy: getProviderEmail(useCodebuddyAccountStore, getCodebuddyAccountDisplayEmail),
+    codebuddy_cn: getProviderEmail(useCodebuddyCnAccountStore, getCodebuddyAccountDisplayEmail),
+    workbuddy: getProviderEmail(useWorkbuddyAccountStore, getWorkbuddyAccountDisplayEmail),
+    qoder: getProviderEmail(useQoderAccountStore, getQoderAccountDisplayEmail),
+    trae: getProviderEmail(useTraeAccountStore, getTraeAccountDisplayEmail),
+    zed: getProviderEmail(useZedAccountStore, getZedAccountDisplayEmail),
+  };
+}
+
 export function useAutoRefresh() {
   const refreshAllQuotas = useAccountStore((state) => state.refreshAllQuotas);
   const fetchAccounts = useAccountStore((state) => state.fetchAccounts);
@@ -153,8 +202,8 @@ export function useAutoRefresh() {
   const fetchCurrentZedAccountId = useZedAccountStore((state) => state.fetchCurrentAccountId);
   const refreshZedToken = useZedAccountStore((state) => state.refreshToken);
 
-  const agRefreshingRef = useRef(false);
-  const agCurrentRefreshingRef = useRef(false);
+  const antigravityRefreshingRef = useRef(false);
+  const antigravityCurrentRefreshingRef = useRef(false);
   const codexRefreshingRef = useRef(false);
   const codexCurrentRefreshingRef = useRef(false);
   const ghcpRefreshingRef = useRef(false);
@@ -257,6 +306,7 @@ export function useAutoRefresh() {
           stopScheduler();
 
           const currentRefreshMinutesMap = loadCurrentAccountRefreshMinutesMap();
+          const currentAccountEmails = getCurrentAccountEmails();
           const runProviderCurrentRefresh = async (
             fetchCurrentProviderAccountId: () => Promise<string | null>,
             refreshProviderToken: (accountId: string) => Promise<void>,
@@ -303,9 +353,9 @@ export function useAutoRefresh() {
               key: 'antigravity',
               label: 'Antigravity IDE',
               intervalMinutes: config.auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.antigravity,
-              fullRefreshingRef: agRefreshingRef,
-              currentRefreshingRef: agCurrentRefreshingRef,
+              currentMinutes: resolveCurrentMinutes('antigravity', currentAccountEmails.antigravity, currentRefreshMinutesMap),
+              fullRefreshingRef: antigravityRefreshingRef,
+              currentRefreshingRef: antigravityCurrentRefreshingRef,
               runFullRefresh: async () => {
                 await refreshAllQuotas();
               },
@@ -326,7 +376,9 @@ export function useAutoRefresh() {
               label: 'Codex',
               intervalMinutes: clampCodexAutoRefreshMinutes(config.codex_auto_refresh_minutes),
               currentMinutes: Math.max(
-                currentRefreshMinutesMap.codex,
+                clampCodexAutoRefreshMinutes(
+                  resolveCurrentMinutes('codex', currentAccountEmails.codex, currentRefreshMinutesMap),
+                ),
                 clampCodexAutoRefreshMinutes(config.codex_auto_refresh_minutes),
               ),
               fullRefreshingRef: codexRefreshingRef,
@@ -350,7 +402,7 @@ export function useAutoRefresh() {
               key: 'ghcp',
               label: 'GitHub Copilot',
               intervalMinutes: config.ghcp_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.ghcp,
+              currentMinutes: resolveCurrentMinutes('ghcp', currentAccountEmails.ghcp, currentRefreshMinutesMap),
               fullRefreshingRef: ghcpRefreshingRef,
               currentRefreshingRef: ghcpCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -364,7 +416,7 @@ export function useAutoRefresh() {
               key: 'windsurf',
               label: 'Windsurf',
               intervalMinutes: config.windsurf_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.windsurf,
+              currentMinutes: resolveCurrentMinutes('windsurf', currentAccountEmails.windsurf, currentRefreshMinutesMap),
               fullRefreshingRef: windsurfRefreshingRef,
               currentRefreshingRef: windsurfCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -381,7 +433,7 @@ export function useAutoRefresh() {
               key: 'kiro',
               label: 'Kiro',
               intervalMinutes: config.kiro_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.kiro,
+              currentMinutes: resolveCurrentMinutes('kiro', currentAccountEmails.kiro, currentRefreshMinutesMap),
               fullRefreshingRef: kiroRefreshingRef,
               currentRefreshingRef: kiroCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -395,7 +447,7 @@ export function useAutoRefresh() {
               key: 'cursor',
               label: 'Cursor',
               intervalMinutes: config.cursor_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.cursor,
+              currentMinutes: resolveCurrentMinutes('cursor', currentAccountEmails.cursor, currentRefreshMinutesMap),
               fullRefreshingRef: cursorRefreshingRef,
               currentRefreshingRef: cursorCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -409,7 +461,7 @@ export function useAutoRefresh() {
               key: 'gemini',
               label: 'Gemini',
               intervalMinutes: config.gemini_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.gemini,
+              currentMinutes: resolveCurrentMinutes('gemini', currentAccountEmails.gemini, currentRefreshMinutesMap),
               fullRefreshingRef: geminiRefreshingRef,
               currentRefreshingRef: geminiCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -423,7 +475,7 @@ export function useAutoRefresh() {
               key: 'codebuddy',
               label: 'CodeBuddy',
               intervalMinutes: config.codebuddy_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.codebuddy,
+              currentMinutes: resolveCurrentMinutes('codebuddy', currentAccountEmails.codebuddy, currentRefreshMinutesMap),
               fullRefreshingRef: codebuddyRefreshingRef,
               currentRefreshingRef: codebuddyCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -440,7 +492,7 @@ export function useAutoRefresh() {
               key: 'codebuddy_cn',
               label: 'CodeBuddy CN',
               intervalMinutes: config.codebuddy_cn_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.codebuddy_cn,
+              currentMinutes: resolveCurrentMinutes('codebuddy_cn', currentAccountEmails.codebuddy_cn, currentRefreshMinutesMap),
               fullRefreshingRef: codebuddyCnRefreshingRef,
               currentRefreshingRef: codebuddyCnCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -457,7 +509,7 @@ export function useAutoRefresh() {
               key: 'workbuddy',
               label: 'WorkBuddy',
               intervalMinutes: config.workbuddy_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.workbuddy,
+              currentMinutes: resolveCurrentMinutes('workbuddy', currentAccountEmails.workbuddy, currentRefreshMinutesMap),
               fullRefreshingRef: workbuddyRefreshingRef,
               currentRefreshingRef: workbuddyCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -474,7 +526,7 @@ export function useAutoRefresh() {
               key: 'qoder',
               label: 'Qoder',
               intervalMinutes: config.qoder_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.qoder,
+              currentMinutes: resolveCurrentMinutes('qoder', currentAccountEmails.qoder, currentRefreshMinutesMap),
               fullRefreshingRef: qoderRefreshingRef,
               currentRefreshingRef: qoderCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -488,7 +540,7 @@ export function useAutoRefresh() {
               key: 'trae',
               label: 'Trae',
               intervalMinutes: config.trae_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.trae,
+              currentMinutes: resolveCurrentMinutes('trae', currentAccountEmails.trae, currentRefreshMinutesMap),
               fullRefreshingRef: traeRefreshingRef,
               currentRefreshingRef: traeCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -502,7 +554,7 @@ export function useAutoRefresh() {
               key: 'zed',
               label: 'Zed',
               intervalMinutes: config.zed_auto_refresh_minutes,
-              currentMinutes: currentRefreshMinutesMap.zed,
+              currentMinutes: resolveCurrentMinutes('zed', currentAccountEmails.zed, currentRefreshMinutesMap),
               fullRefreshingRef: zedRefreshingRef,
               currentRefreshingRef: zedCurrentRefreshingRef,
               runFullRefresh: async () => {
@@ -534,7 +586,7 @@ export function useAutoRefresh() {
               console.log(`[AutoRefresh] ${descriptor.label} 已禁用`);
             }
 
-            if (descriptor.intervalMinutes > 0) {
+            if (descriptor.intervalMinutes > 0 && descriptor.currentMinutes > 0) {
               console.log(`[AutoRefresh] ${descriptor.label} 当前账号刷新: 每 ${descriptor.currentMinutes} 分钟`);
               tasks.push({
                 key: `current:${descriptor.key}`,
@@ -550,7 +602,7 @@ export function useAutoRefresh() {
                   ),
               });
             } else {
-              console.log(`[AutoRefresh] ${descriptor.label} 当前账号刷新已禁用（配额自动刷新未开启）`);
+              console.log(`[AutoRefresh] ${descriptor.label} 当前账号刷新已禁用${descriptor.currentMinutes === -1 ? '（账号级覆盖禁用）' : '（配额自动刷新未开启）'}`);
             }
           }
 
