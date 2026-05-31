@@ -2,9 +2,11 @@
 
 审查时间：2026-05-29
 
+2026-05-31 刷新说明：本文件保留 2026-05-29 的长篇结构性审查和历史行号锚点；最新参考源 HEAD 与 stream/quota continuity 对齐矩阵见 `reports/codex-api-service-source-audit/20260531-source-audit-matrix.md`。
+
 审查目标：为 Cockpit Tools Local 的个人本机 API service / Hardened Local API Mode 提炼可借鉴实践。本文只作为设计参考，不把社区项目的策略直接等同于本仓应启用的默认行为。Codex-facing 行为以官方 `openai-codex` 源码和本仓实测为最高语义锚点，社区项目只用于调度结构、cooldown、限流和可观测性启发。
 
-## Source Snapshot
+## Source Snapshot (2026-05-29 Historical)
 
 | Project | Local path | Revision | Role |
 | --- | --- | --- | --- |
@@ -13,6 +15,18 @@
 | Sub2API | `D:\CODE\external\_reference_gateway_sources\sub2api` | `c3cd2b9f` | 账号健康、调度、临时不可调度、粘性会话 |
 | CLIProxyAPI | `D:\CODE\external\_reference_gateway_sources\CLIProxyAPI` | `2bcc7622` | CLI/OAuth 代理、凭据选择、模型冷却、流式重试边界 |
 | LiteLLM | `D:\CODE\external\_reference_gateway_sources\litellm` | `5699a06` | 通用 router、cooldown、pre-call rate checks、proxy limits |
+
+## Source Snapshot Refresh (2026-05-31)
+
+以下快照用于后续 API service routing、quota continuity、stream boundary 和 monitor 结论复核；详细矩阵见 `reports/codex-api-service-source-audit/20260531-source-audit-matrix.md`。
+
+| Project | Branch | Revision | Status |
+| --- | --- | --- | --- |
+| OpenAI Codex | `main` | `966932124` | clean |
+| New API | `main` | `230a359` | clean |
+| Sub2API | `main` | `f18451e5` | clean |
+| CLIProxyAPI | `main` | `3a54fb7f` | clean |
+| LiteLLM | `litellm_internal_staging` | `a9cc6ed` | clean |
 
 ## Evidence Precedence
 
