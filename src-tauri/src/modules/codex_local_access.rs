@@ -2,14 +2,15 @@ use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexQuota, Codex
 use crate::models::codex_local_access::{
     CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
     CodexLocalAccessAccountHealthView, CodexLocalAccessAccountStats, CodexLocalAccessCollection,
-    CodexLocalAccessConcurrencyDiagnostics, CodexLocalAccessGlobalError,
-    CodexLocalAccessHealthRegistry, CodexLocalAccessHealthSummary, CodexLocalAccessModelCooldown,
-    CodexLocalAccessPortCleanupResult, CodexLocalAccessRoutingStrategy, CodexLocalAccessScope,
-    CodexLocalAccessState, CodexLocalAccessStats, CodexLocalAccessStatsWindow,
-    CodexLocalAccessStickyBinding, CodexLocalAccessTestFailure, CodexLocalAccessTestResult,
-    CodexLocalAccessUsageEvent, CodexLocalAccessUsageStats, CodexLocalApiFallbackMode,
-    CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
-    CodexRuntimeIntegrationMode, CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
+    CodexLocalAccessConcurrencyDiagnostics, CodexLocalAccessCustomRoutingRule,
+    CodexLocalAccessGlobalError, CodexLocalAccessHealthRegistry, CodexLocalAccessHealthSummary,
+    CodexLocalAccessModelCooldown, CodexLocalAccessPortCleanupResult,
+    CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessState,
+    CodexLocalAccessStats, CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding,
+    CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessUsageEvent,
+    CodexLocalAccessUsageStats, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
+    CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
+    CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
     CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
 };
 use crate::modules::atomic_write::write_string_atomic;
@@ -26,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::error::Error as StdError;
 use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
@@ -75,6 +77,10 @@ const PREPARED_ACCOUNT_CACHE_TTL_MS: i64 = 30 * 1000;
 const DAY_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 const WEEK_WINDOW_MS: i64 = 7 * DAY_WINDOW_MS;
 const MONTH_WINDOW_MS: i64 = 30 * DAY_WINDOW_MS;
+const CUSTOM_ROUTING_PRIORITY_MIN: i32 = 0;
+const CUSTOM_ROUTING_PRIORITY_MAX: i32 = 100;
+const CUSTOM_ROUTING_WEIGHT_MIN: u32 = 1;
+const CUSTOM_ROUTING_WEIGHT_MAX: u32 = 100;
 const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const DEFAULT_UNKNOWN_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
 const CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION: u32 = 1;
@@ -4112,7 +4118,12 @@ fn apply_collection_routing_strategy(
     if collection.safety_config.hardened_local_mode {
         return account_ids.to_vec();
     }
-    apply_routing_strategy(account_ids, collection.routing_strategy)
+    apply_routing_strategy(
+        account_ids,
+        collection.routing_strategy,
+        &collection.custom_routing_rules,
+        0,
+    )
 }
 
 fn build_routing_candidates(ordered_account_ids: &[String]) -> Vec<RoutingCandidate> {
@@ -4135,6 +4146,7 @@ fn compare_routing_candidates(
     left: &RoutingCandidate,
     right: &RoutingCandidate,
     strategy: CodexLocalAccessRoutingStrategy,
+    original_index: &HashMap<String, usize>,
 ) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
@@ -4183,17 +4195,170 @@ fn compare_routing_candidates(
                 .then_with(|| compare_option_desc(left.plan_rank, right.plan_rank))
                 .then_with(|| compare_option_desc(left.remaining_quota, right.remaining_quota))
         }
+        CodexLocalAccessRoutingStrategy::Custom => Ordering::Equal,
     };
 
-    ordering.then_with(|| left.account_id.cmp(&right.account_id))
+    ordering.then_with(|| {
+        let left_index = original_index
+            .get(&left.account_id)
+            .copied()
+            .unwrap_or(usize::MAX);
+        let right_index = original_index
+            .get(&right.account_id)
+            .copied()
+            .unwrap_or(usize::MAX);
+        left_index.cmp(&right_index)
+    })
+}
+
+fn normalize_custom_routing_rule(
+    rule: CodexLocalAccessCustomRoutingRule,
+) -> Option<CodexLocalAccessCustomRoutingRule> {
+    let account_id = rule.account_id.trim().to_string();
+    if account_id.is_empty() {
+        return None;
+    }
+
+    Some(CodexLocalAccessCustomRoutingRule {
+        account_id,
+        priority: rule
+            .priority
+            .clamp(CUSTOM_ROUTING_PRIORITY_MIN, CUSTOM_ROUTING_PRIORITY_MAX),
+        weight: rule
+            .weight
+            .clamp(CUSTOM_ROUTING_WEIGHT_MIN, CUSTOM_ROUTING_WEIGHT_MAX),
+    })
+}
+
+fn normalize_custom_routing_rules(
+    rules: Vec<CodexLocalAccessCustomRoutingRule>,
+    account_ids: &[String],
+) -> Vec<CodexLocalAccessCustomRoutingRule> {
+    let valid_account_ids: HashSet<&str> = account_ids.iter().map(String::as_str).collect();
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+
+    for rule in rules {
+        let Some(rule) = normalize_custom_routing_rule(rule) else {
+            continue;
+        };
+        if !valid_account_ids.contains(rule.account_id.as_str()) {
+            continue;
+        }
+        if seen.insert(rule.account_id.clone()) {
+            normalized.push(rule);
+        }
+    }
+
+    normalized
+}
+
+fn custom_rule_map(rules: &[CodexLocalAccessCustomRoutingRule]) -> HashMap<&str, (i32, u32)> {
+    rules
+        .iter()
+        .map(|rule| {
+            (
+                rule.account_id.as_str(),
+                (
+                    rule.priority
+                        .clamp(CUSTOM_ROUTING_PRIORITY_MIN, CUSTOM_ROUTING_PRIORITY_MAX),
+                    rule.weight
+                        .clamp(CUSTOM_ROUTING_WEIGHT_MIN, CUSTOM_ROUTING_WEIGHT_MAX),
+                ),
+            )
+        })
+        .collect()
+}
+
+fn weighted_group_order(
+    group: &[String],
+    weights: &HashMap<&str, (i32, u32)>,
+    start: usize,
+) -> Vec<String> {
+    if group.len() <= 1 {
+        return group.to_vec();
+    }
+
+    let total_weight = group.iter().fold(0usize, |sum, account_id| {
+        let weight = weights
+            .get(account_id.as_str())
+            .map(|(_, weight)| *weight)
+            .unwrap_or(CUSTOM_ROUTING_WEIGHT_MIN) as usize;
+        sum.saturating_add(weight.max(1))
+    });
+    if total_weight == 0 {
+        return group.to_vec();
+    }
+
+    let mut slot = start % total_weight;
+    let mut first_index = 0usize;
+    for (index, account_id) in group.iter().enumerate() {
+        let weight = weights
+            .get(account_id.as_str())
+            .map(|(_, weight)| *weight)
+            .unwrap_or(CUSTOM_ROUTING_WEIGHT_MIN) as usize;
+        if slot < weight {
+            first_index = index;
+            break;
+        }
+        slot -= weight;
+    }
+
+    (0..group.len())
+        .map(|offset| group[(first_index + offset) % group.len()].clone())
+        .collect()
+}
+
+fn apply_custom_routing_strategy(
+    account_ids: &[String],
+    rules: &[CodexLocalAccessCustomRoutingRule],
+    start: usize,
+) -> Vec<String> {
+    let rule_map = custom_rule_map(rules);
+    let mut priority_groups: Vec<(i32, Vec<String>)> = Vec::new();
+
+    for account_id in account_ids {
+        let priority = rule_map
+            .get(account_id.as_str())
+            .map(|(priority, _)| *priority)
+            .unwrap_or(CUSTOM_ROUTING_PRIORITY_MIN);
+        if let Some((_, group)) = priority_groups
+            .iter_mut()
+            .find(|(group_priority, _)| *group_priority == priority)
+        {
+            group.push(account_id.clone());
+        } else {
+            priority_groups.push((priority, vec![account_id.clone()]));
+        }
+    }
+
+    priority_groups.sort_by(|left, right| right.0.cmp(&left.0));
+
+    let mut ordered = Vec::with_capacity(account_ids.len());
+    for (_, group) in priority_groups {
+        ordered.extend(weighted_group_order(&group, &rule_map, start));
+    }
+    ordered
 }
 
 fn apply_routing_strategy(
     account_ids: &[String],
     strategy: CodexLocalAccessRoutingStrategy,
+    custom_rules: &[CodexLocalAccessCustomRoutingRule],
+    start: usize,
 ) -> Vec<String> {
+    if strategy == CodexLocalAccessRoutingStrategy::Custom {
+        return apply_custom_routing_strategy(account_ids, custom_rules, start);
+    }
+
+    let original_index: HashMap<String, usize> = account_ids
+        .iter()
+        .enumerate()
+        .map(|(index, account_id)| (account_id.clone(), index))
+        .collect();
     let mut candidates = build_routing_candidates(account_ids);
-    candidates.sort_by(|left, right| compare_routing_candidates(left, right, strategy));
+    candidates
+        .sort_by(|left, right| compare_routing_candidates(left, right, strategy, &original_index));
     candidates
         .into_iter()
         .map(|candidate| candidate.account_id)
@@ -7949,6 +8114,16 @@ fn sanitize_collection(
         changed = true;
     }
 
+    let original_custom_routing_rules = std::mem::take(&mut collection.custom_routing_rules);
+    let normalized_custom_routing_rules = normalize_custom_routing_rules(
+        original_custom_routing_rules.clone(),
+        &collection.account_ids,
+    );
+    if normalized_custom_routing_rules != original_custom_routing_rules {
+        changed = true;
+    }
+    collection.custom_routing_rules = normalized_custom_routing_rules;
+
     Ok((changed, valid_account_ids))
 }
 
@@ -7973,6 +8148,7 @@ async fn ensure_runtime_loaded_without_start() -> Result<(), String> {
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: true,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -8969,6 +9145,7 @@ pub async fn save_local_access_accounts(
                 safety_config: CodexLocalApiSafetyConfig::default(),
                 access_scope: CodexLocalAccessScope::Localhost,
                 routing_strategy: CodexLocalAccessRoutingStrategy::default(),
+                custom_routing_rules: Vec::new(),
                 restrict_free_accounts: true,
                 follow_current_account: false,
                 bound_oauth_account_id: None,
@@ -9085,6 +9262,34 @@ pub async fn apply_local_access_safety_preset(
     }
 
     ensure_gateway_matches_runtime().await?;
+    snapshot_state().await
+}
+
+pub async fn update_local_access_custom_routing(
+    rules: Vec<CodexLocalAccessCustomRoutingRule>,
+) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded().await?;
+
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    };
+
+    let Some(mut collection) = maybe_collection else {
+        return Err("本地接入集合尚未创建".to_string());
+    };
+
+    collection.custom_routing_rules =
+        normalize_custom_routing_rules(rules, &collection.account_ids);
+    collection.routing_strategy = CodexLocalAccessRoutingStrategy::Custom;
+    collection.updated_at = now_ms();
+    save_collection_to_disk(&collection)?;
+
+    {
+        let mut runtime = gateway_runtime().lock().await;
+        sync_runtime_collection(&mut runtime, collection);
+    }
+
     snapshot_state().await
 }
 
@@ -12252,6 +12457,26 @@ fn should_retry_upstream_send_error(error: &reqwest::Error) -> bool {
     error.is_timeout() || error.is_connect() || error.is_request()
 }
 
+fn format_reqwest_error_chain(error: &reqwest::Error) -> String {
+    let mut parts = vec![error.to_string()];
+    let mut source = StdError::source(error);
+    while let Some(err) = source {
+        let detail = err.to_string();
+        if !detail.trim().is_empty() && parts.last().map(|item| item != &detail).unwrap_or(true) {
+            parts.push(detail);
+        }
+        source = StdError::source(err);
+    }
+    parts.join(" | caused by: ")
+}
+
+fn format_upstream_network_error(error: &reqwest::Error) -> String {
+    format!(
+        "Codex 上游网络或代理不可用，未能连接到官方 Codex 服务。请检查网络、代理配置以及 chatgpt.com 可访问性。技术细节: {}",
+        format_reqwest_error_chain(error)
+    )
+}
+
 fn upstream_send_retry_delay(retry_attempt: usize) -> Duration {
     let multiplier = match retry_attempt {
         0 | 1 => 1u32,
@@ -12426,7 +12651,7 @@ async fn send_upstream_request(
                 let should_retry = retry_attempt < UPSTREAM_SEND_RETRY_ATTEMPTS
                     && should_retry_upstream_send_error(&error);
                 if !should_retry {
-                    return Err(format!("请求 Codex 上游失败: {}", error));
+                    return Err(format_upstream_network_error(&error));
                 }
                 tokio::time::sleep(upstream_send_retry_delay(retry_attempt + 1)).await;
             }
@@ -12557,8 +12782,12 @@ async fn proxy_request_with_account_pool(
         let start = next_routing_start_index(collection);
         let ordered_account_ids =
             build_ordered_account_ids(&routing_account_ids, start, affinity_account_id.as_deref());
-        let mut strategy_account_ids =
-            apply_collection_routing_strategy(&ordered_account_ids, collection);
+        let mut strategy_account_ids = apply_routing_strategy(
+            &ordered_account_ids,
+            collection.routing_strategy,
+            &collection.custom_routing_rules,
+            start,
+        );
         let selector_now = now_ms();
         sort_account_ids_by_health_estimate(
             &mut strategy_account_ids,
@@ -12752,6 +12981,7 @@ async fn proxy_request_with_account_pool(
                         response
                     }
                     Err(err) => {
+                        last_status = StatusCode::BAD_GATEWAY.as_u16();
                         record_audit_event_from_context(
                             &admission_context,
                             "upstream_forward",
@@ -12764,7 +12994,7 @@ async fn proxy_request_with_account_pool(
                         log_codex_api_failure(
                             None,
                             Some(request),
-                            None,
+                            Some(last_status),
                             Some(account.id.as_str()),
                             Some(account.email.as_str()),
                             None,
@@ -12829,6 +13059,7 @@ async fn proxy_request_with_account_pool(
                                     response
                                 }
                                 Err(err) => {
+                                    last_status = StatusCode::BAD_GATEWAY.as_u16();
                                     record_audit_event_from_context(
                                         &context,
                                         "upstream_forward",
@@ -12844,7 +13075,7 @@ async fn proxy_request_with_account_pool(
                                     log_codex_api_failure(
                                         None,
                                         Some(request),
-                                        None,
+                                        Some(last_status),
                                         Some(account.id.as_str()),
                                         Some(account.email.as_str()),
                                         None,
@@ -14415,10 +14646,10 @@ mod tests {
         active_stream_affinity_account_for_request, active_stream_lease_count_for_account,
         append_audit_event_to_path, apply_audit_trail_status_to_health_summary,
         apply_collection_routing_strategy, apply_local_api_safety_preset_to_collection,
-        backpressure_wait_budget, bind_response_affinity, build_audit_context, build_audit_event,
-        build_chat_completion_payload, build_chat_completion_stream_body,
-        build_codex_api_failure_log, build_codex_client_models_response,
-        build_effective_local_access_account_ids,
+        apply_routing_strategy, backpressure_wait_budget, bind_response_affinity,
+        build_audit_context, build_audit_event, build_chat_completion_payload,
+        build_chat_completion_stream_body, build_codex_api_failure_log,
+        build_codex_client_models_response, build_effective_local_access_account_ids,
         build_effective_local_access_account_ids_from_registry, build_health_summary_from_registry,
         build_health_summary_from_registry_for_accounts, build_images_api_payload,
         build_local_models_response, build_ordered_account_ids, build_pool_unavailable_message,
@@ -14437,11 +14668,11 @@ mod tests {
         is_websocket_upgrade_request, json_response_with_retry_after,
         load_health_registry_from_path, load_runtime_mode_state,
         local_api_safety_config_for_preset, local_backpressure_wait_duration,
-        next_routing_start_index, normalize_health_registry, normalize_local_api_safety_config,
-        now_ms, official_codex_sticky_routing_boundary, parse_codex_retry_after,
-        parse_http_request, parse_responses_payload_from_upstream, parse_retry_after_header_value,
-        pause_health_registry_account, pin_process_sticky_account, pool_wait_fits_request_budget,
-        prepare_gateway_request, proxy_dispatch_final_error_detail,
+        next_routing_start_index, normalize_custom_routing_rules, normalize_health_registry,
+        normalize_local_api_safety_config, now_ms, official_codex_sticky_routing_boundary,
+        parse_codex_retry_after, parse_http_request, parse_responses_payload_from_upstream,
+        parse_retry_after_header_value, pause_health_registry_account, pin_process_sticky_account,
+        pool_wait_fits_request_budget, prepare_gateway_request, proxy_dispatch_final_error_detail,
         proxy_dispatch_final_error_type, proxy_request_with_account_pool,
         prune_process_sticky_binding, record_manual_pause_audit_event,
         record_manual_recovery_audit_event, recover_health_registry_account,
@@ -14472,7 +14703,8 @@ mod tests {
     use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexQuota, CodexTokens};
     use crate::models::codex_local_access::{
         CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
-        CodexLocalAccessCollection, CodexLocalAccessHealthSummary, CodexLocalAccessModelCooldown,
+        CodexLocalAccessCollection, CodexLocalAccessCustomRoutingRule,
+        CodexLocalAccessHealthSummary, CodexLocalAccessModelCooldown,
         CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalApiFallbackMode,
         CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
         CodexRuntimeIntegrationMode,
@@ -14593,6 +14825,7 @@ mod tests {
             },
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -14674,6 +14907,7 @@ mod tests {
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -21906,6 +22140,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             },
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -21945,6 +22180,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             },
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22281,6 +22517,129 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
     }
 
     #[test]
+    fn custom_routing_prefers_higher_priority_accounts() {
+        let account_ids = vec![
+            "acc-low".to_string(),
+            "acc-high-a".to_string(),
+            "acc-high-b".to_string(),
+        ];
+        let rules = vec![
+            CodexLocalAccessCustomRoutingRule {
+                account_id: "acc-low".to_string(),
+                priority: 10,
+                weight: 1,
+            },
+            CodexLocalAccessCustomRoutingRule {
+                account_id: "acc-high-a".to_string(),
+                priority: 40,
+                weight: 1,
+            },
+            CodexLocalAccessCustomRoutingRule {
+                account_id: "acc-high-b".to_string(),
+                priority: 40,
+                weight: 1,
+            },
+        ];
+
+        let ordered = apply_routing_strategy(
+            &account_ids,
+            CodexLocalAccessRoutingStrategy::Custom,
+            &rules,
+            0,
+        );
+
+        assert_eq!(ordered, vec!["acc-high-a", "acc-high-b", "acc-low"]);
+    }
+
+    #[test]
+    fn custom_routing_uses_weight_for_same_priority_first_pick() {
+        let account_ids = vec!["acc-heavy".to_string(), "acc-light".to_string()];
+        let rules = vec![
+            CodexLocalAccessCustomRoutingRule {
+                account_id: "acc-heavy".to_string(),
+                priority: 20,
+                weight: 3,
+            },
+            CodexLocalAccessCustomRoutingRule {
+                account_id: "acc-light".to_string(),
+                priority: 20,
+                weight: 1,
+            },
+        ];
+
+        let first_picks = (0..8)
+            .map(|start| {
+                apply_routing_strategy(
+                    &account_ids,
+                    CodexLocalAccessRoutingStrategy::Custom,
+                    &rules,
+                    start,
+                )[0]
+                .clone()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            first_picks,
+            vec![
+                "acc-heavy",
+                "acc-heavy",
+                "acc-heavy",
+                "acc-light",
+                "acc-heavy",
+                "acc-heavy",
+                "acc-heavy",
+                "acc-light",
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_routing_rules_are_normalized_to_collection_accounts() {
+        let account_ids = vec!["acc-a".to_string(), "acc-b".to_string()];
+        let rules = vec![
+            CodexLocalAccessCustomRoutingRule {
+                account_id: " acc-a ".to_string(),
+                priority: 120,
+                weight: 0,
+            },
+            CodexLocalAccessCustomRoutingRule {
+                account_id: "acc-a".to_string(),
+                priority: 20,
+                weight: 10,
+            },
+            CodexLocalAccessCustomRoutingRule {
+                account_id: "acc-removed".to_string(),
+                priority: 30,
+                weight: 5,
+            },
+            CodexLocalAccessCustomRoutingRule {
+                account_id: "acc-b".to_string(),
+                priority: -5,
+                weight: 500,
+            },
+        ];
+
+        let normalized = normalize_custom_routing_rules(rules, &account_ids);
+
+        assert_eq!(
+            normalized,
+            vec![
+                CodexLocalAccessCustomRoutingRule {
+                    account_id: "acc-a".to_string(),
+                    priority: 100,
+                    weight: 1,
+                },
+                CodexLocalAccessCustomRoutingRule {
+                    account_id: "acc-b".to_string(),
+                    priority: 0,
+                    weight: 100,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn hardened_routing_uses_stable_fill_first_start_index() {
         let collection = CodexLocalAccessCollection {
             enabled: true,
@@ -22289,6 +22648,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22376,6 +22736,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22447,6 +22808,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22688,6 +23050,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22715,6 +23078,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22769,6 +23133,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             },
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22800,6 +23165,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             },
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22916,6 +23282,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22939,6 +23306,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: true,
             bound_oauth_account_id: None,
@@ -22969,6 +23337,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -22996,6 +23365,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,
@@ -23386,6 +23756,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
+            custom_routing_rules: Vec::new(),
             restrict_free_accounts: false,
             follow_current_account: false,
             bound_oauth_account_id: None,

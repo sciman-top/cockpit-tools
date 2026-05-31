@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  CodexLocalAccessCustomRoutingRule,
   CodexLocalAccessPortCleanupResult,
   CodexLocalAccessRoutingStrategy,
   CodexLocalAccessScope,
@@ -83,6 +84,12 @@ export async function applyCodexLocalAccessSafetyPreset(
   preset: CodexLocalApiSafetyPresetId,
 ): Promise<CodexLocalAccessState> {
   return await invoke('codex_local_access_apply_safety_preset', { preset });
+}
+
+export async function updateCodexLocalAccessCustomRouting(
+  rules: CodexLocalAccessCustomRoutingRule[],
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_update_custom_routing', { rules });
 }
 
 export async function updateCodexLocalAccessAccessScope(

@@ -625,6 +625,7 @@ pub fn run() {
             commands::codex::codex_local_access_update_port,
             commands::codex::codex_local_access_update_routing_strategy,
             commands::codex::codex_local_access_apply_safety_preset,
+            commands::codex::codex_local_access_update_custom_routing,
             commands::codex::codex_local_access_update_access_scope,
             commands::codex::codex_local_access_set_enabled,
             commands::codex::codex_runtime_mode_get,

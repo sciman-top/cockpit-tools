@@ -3,9 +3,10 @@ use crate::models::codex::{
     CodexQuota, CodexTokens,
 };
 use crate::models::codex_local_access::{
-    CodexLocalAccessPortCleanupResult, CodexLocalAccessRoutingStrategy, CodexLocalAccessScope,
-    CodexLocalAccessState, CodexLocalAccessTestResult, CodexLocalApiSafetyPresetId,
-    CodexRuntimeIntegrationMode, CodexRuntimeModeState,
+    CodexLocalAccessCustomRoutingRule, CodexLocalAccessPortCleanupResult,
+    CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessState,
+    CodexLocalAccessTestResult, CodexLocalApiSafetyPresetId, CodexRuntimeIntegrationMode,
+    CodexRuntimeModeState,
 };
 use crate::modules::{
     codex_account, codex_local_access, codex_oauth, codex_quota, codex_session_visibility,
@@ -956,6 +957,13 @@ pub async fn codex_local_access_apply_safety_preset(
     preset: CodexLocalApiSafetyPresetId,
 ) -> Result<CodexLocalAccessState, String> {
     codex_local_access::apply_local_access_safety_preset(preset).await
+}
+
+#[tauri::command]
+pub async fn codex_local_access_update_custom_routing(
+    rules: Vec<CodexLocalAccessCustomRoutingRule>,
+) -> Result<CodexLocalAccessState, String> {
+    codex_local_access::update_local_access_custom_routing(rules).await
 }
 
 #[tauri::command]

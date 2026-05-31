@@ -297,6 +297,7 @@ export interface CodexInstanceThreadSyncItem {
   instanceId: string;
   instanceName: string;
   addedThreadCount: number;
+  updatedThreadCount: number;
   backupDir?: string | null;
 }
 
@@ -305,6 +306,8 @@ export interface CodexInstanceThreadSyncSummary {
   threadUniverseCount: number;
   mutatedInstanceCount: number;
   totalSyncedThreadCount: number;
+  totalAddedThreadCount: number;
+  totalUpdatedThreadCount: number;
   items: CodexInstanceThreadSyncItem[];
   backupDirs: string[];
   message: string;
