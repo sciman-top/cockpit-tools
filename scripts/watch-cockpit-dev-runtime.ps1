@@ -223,13 +223,21 @@ function Get-ActiveCodexLocalAccessStreamGuard {
         if ($timestamp -lt $windowStartMs) {
           continue
         }
-        $phase = [string](Get-ObjectPropertyValue $event "phase")
-        if ($phase -ne "lease_granted" -and $phase -ne "lease_released") {
-          continue
-        }
         $detail = Get-ObjectPropertyValue $event "detail"
+        $phase = [string](Get-ObjectPropertyValue $event "phase")
         $leaseId = [string](Get-ObjectPropertyValue $detail "lease_id")
-        if ([string]::IsNullOrWhiteSpace($leaseId)) {
+        $activeCount = $null
+        $activeCountValue = Get-ObjectPropertyValue $detail "active_count"
+        if ($null -ne $activeCountValue) {
+          [int]$parsedActiveCount = 0
+          if ([int]::TryParse([string]$activeCountValue, [ref]$parsedActiveCount)) {
+            $activeCount = $parsedActiveCount
+          }
+        }
+
+        $isLeaseEvent = $phase -eq "lease_granted" -or $phase -eq "lease_released"
+        $isClearMarker = $null -ne $activeCount -and $activeCount -le 0
+        if ((-not $isLeaseEvent -or [string]::IsNullOrWhiteSpace($leaseId)) -and -not $isClearMarker) {
           continue
         }
         $events.Add([pscustomobject][ordered]@{
@@ -237,6 +245,7 @@ function Get-ActiveCodexLocalAccessStreamGuard {
             sequence = $sequence
             phase = $phase
             leaseId = $leaseId
+            activeCount = $activeCount
             path = $path
           })
         $sequence += 1
@@ -252,6 +261,9 @@ function Get-ActiveCodexLocalAccessStreamGuard {
       $activeLeases[$event.leaseId] = $event
     } elseif ($event.phase -eq "lease_released") {
       [void]$activeLeases.Remove($event.leaseId)
+    }
+    if ($null -ne $event.activeCount -and [int]$event.activeCount -le 0) {
+      $activeLeases.Clear()
     }
   }
 
@@ -335,11 +347,13 @@ function New-DebugSwitchRunner {
   $runnerEventLogPath = Join-Path $ReportDir ("debug-switch-runner-{0}.jsonl" -f $runnerId)
   $stopPids = @($SwitchFromProcesses | ForEach-Object { [int]$_.ProcessId })
   $stopPidsLiteral = if ($stopPids.Count -gt 0) { $stopPids -join ", " } else { "" }
+  $repoRootLiteral = ConvertTo-PowerShellSingleQuotedLiteral $RepoRoot
   $eventLogLiteral = ConvertTo-PowerShellSingleQuotedLiteral $runnerEventLogPath
   $dataRootLiteral = ConvertTo-PowerShellSingleQuotedLiteral (Get-LocalAccessDataRoot)
 
   $runnerScript = @"
 `$ErrorActionPreference = "Stop"
+`$repoRoot = $repoRootLiteral
 `$stopPids = @($stopPidsLiteral)
 `$gracefulStopTimeoutSeconds = $GracefulStopTimeoutSeconds
 `$activeStreamAuditWindowMinutes = $ActiveStreamAuditWindowMinutes
@@ -397,13 +411,21 @@ function Get-ActiveCodexLocalAccessStreamSnapshot {
         if (`$timestamp -lt `$windowStartMs) {
           continue
         }
-        `$phase = [string](Get-ObjectPropertyValue `$event "phase")
-        if (`$phase -ne "lease_granted" -and `$phase -ne "lease_released") {
-          continue
-        }
         `$detail = Get-ObjectPropertyValue `$event "detail"
+        `$phase = [string](Get-ObjectPropertyValue `$event "phase")
         `$leaseId = [string](Get-ObjectPropertyValue `$detail "lease_id")
-        if ([string]::IsNullOrWhiteSpace(`$leaseId)) {
+        `$activeCount = `$null
+        `$activeCountValue = Get-ObjectPropertyValue `$detail "active_count"
+        if (`$null -ne `$activeCountValue) {
+          [int]`$parsedActiveCount = 0
+          if ([int]::TryParse([string]`$activeCountValue, [ref]`$parsedActiveCount)) {
+            `$activeCount = `$parsedActiveCount
+          }
+        }
+
+        `$isLeaseEvent = `$phase -eq "lease_granted" -or `$phase -eq "lease_released"
+        `$isClearMarker = `$null -ne `$activeCount -and `$activeCount -le 0
+        if ((-not `$isLeaseEvent -or [string]::IsNullOrWhiteSpace(`$leaseId)) -and -not `$isClearMarker) {
           continue
         }
         `$events.Add([pscustomobject][ordered]@{
@@ -411,6 +433,7 @@ function Get-ActiveCodexLocalAccessStreamSnapshot {
             sequence = `$sequence
             phase = `$phase
             leaseId = `$leaseId
+            activeCount = `$activeCount
             path = `$path
           })
         `$sequence += 1
@@ -426,6 +449,9 @@ function Get-ActiveCodexLocalAccessStreamSnapshot {
       `$activeLeases[`$event.leaseId] = `$event
     } elseif (`$event.phase -eq "lease_released") {
       [void]`$activeLeases.Remove(`$event.leaseId)
+    }
+    if (`$null -ne `$event.activeCount -and [int]`$event.activeCount -le 0) {
+      `$activeLeases.Clear()
     }
   }
 
@@ -494,25 +520,20 @@ function Stop-ReleaseProcessesBeforeDebugLaunch {
   Write-RunnerEvent @{ event = "release_processes_stopped_by_debug_switch_runner"; processes = `$results }
 }
 
-if (`$args.Count -lt 1) {
-  Write-RunnerEvent @{ event = "debug_switch_runner_missing_executable"; args = `$args }
-  exit 2
-}
-
-`$exePath = `$args[0]
-`$appArgs = @()
-if (`$args.Count -gt 1) {
-  `$appArgs = @(`$args[1..(`$args.Count - 1)])
-}
-
-Write-RunnerEvent @{ event = "debug_switch_runner_ready"; executablePath = `$exePath; appArgs = `$appArgs; stopPids = `$stopPids }
+`$cargoArgs = @(`$args)
+Write-RunnerEvent @{ event = "debug_switch_runner_ready"; cargoArgs = `$cargoArgs; stopPids = `$stopPids }
 Wait-UntilNoActiveCodexStreams
 Stop-ReleaseProcessesBeforeDebugLaunch
-Write-RunnerEvent @{ event = "debug_switch_runner_starting_debug_exe"; executablePath = `$exePath; appArgs = `$appArgs }
-& `$exePath @appArgs
-`$exitCode = if (`$null -ne `$LASTEXITCODE) { [int]`$LASTEXITCODE } else { 0 }
-Write-RunnerEvent @{ event = "debug_switch_runner_debug_exe_exited"; executablePath = `$exePath; exitCode = `$exitCode }
-exit `$exitCode
+Push-Location -LiteralPath `$repoRoot
+try {
+  Write-RunnerEvent @{ event = "debug_switch_runner_starting_cargo"; cargoArgs = `$cargoArgs; repoRoot = `$repoRoot }
+  & cargo.exe @cargoArgs
+  `$exitCode = if (`$null -ne `$LASTEXITCODE) { [int]`$LASTEXITCODE } else { 0 }
+  Write-RunnerEvent @{ event = "debug_switch_runner_cargo_exited"; cargoArgs = `$cargoArgs; exitCode = `$exitCode }
+  exit `$exitCode
+} finally {
+  Pop-Location
+}
 "@
 
   Set-Content -LiteralPath $runnerScriptPath -Value $runnerScript -Encoding UTF8
@@ -583,9 +604,9 @@ function Start-CockpitTauriDev {
   $gateway = Ensure-StableLocalAccessGateway -Reason "before_tauri_dev_launch"
   $stdoutPath = Join-Path $ReportDir "tauri-dev.stdout.log"
   $stderrPath = Join-Path $ReportDir "tauri-dev.stderr.log"
-  $switchRunner = $null
   $argumentList = @("run", "tauri", "dev")
   $command = "npm run tauri dev"
+  $switchRunner = $null
   if ($SwitchFromProcesses.Count -gt 0) {
     $switchRunner = New-DebugSwitchRunner -SwitchFromProcesses $SwitchFromProcesses
     $argumentList = @("run", "tauri", "--", "dev", "--runner", $switchRunner.runnerCmdPath)
@@ -607,6 +628,18 @@ function Start-CockpitTauriDev {
     stderrPath = $stderrPath
     stableLocalAccessGateway = $gateway
     switchRunner = $switchRunner
+  }
+}
+
+function Start-CockpitTauriDevAfterPrebuildSwitch {
+  param([array]$NonDebugProcesses = @())
+
+  $launch = Start-CockpitTauriDev -SwitchFromProcesses $NonDebugProcesses
+
+  return [ordered]@{
+    stopResults = @()
+    launch = $launch
+    releasePreservedUntilRunner = @($NonDebugProcesses).Count -gt 0
   }
 }
 
@@ -959,13 +992,17 @@ while ($true) {
         }
       } else {
         try {
-          $launch = Start-CockpitTauriDev -SwitchFromProcesses $nonDebugProcesses
+          $switch = Start-CockpitTauriDevAfterPrebuildSwitch -NonDebugProcesses $nonDebugProcesses
           $lastLaunchAt = Get-Date
           $launchCount += 1
           $pendingDebugLaunchAfterPrebuild = $false
           $pendingDebugLaunchPrebuild = $null
           $needsTauriDev = $false
-          Write-LogLine @{ event = "pending_tauri_dev_launched_after_debug_prebuild_release_preserved"; launch = $launch; launchCount = $launchCount }
+          Write-LogLine @{
+            event = "pending_tauri_dev_launched_after_debug_prebuild_release_replaced"
+            switch = $switch
+            launchCount = $launchCount
+          }
         } catch {
           Write-LogLine @{ event = "pending_tauri_dev_launch_failed_after_debug_prebuild"; message = $_.Exception.Message }
         }
@@ -1039,10 +1076,14 @@ while ($true) {
           }
         } else {
           try {
-            $launch = Start-CockpitTauriDev -SwitchFromProcesses $nonDebugProcesses
+            $switch = Start-CockpitTauriDevAfterPrebuildSwitch -NonDebugProcesses $nonDebugProcesses
             $lastLaunchAt = Get-Date
             $launchCount += 1
-            Write-LogLine @{ event = "tauri_dev_launched_after_debug_prebuild_release_preserved"; launch = $launch; launchCount = $launchCount }
+            Write-LogLine @{
+              event = "tauri_dev_launched_after_debug_prebuild_release_replaced"
+              switch = $switch
+              launchCount = $launchCount
+            }
           } catch {
             Write-LogLine @{ event = "tauri_dev_launch_failed_after_debug_prebuild"; message = $_.Exception.Message }
           }

@@ -1441,16 +1441,16 @@ pub(crate) fn resolve_observed_plan_type(
     account: &CodexAccount,
     observed_plan_type: Option<String>,
 ) -> Option<String> {
-    if let Some(quota_plan_type) = raw_quota_plan_type(account) {
-        return Some(quota_plan_type);
-    }
-
     let observed_plan_type = normalize_optional_value(observed_plan_type);
     if observed_plan_type
         .as_deref()
         .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
     {
         return observed_plan_type;
+    }
+
+    if let Some(quota_plan_type) = raw_quota_plan_type(account) {
+        return Some(quota_plan_type);
     }
 
     let existing_plan_type = normalize_optional_ref(account.plan_type.as_deref());
@@ -6759,6 +6759,57 @@ mod tests {
             last_used: account.last_used,
         });
         save_account_index(&index).expect("save index");
+
+        let loaded = load_account(storage_id).expect("load account");
+        assert_eq!(loaded.plan_type.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn load_account_prefers_paid_token_claim_over_stale_free_quota_raw_plan() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-paid-token-over-stale-quota");
+        let email = "filter-raisins.9f+g1@icloud.com";
+        let storage_id = "codex_paid_token_stale_free_quota";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-paid-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-paid-token",
+                "chatgpt_plan_type": "plus",
+                "account_id": "acc-paid-token"
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-paid-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc-paid-token",
+                "chatgpt_plan_type": "plus"
+            }
+        }));
+        let mut account = CodexAccount::new(
+            storage_id.to_string(),
+            email.to_string(),
+            CodexTokens {
+                id_token,
+                access_token,
+                refresh_token: Some("refresh-paid-token".to_string()),
+            },
+        );
+        account.plan_type = Some("free".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 100,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "free" })),
+        });
+        save_account(&account).expect("save account with stale quota raw free plan");
 
         let loaded = load_account(storage_id).expect("load account");
         assert_eq!(loaded.plan_type.as_deref(), Some("plus"));

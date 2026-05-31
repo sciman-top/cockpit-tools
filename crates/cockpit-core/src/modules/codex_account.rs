@@ -1011,16 +1011,16 @@ pub(crate) fn resolve_observed_plan_type(
     account: &CodexAccount,
     observed_plan_type: Option<String>,
 ) -> Option<String> {
-    if let Some(quota_plan_type) = raw_quota_plan_type(account) {
-        return Some(quota_plan_type);
-    }
-
     let observed_plan_type = normalize_optional_value(observed_plan_type);
     if observed_plan_type
         .as_deref()
         .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
     {
         return observed_plan_type;
+    }
+
+    if let Some(quota_plan_type) = raw_quota_plan_type(account) {
+        return Some(quota_plan_type);
     }
 
     let existing_plan_type = normalize_optional_ref(account.plan_type.as_deref());
@@ -2989,14 +2989,14 @@ mod tests {
         get_accounts_storage_path, get_codex_accounts_data_dir, get_current_account,
         list_accounts_checked, load_account, load_account_index,
         read_api_provider_from_config_toml, read_quick_config_from_config_toml,
-        resolve_api_provider_config, save_account, save_account_index, sync_account_from_auth_dir,
-        sync_managed_projection_from_auth_dir, validate_api_key_credentials,
-        write_account_bundle_to_dir, write_api_provider_to_config_toml,
-        write_quick_config_to_config_toml, ApiProviderConfig, CodexAccountIndex,
-        CodexAccountSummary, CodexAuthFile, CodexAuthTokens, CODEX_AUTO_COMPACT_DEFAULT_LIMIT,
-        CODEX_CONTEXT_WINDOW_1M_VALUE,
+        resolve_api_provider_config, resolve_observed_plan_type, save_account, save_account_index,
+        sync_account_from_auth_dir, sync_managed_projection_from_auth_dir,
+        validate_api_key_credentials, write_account_bundle_to_dir,
+        write_api_provider_to_config_toml, write_quick_config_to_config_toml, ApiProviderConfig,
+        CodexAccountIndex, CodexAccountSummary, CodexAuthFile, CodexAuthTokens,
+        CODEX_AUTO_COMPACT_DEFAULT_LIMIT, CODEX_CONTEXT_WINDOW_1M_VALUE,
     };
-    use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexTokens};
+    use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexQuota, CodexTokens};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use std::fs;
     use std::sync::{LazyLock, Mutex};
@@ -3114,6 +3114,36 @@ mod tests {
             access_token,
             refresh_token: Some(refresh_token.to_string()),
         }
+    }
+
+    #[test]
+    fn resolve_observed_plan_type_prefers_paid_observation_over_stale_free_quota_raw_plan() {
+        let mut account = CodexAccount::new(
+            "codex_paid_observation_stale_free_quota".to_string(),
+            "demo@example.com".to_string(),
+            CodexTokens {
+                id_token: "id".to_string(),
+                access_token: "access".to_string(),
+                refresh_token: None,
+            },
+        );
+        account.plan_type = Some("free".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 100,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(10080),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "free" })),
+        });
+
+        assert_eq!(
+            resolve_observed_plan_type(&account, Some("pro".to_string())).as_deref(),
+            Some("pro")
+        );
     }
 
     fn seed_oauth_account(tokens: CodexTokens) -> CodexAccount {
