@@ -26,6 +26,11 @@ dist-ssr
 *.sw?
 
 locale-check-report.md
+.playwright-mcp/
+
+# Keep curated evidence summaries in reports/, but do not commit huge raw runtime streams.
+reports/**/monitor-checkpoint.json
+reports/**/live-monitor-*.json
 reports/local-hardened-api-smoke/
 reports/local-hardened-api-live-monitor/
 reports/tauri-command-runs/
