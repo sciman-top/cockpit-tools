@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "Routage personnalisé du service API mis à jour",
       "upstreamProxyLabel": "URL du proxy API",
       "upstreamProxySaveSuccess": "URL du proxy API mise à jour",
-      "upstreamProxyUrlPlaceholder": "Adresse proxy API",
+      "upstreamProxyUrlPlaceholder": "Vide = proxy global",
       "upstreamProxySaveAction": "Enregistrer proxy"
     },
     "local": {

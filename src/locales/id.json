@@ -2008,7 +2008,7 @@
       "customRoutingSaveSuccess": "Routing kustom layanan API diperbarui",
       "upstreamProxyLabel": "URL proxy API",
       "upstreamProxySaveSuccess": "URL proxy API diperbarui",
-      "upstreamProxyUrlPlaceholder": "Alamat proxy API",
+      "upstreamProxyUrlPlaceholder": "Kosong = proxy global",
       "upstreamProxySaveAction": "Simpan proxy"
     },
     "api": {

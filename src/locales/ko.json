@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "API 서비스 사용자 지정 라우팅이 업데이트되었습니다",
       "upstreamProxyLabel": "API 프록시 주소",
       "upstreamProxySaveSuccess": "API 프록시 주소가 업데이트되었습니다",
-      "upstreamProxyUrlPlaceholder": "API 프록시 주소",
+      "upstreamProxyUrlPlaceholder": "비움 = 전역 프록시",
       "upstreamProxySaveAction": "프록시 저장"
     },
     "local": {

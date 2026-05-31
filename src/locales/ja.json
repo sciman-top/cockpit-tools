@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "API サービスのカスタムルーティングを更新しました",
       "upstreamProxyLabel": "API プロキシアドレス",
       "upstreamProxySaveSuccess": "API プロキシアドレスを更新しました",
-      "upstreamProxyUrlPlaceholder": "API プロキシアドレス",
+      "upstreamProxyUrlPlaceholder": "空欄 = グローバルプロキシ",
       "upstreamProxySaveAction": "プロキシを保存"
     },
     "local": {

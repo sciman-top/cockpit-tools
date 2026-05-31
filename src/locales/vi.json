@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "Đã cập nhật định tuyến tùy chỉnh của dịch vụ API",
       "upstreamProxyLabel": "URL proxy API",
       "upstreamProxySaveSuccess": "Đã cập nhật URL proxy API",
-      "upstreamProxyUrlPlaceholder": "Địa chỉ proxy API",
+      "upstreamProxyUrlPlaceholder": "Trống = proxy toàn cục",
       "upstreamProxySaveAction": "Lưu proxy"
     },
     "local": {

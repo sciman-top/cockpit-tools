@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "Настраиваемая маршрутизация API-сервиса обновлена",
       "upstreamProxyLabel": "URL API-прокси",
       "upstreamProxySaveSuccess": "URL API-прокси обновлён",
-      "upstreamProxyUrlPlaceholder": "Адрес API-прокси",
+      "upstreamProxyUrlPlaceholder": "Пусто = глобальный прокси",
       "upstreamProxySaveAction": "Сохранить прокси"
     },
     "local": {

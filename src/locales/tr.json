@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "API hizmeti özel yönlendirmesi güncellendi",
       "upstreamProxyLabel": "API proxy URL'si",
       "upstreamProxySaveSuccess": "API proxy URL'si güncellendi",
-      "upstreamProxyUrlPlaceholder": "API proxy adresi",
+      "upstreamProxyUrlPlaceholder": "Boş = genel proxy",
       "upstreamProxySaveAction": "Proxy kaydet"
     },
     "local": {

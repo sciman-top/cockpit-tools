@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "Niestandardowe routowanie usługi API zostało zaktualizowane",
       "upstreamProxyLabel": "Adres proxy API",
       "upstreamProxySaveSuccess": "Adres proxy API zaktualizowany",
-      "upstreamProxyUrlPlaceholder": "Adres proxy API",
+      "upstreamProxyUrlPlaceholder": "Puste = proxy globalne",
       "upstreamProxySaveAction": "Zapisz proxy"
     },
     "local": {

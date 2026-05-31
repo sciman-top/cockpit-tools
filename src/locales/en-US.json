@@ -2030,7 +2030,7 @@
       "customRoutingSaveSuccess": "API service custom routing updated",
       "upstreamProxyLabel": "API proxy URL",
       "upstreamProxySaveSuccess": "API proxy URL updated",
-      "upstreamProxyUrlPlaceholder": "API proxy URL",
+      "upstreamProxyUrlPlaceholder": "Blank = global proxy",
       "upstreamProxySaveAction": "Save proxy"
     },
     "api": {

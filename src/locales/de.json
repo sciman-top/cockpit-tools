@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "Benutzerdefiniertes Routing des API-Service wurde aktualisiert",
       "upstreamProxyLabel": "API-Proxy-URL",
       "upstreamProxySaveSuccess": "API-Proxy-URL aktualisiert",
-      "upstreamProxyUrlPlaceholder": "API-Proxy-Adresse",
+      "upstreamProxyUrlPlaceholder": "Leer = globaler Proxy",
       "upstreamProxySaveAction": "Proxy speichern"
     },
     "local": {

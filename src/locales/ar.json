@@ -2005,7 +2005,7 @@
       "customRoutingSaveSuccess": "تم تحديث التوجيه المخصص لخدمة API",
       "upstreamProxyLabel": "عنوان وكيل API",
       "upstreamProxySaveSuccess": "تم تحديث عنوان وكيل API",
-      "upstreamProxyUrlPlaceholder": "عنوان وكيل API",
+      "upstreamProxyUrlPlaceholder": "فارغ = الوكيل العام",
       "upstreamProxySaveAction": "حفظ الوكيل"
     },
     "local": {

@@ -1959,7 +1959,7 @@
       "customRoutingSaveSuccess": "Roteamento personalizado do serviço API atualizado",
       "upstreamProxyLabel": "URL do proxy da API",
       "upstreamProxySaveSuccess": "URL do proxy da API atualizada",
-      "upstreamProxyUrlPlaceholder": "Endereço proxy da API",
+      "upstreamProxyUrlPlaceholder": "Vazio = proxy global",
       "upstreamProxySaveAction": "Salvar proxy"
     },
     "local": {

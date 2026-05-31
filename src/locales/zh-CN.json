@@ -2030,7 +2030,7 @@
       "customRoutingSaveSuccess": "API 服务自定义调度已更新",
       "upstreamProxyLabel": "API 代理地址",
       "upstreamProxySaveSuccess": "API 代理地址已更新",
-      "upstreamProxyUrlPlaceholder": "API 代理地址",
+      "upstreamProxyUrlPlaceholder": "留空用全局代理",
       "upstreamProxySaveAction": "保存代理"
     },
     "api": {

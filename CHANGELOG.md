@@ -7,6 +7,13 @@ All notable changes to Cockpit Tools will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
+## [0.24.2] - 2026-05-21
+
+### Fixed
+- **Emergency fix for Codex Local API Service proxy routing after v0.24.1**: empty API proxy URLs now fall back to the Cockpit global proxy and then explicit environment proxy variables (`HTTPS_PROXY`, `HTTP_PROXY`, or `ALL_PROXY`), and the gateway refuses official upstream requests when no proxy URL is available instead of falling back to unintended direct upstream access.
+- **Codex Local API Service upstream failures now identify the active proxy source**: 502 diagnostics and logs report whether the API service proxy, Cockpit global proxy, environment proxy, or missing proxy configuration was used so users can correct network routing quickly.
+
+---
 ## [0.24.1] - 2026-05-21
 
 ### Added
