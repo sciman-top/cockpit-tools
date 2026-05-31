@@ -1759,6 +1759,7 @@
       "testTimeout": "Test zaman aşımına uğradı. Yerel hizmetin çalıştığını doğrulayın.",
       "testUnavailable": "Mevcut API hizmeti URL’si kullanılamıyor",
       "activateAction": "API hizmetini başlat",
+      "switchToApiService": "API hizmetine geç",
       "activateSuccess": "API hizmetine geçildi",
       "dashboardAction": "Hizmet paneli",
       "manageDesc": "API hizmeti istatistiklerini, üyeleri, portu, anahtarı ve bağlantı testini tek yerden yönetin.",

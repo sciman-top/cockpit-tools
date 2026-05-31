@@ -1759,6 +1759,7 @@
       "testTimeout": "O teste expirou. Confirme se o serviço local está em execução.",
       "testUnavailable": "A URL atual do serviço de API não está disponível",
       "activateAction": "Iniciar serviço de API",
+      "switchToApiService": "Alternar para o serviço de API",
       "activateSuccess": "Alternado para o serviço de API",
       "dashboardAction": "Painel do serviço",
       "manageDesc": "Gerencie em um só lugar as estatísticas do serviço API, membros, porta, chave e teste de conexão.",

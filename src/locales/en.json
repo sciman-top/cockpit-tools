@@ -1812,6 +1812,7 @@
       "testTimeout": "Test timed out. Confirm the local service is running.",
       "testUnavailable": "The current API service URL is unavailable",
       "activateAction": "Start API Service",
+      "switchToApiService": "Switch to API Service",
       "enableBeforeActivateTitle": "Service Not Enabled",
       "enableBeforeActivateMessage": "The API service is currently disabled and must be enabled first. Enable it and switch now?",
       "enableAndActivateAction": "Enable and Switch",

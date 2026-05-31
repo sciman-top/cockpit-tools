@@ -1805,6 +1805,7 @@
       "testTimeout": "انتهت مهلة الاختبار. تأكد من تشغيل الخدمة المحلية.",
       "testUnavailable": "عنوان خدمة API الحالي غير متاح",
       "activateAction": "تشغيل خدمة API",
+      "switchToApiService": "التبديل إلى خدمة API",
       "activateSuccess": "تم التبديل إلى خدمة API",
       "dashboardAction": "لوحة الخدمة",
       "manageDesc": "أدر إحصاءات خدمة API والأعضاء والمنفذ والمفتاح واختبار الاتصال من مكان واحد.",

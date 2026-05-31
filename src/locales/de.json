@@ -1759,6 +1759,7 @@
       "testTimeout": "Zeitüberschreitung beim Test. Prüfen Sie, ob der lokale Dienst läuft.",
       "testUnavailable": "Die aktuelle API-Dienst-URL ist nicht erreichbar",
       "activateAction": "API-Dienst starten",
+      "switchToApiService": "Zum API-Dienst wechseln",
       "activateSuccess": "Zum API-Dienst gewechselt",
       "dashboardAction": "Service-Panel",
       "manageDesc": "Verwalten Sie API-Service-Statistiken, Mitglieder, Port, Schlüssel und Verbindungstest an einem Ort.",

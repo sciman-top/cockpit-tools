@@ -1759,6 +1759,7 @@
       "testTimeout": "測試逾時，請確認本地服務已啟動",
       "testUnavailable": "目前的 API 服務位址不可用",
       "activateAction": "啟動 API 服務",
+      "switchToApiService": "切換到 API 服務",
       "activateSuccess": "已切換到 API 服務",
       "dashboardAction": "服務面板",
       "manageDesc": "在這裡統一管理 API 服務的統計、成員、連接埠、密鑰與連通性測試。",

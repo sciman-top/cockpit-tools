@@ -1759,6 +1759,7 @@
       "testTimeout": "テストがタイムアウトしました。ローカルサービスが起動しているか確認してください。",
       "testUnavailable": "現在の API サービス URL は利用できません",
       "activateAction": "API サービスを起動",
+      "switchToApiService": "API サービスに切り替え",
       "activateSuccess": "API サービスに切り替えました",
       "dashboardAction": "サービスパネル",
       "manageDesc": "API サービスの統計、メンバー、ポート、キー、接続テストをここでまとめて管理します。",

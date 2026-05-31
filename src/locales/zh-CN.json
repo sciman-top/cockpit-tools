@@ -1812,6 +1812,7 @@
       "testTimeout": "测试超时，请确认本地服务已启动",
       "testUnavailable": "当前 API 服务地址不可用",
       "activateAction": "启动 API 服务",
+      "switchToApiService": "切换到 API 服务",
       "enableBeforeActivateTitle": "服务未启用",
       "enableBeforeActivateMessage": "API 服务当前未启用，需要先启用服务。是否启用并切号？",
       "enableAndActivateAction": "启用并切号",

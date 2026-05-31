@@ -1759,6 +1759,7 @@
       "testTimeout": "Test vypršel. Ověřte, že místní služba běží.",
       "testUnavailable": "Aktuální adresa API služby není dostupná",
       "activateAction": "Spustit API službu",
+      "switchToApiService": "Přepnout na API službu",
       "activateSuccess": "Přepnuto na API službu",
       "dashboardAction": "Panel služby",
       "manageDesc": "Na jednom místě spravujte statistiky služby API, členy, port, klíč i test připojení.",

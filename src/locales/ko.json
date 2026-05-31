@@ -1759,6 +1759,7 @@
       "testTimeout": "테스트 시간이 초과되었습니다. 로컬 서비스가 실행 중인지 확인하세요.",
       "testUnavailable": "현재 API 서비스 URL을 사용할 수 없습니다",
       "activateAction": "API 서비스 시작",
+      "switchToApiService": "API 서비스로 전환",
       "activateSuccess": "API 서비스로 전환했습니다",
       "dashboardAction": "서비스 패널",
       "manageDesc": "API 서비스 통계, 멤버, 포트, 키, 연결 테스트를 한곳에서 관리합니다.",

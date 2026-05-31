@@ -121,6 +121,7 @@ import {
 } from "../utils/codexAccountSort";
 import { getCodexLocalAccessQuotaAccountRefreshKey } from "../utils/codexLocalAccessHealth";
 import {
+  getCodexLocalAccessPrimaryActionLabelKind,
   getCodexLocalAccessPrimaryActionKind,
   isCodexLocalAccessRuntimeActive,
 } from "../utils/codexLocalAccessUiState";
@@ -6855,9 +6856,18 @@ export function CodexAccountsPage() {
         localAccessLaunchCurrent,
         codexRuntimeMode,
       ) === "deactivate";
-    const localAccessPrimaryActionTitle = localAccessPrimaryActionIsDeactivate
-      ? t("codex.localAccess.disableService", "停用服务")
-      : t("codex.localAccess.activateAction", "启动 API 服务");
+    const localAccessPrimaryActionLabelKind =
+      getCodexLocalAccessPrimaryActionLabelKind(
+        localAccessLaunchCurrent,
+        codexRuntimeMode,
+        Boolean(localAccessState?.running),
+      );
+    const localAccessPrimaryActionTitle =
+      localAccessPrimaryActionLabelKind === "deactivate"
+        ? t("codex.localAccess.disableService", "停用服务")
+        : localAccessPrimaryActionLabelKind === "switch"
+          ? t("codex.localAccess.switchToApiService", "切换到 API 服务")
+          : t("codex.localAccess.activateAction", "启动 API 服务");
 
     return (
       <div

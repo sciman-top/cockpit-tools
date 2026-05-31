@@ -410,7 +410,7 @@ function Start-CockpitDebugPrebuild {
   $manifestPath = Join-Path $RepoRoot "src-tauri\Cargo.toml"
   $process = Start-Process `
     -FilePath "cargo.exe" `
-    -ArgumentList @("build", "--manifest-path", $manifestPath, "--no-default-features", "--color", "never") `
+    -ArgumentList @("build", "--manifest-path", $manifestPath, "--bin", "cockpit-tools", "--no-default-features", "--color", "never") `
     -WorkingDirectory $RepoRoot `
     -WindowStyle Hidden `
     -PassThru `
@@ -420,7 +420,7 @@ function Start-CockpitDebugPrebuild {
   return [ordered]@{
     process = $process
     processId = $process.Id
-    command = "cargo build --manifest-path src-tauri/Cargo.toml --no-default-features --color never"
+    command = "cargo build --manifest-path src-tauri/Cargo.toml --bin cockpit-tools --no-default-features --color never"
     stdoutPath = $stdoutPath
     stderrPath = $stderrPath
     startedAt = Get-Date
@@ -683,6 +683,12 @@ while ($true) {
     }
 
     $hasPrebuildRunning = $null -ne $debugPrebuild
+    $debugLaunchAgeSeconds = if ($lastLaunchAt) { [int]((Get-Date) - $lastLaunchAt).TotalSeconds } else { $null }
+    $debugLaunchGraceActive = (
+      $tauriDevLaunchers.Count -gt 0 -and
+      $null -ne $debugLaunchAgeSeconds -and
+      $debugLaunchAgeSeconds -lt $DebugStartupGraceSeconds
+    )
     $canStartDebugWork = $debugProcesses.Count -eq 0 -and $tauriDevLaunchers.Count -eq 0 -and -not $hasPrebuildRunning
     $usePrebuildSwitch = $DebugSwitchMode -eq "PrebuildThenStop" -and $nonDebugProcesses.Count -gt 0
     $needsReleaseFallback = (
@@ -690,9 +696,17 @@ while ($true) {
       $releaseFallbackEnabled -and
       $debugProcesses.Count -eq 0 -and
       $nonDebugProcesses.Count -eq 0 -and
-      $tauriDevLaunchers.Count -eq 0 -and
+      -not $debugLaunchGraceActive -and
       -not $hasPrebuildRunning
     )
+    if ($debugLaunchGraceActive -and $nonDebugProcesses.Count -eq 0) {
+      Write-LogLine @{
+        event = "release_fallback_deferred_debug_launch_grace"
+        launcherCount = $tauriDevLaunchers.Count
+        debugLaunchAgeSeconds = $debugLaunchAgeSeconds
+        graceSeconds = $DebugStartupGraceSeconds
+      }
+    }
     $needsDebugPrebuild = $canStartDebugWork -and $usePrebuildSwitch
     $needsTauriDev = $canStartDebugWork -and -not $usePrebuildSwitch
     $needsNonDebugStop = $nonDebugProcesses.Count -gt 0 -and (
@@ -750,6 +764,8 @@ while ($true) {
         $lastReleaseFallbackAt = $now
         $releaseFallbackCount += 1
         $needsTauriDev = $false
+        $pendingDebugLaunchAfterPrebuild = $false
+        $pendingDebugLaunchPrebuild = $null
         Write-LogLine @{
           event = "release_fallback_started_for_missing_debug"
           fallback = $fallback
@@ -881,7 +897,13 @@ while ($true) {
       Write-LogLine @{ event = "no_cockpit_process_cooldown"; launchCount = $launchCount }
     }
   } elseif ($DesiredInstance -eq "Debug" -and $debugProcesses.Count -eq 0 -and $tauriDevLaunchers.Count -gt 0) {
-    $missingSeconds = if ($debugMissingSince) { [int]((Get-Date) - $debugMissingSince).TotalSeconds } else { 0 }
+    $missingSeconds = if ($lastLaunchAt) {
+      [int]((Get-Date) - $lastLaunchAt).TotalSeconds
+    } elseif ($debugMissingSince) {
+      [int]((Get-Date) - $debugMissingSince).TotalSeconds
+    } else {
+      0
+    }
     if ($missingSeconds -ge $DebugStartupGraceSeconds) {
       if ($hasActiveCodexStreams) {
         Write-LogLine @{

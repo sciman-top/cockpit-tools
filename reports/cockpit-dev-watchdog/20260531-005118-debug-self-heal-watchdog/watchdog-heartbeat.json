@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-05-31T00:59:47.3852102+08:00",
+  "timestamp": "2026-05-31T01:57:32.4351369+08:00",
   "pid": 2316,
   "desiredInstance": "Debug",
   "debugSwitchMode": "PrebuildThenStop",
@@ -10,7 +10,7 @@
   "runningCockpitProcessCount": 1,
   "runningCockpitProcesses": [
     {
-      "ProcessId": 26080,
+      "ProcessId": 27592,
       "Name": "cockpit-tools.exe",
       "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe",
       "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe\""
@@ -19,7 +19,7 @@
   "runningDebugProcessCount": 1,
   "runningDebugProcesses": [
     {
-      "ProcessId": 26080,
+      "ProcessId": 27592,
       "Name": "cockpit-tools.exe",
       "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe",
       "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe\""
@@ -30,25 +30,25 @@
   "tauriDevLauncherCount": 4,
   "tauriDevLaunchers": [
     {
-      "ProcessId": 9056,
+      "ProcessId": 21180,
       "Name": "cmd.exe",
       "ExecutablePath": "C:\\WINDOWS\\system32\\cmd.exe",
       "CommandLine": "C:\\WINDOWS\\system32\\cmd.exe /c \"\"C:\\\\Program Files\\nodejs\\npm.cmd\" run tauri dev\""
     },
     {
-      "ProcessId": 29396,
+      "ProcessId": 39664,
       "Name": "node.exe",
       "ExecutablePath": "C:\\Program Files\\nodejs\\node.exe",
       "CommandLine": "\"C:\\Program Files\\nodejs\\\\node.exe\"  \"C:\\Users\\sciman\\AppData\\Roaming\\npm\\node_modules\\npm\\bin\\npm-cli.js\" run tauri dev"
     },
     {
-      "ProcessId": 26536,
+      "ProcessId": 33344,
       "Name": "cmd.exe",
       "ExecutablePath": "C:\\WINDOWS\\system32\\cmd.exe",
       "CommandLine": "C:\\WINDOWS\\system32\\cmd.exe /d /s /c npm run sync-version && tauri dev"
     },
     {
-      "ProcessId": 32032,
+      "ProcessId": 28980,
       "Name": "node.exe",
       "ExecutablePath": "C:\\Program Files\\nodejs\\node.exe",
       "CommandLine": "\"node\"   \"D:\\CODE\\external\\Cockpit-Tools-Local\\node_modules\\.bin\\\\..\\@tauri-apps\\cli\\tauri.js\" dev"
@@ -67,7 +67,7 @@
     "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access.json",
     "enabled": true,
     "port": 45336,
-    "updatedAt": 1780159557917
+    "updatedAt": 1780161031058
   },
   "periodicStableLocalAccessGateway": null,
   "activeCodexStreamGuard": {
@@ -84,10 +84,10 @@
     "lastEventTimestampMs": 1780160051402,
     "parseErrorCount": 0
   },
-  "launchCount": 0,
+  "launchCount": 1,
   "prebuildCount": 0,
   "releaseFallbackCount": 0,
-  "lastLaunchAt": null,
+  "lastLaunchAt": "2026-05-31T01:29:45.7747764+08:00",
   "lastPrebuildAt": null,
   "lastReleaseFallbackAt": null,
   "debugPrebuild": null,

@@ -1808,6 +1808,7 @@
       "testTimeout": "Pengujian habis waktu. Pastikan layanan lokal sedang berjalan.",
       "testUnavailable": "URL layanan API saat ini tidak tersedia",
       "activateAction": "Mulai Layanan API",
+      "switchToApiService": "Beralih ke Layanan API",
       "activateSuccess": "Beralih ke layanan API",
       "dashboardAction": "Panel layanan",
       "manageDesc": "Kelola statistik layanan API, anggota, port, kunci, dan uji konektivitas di satu tempat.",

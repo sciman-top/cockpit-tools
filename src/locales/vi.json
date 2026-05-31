@@ -1759,6 +1759,7 @@
       "testTimeout": "Kiểm tra đã hết thời gian. Hãy xác nhận dịch vụ cục bộ đang chạy.",
       "testUnavailable": "URL dịch vụ API hiện tại không khả dụng",
       "activateAction": "Khởi động dịch vụ API",
+      "switchToApiService": "Chuyển sang dịch vụ API",
       "activateSuccess": "Đã chuyển sang dịch vụ API",
       "dashboardAction": "Bảng dịch vụ",
       "manageDesc": "Quản lý thống kê dịch vụ API, thành viên, cổng, khóa và kiểm tra kết nối tại một nơi.",

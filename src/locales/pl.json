@@ -1759,6 +1759,7 @@
       "testTimeout": "Przekroczono limit czasu testu. Sprawdź, czy lokalna usługa działa.",
       "testUnavailable": "Bieżący adres URL usługi API jest niedostępny",
       "activateAction": "Uruchom usługę API",
+      "switchToApiService": "Przełącz na usługę API",
       "activateSuccess": "Przełączono na usługę API",
       "dashboardAction": "Panel usługi",
       "manageDesc": "W jednym miejscu zarządzaj statystykami usługi API, członkami, portem, kluczem i testem połączenia.",

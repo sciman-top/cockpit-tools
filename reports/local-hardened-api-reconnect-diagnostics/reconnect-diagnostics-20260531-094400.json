@@ -1,0 +1,458 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-05-31T09:44:00.4173834+08:00",
+  "incident": {
+    "incidentTime": "2026-05-31T09:43:56.0000000",
+    "windowMinutes": 180,
+    "startTime": "2026-05-31T06:43:56.0000000",
+    "endTime": "2026-05-31T12:43:56.0000000"
+  },
+  "codex": {
+    "home": "C:\\Users\\sciman\\.codex",
+    "provider": {
+      "config": {
+        "path": "C:\\Users\\sciman\\.codex\\config.toml",
+        "exists": true,
+        "length": 6063,
+        "lastWriteTime": "2026-05-31T09:24:25.5274083+08:00",
+        "sha256": "7D368981BD2491C03C0694ABCC28BDBC7E091DA9F1E8839112D92B1E0128D4F6"
+      },
+      "activeModelProvider": "cmp_1778165666417_1",
+      "activeModel": "gpt-5.5",
+      "provider": {
+        "name": "35.213.82.91",
+        "base_url": "http://35.213.82.91:8003/v1",
+        "wire_api": "responses",
+        "requires_openai_auth": "false",
+        "supports_websockets": "false"
+      }
+    },
+    "appProcesses": {
+      "processes": [
+        {
+          "id": 2324,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:26:37.4056753+08:00"
+        },
+        {
+          "id": 28844,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:37:36.1042593+08:00"
+        },
+        {
+          "id": 27860,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:33:44.7111312+08:00"
+        },
+        {
+          "id": 25088,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:40:00.6616258+08:00"
+        },
+        {
+          "id": 22444,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:41:03.5361446+08:00"
+        },
+        {
+          "id": 21680,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:31:08.6584979+08:00"
+        },
+        {
+          "id": 21156,
+          "processName": "Codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\Codex.exe",
+          "startTime": "2026-05-31T09:23:55.1268387+08:00"
+        },
+        {
+          "id": 21148,
+          "processName": "Codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\Codex.exe",
+          "startTime": "2026-05-31T09:23:55.1252069+08:00"
+        },
+        {
+          "id": 20344,
+          "processName": "codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\resources\\codex.exe",
+          "startTime": "2026-05-31T09:23:54.5350220+08:00"
+        },
+        {
+          "id": 19916,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:31:18.6471608+08:00"
+        },
+        {
+          "id": 19696,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+          "startTime": "2026-05-31T09:25:49.1600584+08:00"
+        },
+        {
+          "id": 29680,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:39:58.5119193+08:00"
+        },
+        {
+          "id": 18804,
+          "processName": "Codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\Codex.exe",
+          "startTime": "2026-05-31T09:23:50.1383423+08:00"
+        },
+        {
+          "id": 18728,
+          "processName": "Codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\Codex.exe",
+          "startTime": "2026-05-31T09:23:49.5671973+08:00"
+        },
+        {
+          "id": 18052,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:32:15.5196260+08:00"
+        },
+        {
+          "id": 15980,
+          "processName": "Codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\Codex.exe",
+          "startTime": "2026-05-31T09:23:49.5347950+08:00"
+        },
+        {
+          "id": 15324,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:27:54.0034054+08:00"
+        },
+        {
+          "id": 15096,
+          "processName": "Codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\Codex.exe",
+          "startTime": "2026-05-31T09:23:50.1903489+08:00"
+        },
+        {
+          "id": 13248,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:26:50.8796610+08:00"
+        },
+        {
+          "id": 11848,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:31:20.9494617+08:00"
+        },
+        {
+          "id": 9552,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:33:39.4273422+08:00"
+        },
+        {
+          "id": 8624,
+          "processName": "Codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\Codex.exe",
+          "startTime": "2026-05-31T09:23:49.3145047+08:00"
+        },
+        {
+          "id": 5916,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:25:53.9710549+08:00"
+        },
+        {
+          "id": 18780,
+          "processName": "Codex",
+          "path": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.527.3686.0_x64__2p2nqsd0c76g0\\app\\Codex.exe",
+          "startTime": "2026-05-31T09:23:50.1312176+08:00"
+        },
+        {
+          "id": 30188,
+          "processName": "codex",
+          "path": "C:\\Users\\sciman\\AppData\\Local\\OpenAI\\Codex\\bin\\7dea4a003bc76627\\codex.exe",
+          "startTime": "2026-05-31T09:41:44.9347973+08:00"
+        }
+      ]
+    },
+    "sessionLogHits": {
+      "root": "C:\\Users\\sciman\\.codex",
+      "searchedFiles": 5,
+      "hits": [
+        {
+          "path": "C:\\Users\\sciman\\.codex\\sessions\\2026\\05\\31\\rollout-2026-05-31T09-39-58-019e7bb0-01a0-7992-a038-3b1b8d7211a6.jsonl",
+          "lastWriteTime": "2026-05-31T09:43:55.5306624+08:00",
+          "length": 468152,
+          "totalHits": 2,
+          "keywordCounts": {
+            "local_backpressure": 1,
+            "429": 1
+          },
+          "sampleLineNumbers": [
+            3,
+            59
+          ]
+        },
+        {
+          "path": "C:\\Users\\sciman\\.codex\\sessions\\2026\\05\\31\\rollout-2026-05-31T01-13-31-019e79e0-5874-7a63-87cd-942aa5905189.jsonl",
+          "lastWriteTime": "2026-05-31T09:43:53.8291017+08:00",
+          "length": 2740623,
+          "totalHits": 49,
+          "keywordCounts": {
+            "x-codex-turn-state": 3,
+            "429": 24,
+            "local_backpressure": 4,
+            "fallback_blocked": 1,
+            "pool_unavailable": 2,
+            "refresh_token_invalidated": 1,
+            "response.completed": 1,
+            "usage_limit_reached": 21,
+            "401": 19,
+            "Reconnecting": 1
+          },
+          "sampleLineNumbers": [
+            3,
+            6,
+            17,
+            18,
+            26,
+            36,
+            37,
+            38,
+            44,
+            58,
+            64,
+            80,
+            82,
+            90,
+            99,
+            113,
+            120,
+            144,
+            149,
+            152
+          ]
+        },
+        {
+          "path": "C:\\Users\\sciman\\.codex\\sessions\\2026\\05\\31\\rollout-2026-05-31T09-25-49-019e7ba3-2347-7a32-9fb3-57deba987da9.jsonl",
+          "lastWriteTime": "2026-05-31T09:42:13.4074127+08:00",
+          "length": 583638,
+          "totalHits": 8,
+          "keywordCounts": {
+            "x-codex-turn-state": 2,
+            "429": 1,
+            "local_backpressure": 2,
+            "pool_unavailable": 1,
+            "refresh_token_invalidated": 1,
+            "401": 5,
+            "Reconnecting": 1
+          },
+          "sampleLineNumbers": [
+            3,
+            18,
+            20,
+            29,
+            83,
+            127,
+            129,
+            209
+          ]
+        },
+        {
+          "path": "C:\\Users\\sciman\\.codex\\session_index.jsonl",
+          "lastWriteTime": "2026-05-31T09:40:08.4683566+08:00",
+          "length": 50385,
+          "totalHits": 13,
+          "keywordCounts": {
+            "401": 4,
+            "Reconnecting": 2,
+            "pool_unavailable": 1,
+            "429": 7
+          },
+          "sampleLineNumbers": [
+            22,
+            26,
+            43,
+            82,
+            141,
+            244,
+            246,
+            248,
+            278,
+            302,
+            310,
+            313,
+            319
+          ]
+        },
+        {
+          "path": "C:\\Users\\sciman\\.codex\\history.jsonl",
+          "lastWriteTime": "2026-05-31T09:37:24.0216204+08:00",
+          "length": 2468623,
+          "totalHits": 340,
+          "keywordCounts": {
+            "429": 155,
+            "stream disconnected before completion": 7,
+            "pool_unavailable": 9,
+            "401": 176,
+            "Reconnecting": 8
+          },
+          "sampleLineNumbers": [
+            57,
+            69,
+            473,
+            762,
+            987,
+            1070,
+            1146,
+            1541,
+            1602,
+            1717,
+            1770,
+            1932,
+            1990,
+            2009,
+            2010,
+            2179,
+            2352,
+            2505,
+            2583,
+            2804
+          ]
+        }
+      ]
+    }
+  },
+  "cockpit": {
+    "dataRoot": "C:\\Users\\sciman\\.antigravity_cockpit",
+    "listener": {
+      "baseUrl": "http://35.213.82.91:8003/v1",
+      "localPort": null,
+      "listeners": []
+    },
+    "runtime": {
+      "root": "C:\\Users\\sciman\\.antigravity_cockpit",
+      "files": {
+        "runtimeMode": {
+          "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_runtime_mode.json",
+          "exists": true,
+          "length": 158,
+          "lastWriteTime": "2026-05-31T09:23:57.4708896+08:00",
+          "sha256": "CDCC85EA877CC0B5147664FE3230D4B72747D539D7F4C6596AB283959B5C30F6"
+        },
+        "localAccess": {
+          "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access.json",
+          "exists": true,
+          "length": 1022,
+          "lastWriteTime": "2026-05-31T09:28:50.6661405+08:00",
+          "sha256": "B8B74A22268F3F3F7EE83343FAF429E4382E4188DE9A312627A995459292DF86"
+        },
+        "health": {
+          "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_health.json",
+          "exists": true,
+          "length": 226397,
+          "lastWriteTime": "2026-05-31T00:38:25.6716867+08:00",
+          "sha256": "B32F7CBE68054E687459379692F07A0252464B9A2D7A1A856E6DC64D16174C6D"
+        },
+        "audit": {
+          "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl",
+          "exists": true,
+          "length": 459,
+          "lastWriteTime": "2026-05-31T09:23:38.2843916+08:00",
+          "sha256": null
+        }
+      },
+      "runtimeMode": {
+        "mode": "direct_projection",
+        "accountKind": "api",
+        "currentAccountHash": "sha256:84cfd5f7af95",
+        "updatedAt": 1780190637465
+      },
+      "localAccess": {
+        "enabled": true,
+        "port": 45336,
+        "routingStrategy": "auto",
+        "restrictFreeAccounts": false,
+        "followCurrentAccount": false,
+        "accountCount": 2,
+        "accountHashes": [
+          "sha256:3ee457b170b7",
+          "sha256:591619bda4b7"
+        ],
+        "apiKeyPresent": true,
+        "safetyConfig": {
+          "hardenedLocalMode": true,
+          "maxConcurrentRequests": 1,
+          "minRequestIntervalSeconds": 20,
+          "maxQueueWaitSeconds": 21,
+          "requestTimeoutSeconds": 600,
+          "maxRetries": 1,
+          "maxRetryAccounts": 2,
+          "fallbackMode": "disabled"
+        },
+        "updatedAt": 1780190930656
+      }
+    },
+    "audit": {
+      "file": {
+        "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl",
+        "exists": true,
+        "length": 459,
+        "lastWriteTime": "2026-05-31T09:23:38.2843916+08:00",
+        "sha256": null
+      },
+      "window": {
+        "startMs": 1780181036000,
+        "endMs": 1780202636000
+      },
+      "totalWindowEvents": 1,
+      "counts": {
+        "phase": {
+          "local_access_enabled_transition": 1
+        },
+        "outcome": {
+          "disabled": 1
+        },
+        "status": {},
+        "streamState": {},
+        "responseCompletedSeen": {}
+      },
+      "recentEvents": [
+        {
+          "timestamp": 1780190618282,
+          "timestampLocal": "2026-05-31T09:23:38.2820000+08:00",
+          "requestId": "runtime_projection",
+          "phase": "local_access_enabled_transition",
+          "route": "runtime_projection",
+          "model": "-",
+          "accountHash": "-",
+          "status": null,
+          "streamState": null,
+          "outcome": "disabled",
+          "gatewayRequestId": "runtime_projection",
+          "requestIdSource": "runtime_projection",
+          "responseCompletedSeen": null,
+          "isContinuation": "false",
+          "errorCode": null
+        }
+      ],
+      "keywordHits": []
+    }
+  },
+  "assessment": {
+    "currentPathParticipates": false,
+    "isLocalCockpitProvider": false,
+    "isCockpitListener": false,
+    "evidence": [
+      "local access audit has events in the incident window",
+      "Codex session logs contain reconnect/stream keywords in the incident window"
+    ],
+    "nextStep": "Treat as upstream/client connection candidate unless another local Cockpit listener is identified."
+  }
+}

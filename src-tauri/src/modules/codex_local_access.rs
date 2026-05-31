@@ -6537,6 +6537,7 @@ fn upsert_request_affinity_binding_key(
 fn upsert_successful_account_health(
     registry: &mut CodexLocalAccessHealthRegistry,
     account_id: &str,
+    model: Option<&str>,
     now: i64,
 ) -> bool {
     let account_id = account_id.trim();
@@ -6566,7 +6567,18 @@ fn upsert_successful_account_health(
     next.api_service_success_count = next.api_service_success_count.saturating_add(1);
     next.updated_at = now;
 
-    if next == previous {
+    let model_cooldown_changed = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|model| {
+            registry
+                .model_cooldowns
+                .remove(&health_registry_model_key(account_id, model))
+                .is_some()
+        })
+        .unwrap_or(false);
+
+    if next == previous && !model_cooldown_changed {
         return false;
     }
 
@@ -6603,6 +6615,7 @@ fn prune_process_sticky_binding(
 fn persist_successful_routing_state(
     account_id: &str,
     request: &ParsedRequest,
+    model: Option<&str>,
     persist_process_sticky: bool,
 ) {
     let mut registry = match load_health_registry_from_disk() {
@@ -6616,7 +6629,7 @@ fn persist_successful_routing_state(
     let sticky_changed =
         persist_process_sticky && upsert_process_sticky_binding(&mut registry, account_id, now);
     let affinity_changed = upsert_request_affinity_binding(&mut registry, request, account_id, now);
-    let health_changed = upsert_successful_account_health(&mut registry, account_id, now);
+    let health_changed = upsert_successful_account_health(&mut registry, account_id, model, now);
     if !sticky_changed && !affinity_changed && !health_changed {
         return;
     }
@@ -12178,6 +12191,7 @@ async fn proxy_request_with_account_pool(
                     persist_successful_routing_state(
                         &account.id,
                         request,
+                        Some(&routing_hint.model_key),
                         affinity_account_id.is_none(),
                     );
                     let context = build_audit_context(request, Some(account.id.as_str()));
@@ -19971,6 +19985,76 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
     }
 
     #[test]
+    fn successful_model_admission_clears_only_that_persisted_model_cooldown() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "account-model-success".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                last_status: Some(429),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        for model in ["gpt-5.5", "gpt-5.4-mini"] {
+            registry.model_cooldowns.insert(
+                health_registry_model_key("account-model-success", model),
+                CodexLocalAccessModelCooldown {
+                    account_id: "account-model-success".to_string(),
+                    model: model.to_string(),
+                    cooldown_until_ms: now + 60_000,
+                    last_error_type: Some("usage_limit_reached".to_string()),
+                    last_request_id: Some(format!("req-{model}")),
+                    updated_at: now,
+                },
+            );
+        }
+
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-model-success",
+            Some("gpt-5.5"),
+            now
+        ));
+
+        assert!(upsert_successful_account_health(
+            &mut registry,
+            "account-model-success",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+
+        let account = registry
+            .accounts
+            .get("account-model-success")
+            .expect("account health should remain tracked");
+        assert_eq!(account.last_status, Some(StatusCode::OK.as_u16()));
+        assert_eq!(account.last_error_type, None);
+        assert_eq!(account.last_success_at_ms, Some(now + 1));
+        assert!(!registry
+            .model_cooldowns
+            .contains_key(&health_registry_model_key("account-model-success", "gpt-5.5")));
+        assert!(registry.model_cooldowns.contains_key(&health_registry_model_key(
+            "account-model-success",
+            "gpt-5.4-mini"
+        )));
+        assert!(health_registry_account_is_schedulable(
+            &registry,
+            "account-model-success",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-model-success",
+            Some("gpt-5.4-mini"),
+            now + 1
+        ));
+    }
+
+    #[test]
     fn manual_pause_marks_account_disabled_and_prunes_affinity() {
         let now = 1_700_000_000_000;
         let mut registry = empty_health_registry(now);
@@ -21566,6 +21650,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         assert!(upsert_successful_account_health(
             &mut registry,
             "acc-secondary",
+            None,
             now + 1_000
         ));
 

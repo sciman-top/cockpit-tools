@@ -391,6 +391,36 @@ assert.equal(
   'API service card should also offer deactivation when the default Codex launch binding is the API service account',
 );
 
+assert.equal(
+  localAccessUiState.getCodexLocalAccessPrimaryActionLabelKind(
+    false,
+    { mode: 'direct_projection', accountKind: 'oauth', currentAccountId: 'acc-direct', updatedAt: 1 },
+    true,
+  ),
+  'switch',
+  'Running API service should show a switch action when Codex is still in Direct API/OAuth mode',
+);
+
+assert.equal(
+  localAccessUiState.getCodexLocalAccessPrimaryActionLabelKind(
+    false,
+    { mode: 'direct_projection', accountKind: 'oauth', currentAccountId: 'acc-direct', updatedAt: 1 },
+    false,
+  ),
+  'activate',
+  'Stopped API service should keep the start action label while Codex is still in Direct API/OAuth mode',
+);
+
+assert.equal(
+  localAccessUiState.getCodexLocalAccessPrimaryActionLabelKind(
+    false,
+    { mode: 'cockpit_api_service', accountKind: 'oauth', currentAccountId: 'acc-api', updatedAt: 1 },
+    true,
+  ),
+  'deactivate',
+  'Active Cockpit API Service mode should keep the deactivation label even when the service is running',
+);
+
 const refreshNowMs = 1_700_000_000_000;
 const quotaLimitedError = {
   code: 'usage_limit_reached',

@@ -1759,6 +1759,7 @@
       "testTimeout": "Test scaduto. Verifica che il servizio locale sia in esecuzione.",
       "testUnavailable": "L’URL corrente del servizio API non è disponibile",
       "activateAction": "Avvia servizio API",
+      "switchToApiService": "Passa al servizio API",
       "activateSuccess": "Passato al servizio API",
       "dashboardAction": "Pannello servizio",
       "manageDesc": "Gestisci in un solo posto statistiche del servizio API, membri, porta, chiave e test di connettività.",
