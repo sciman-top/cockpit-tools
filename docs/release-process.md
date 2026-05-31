@@ -1,12 +1,13 @@
-# Release Process (Open Source, No Code Signing)
+# Release Process (Self-Use, No Code Signing)
 
-> 适用于 Cockpit Tools 当前开源发布流程（未接入代码签名）。
+> 适用于 Cockpit Tools Local 自用版发布流程（未接入付费代码签名）。
 
 ## 1. 目标
 
 - 保证每次发布可复现、可验证、可追溯。
 - 让用户可以通过哈希校验确认安装包未被篡改。
 - 单引擎误报（如 VirusTotal 1/72）时，可快速说明和处理。
+- 区分官方原版版本与自用版发布号；吸收官方 `v0.24.9` 后，自用版发布号使用 `0.24.9-local.1` 这类后缀。
 
 ## 2. 发布前检查（Preflight）
 

@@ -1714,7 +1714,9 @@ function Get-AuditAcceptanceSummary {
       $event.phase -in @("lease_granted", "upstream_admitted", "stream_write", "lease_released") -or
       ($isStreamTerminalEvent -and ($activeStreamGroups.ContainsKey($streamGroupKey) -or $hardAffinityContinuityRequestIds -contains $requestId))
     $group = $null
-    if ($event.phase -eq "lease_granted") {
+    if ($event.phase -eq "lease_granted" -and $activeStreamGroups.ContainsKey($streamGroupKey)) {
+      $group = $activeStreamGroups[$streamGroupKey]
+    } elseif ($event.phase -eq "lease_granted") {
       $streamSequence++
       $group = [ordered]@{
         streamKey = "{0}#{1}" -f $streamGroupKey, $streamSequence
@@ -2871,8 +2873,10 @@ function New-AcceptanceResults {
     $results += Set-MonitorStatus $newRequest "fail" "监测窗口内后续新请求仍命中过已 exhausted/cooldown 的账号" $newRequestEvidence
   } elseif ($AuditSummary.newRequestAvoidanceCount -gt 0) {
     $results += Set-MonitorStatus $newRequest "pass" $null $newRequestEvidence
+  } elseif ($RequireQuotaFallback -and $AuditSummary.blockedAccountCount -gt 0) {
+    $results += Set-MonitorStatus $newRequest "not_observed" "已观察到 exhausted/cooldown 账号，但监测窗口内没有后续 independent request 样本" $newRequestEvidence
   } elseif ($RequireQuotaFallback) {
-    $results += Set-MonitorStatus $newRequest "blocked" "未观察到后续新请求避开 exhausted/cooldown 账号" $newRequestEvidence
+    $results += Set-MonitorStatus $newRequest "blocked" "未观察到 quota/fallback 链路，无法评估后续新请求避开 exhausted/cooldown 账号" $newRequestEvidence
   } else {
     $results += Set-MonitorStatus $newRequest "skipped" "未要求观察新请求避开 exhausted/cooldown 账号" $newRequestEvidence
   }
@@ -3000,6 +3004,21 @@ function New-AcceptanceResults {
     $results += Set-MonitorStatus $firstChunkExhaustionStream "skipped" "已观察到账号耗尽，但耗尽瞬间没有已 first_chunk_written 且未结束的 stream" $accountExhaustionStreamEvidence
   } else {
     $results += Set-MonitorStatus $firstChunkExhaustionStream "skipped" "未观察到账号 usage_limit_reached 耗尽事件" $accountExhaustionStreamEvidence
+  }
+
+  $acceptedHeadersFirstChunk = New-MonitorResult "accepted_headers_first_chunk_continuity"
+  if ($AuditSummary.terminalErrorAfterFirstChunkAtAccountExhaustionCount -gt 0 -or $AuditSummary.interruptedAfterFirstChunkAtAccountExhaustionCount -gt 0) {
+    $results += Set-MonitorStatus $acceptedHeadersFirstChunk "fail" "账号首次耗尽前已经开始下游写出的 stream 出现 terminal error 或 cooldown interrupt" $accountExhaustionStreamEvidence
+  } elseif ($AuditSummary.clientAbortedAfterFirstChunkAtAccountExhaustionCount -gt 0) {
+    $results += Set-MonitorStatus $acceptedHeadersFirstChunk "blocked" "账号首次耗尽前已经 first_chunk_written 的 stream 后续被 client_aborted；仅凭 audit 不能归因为服务端连续性失败" $accountExhaustionStreamEvidence
+  } elseif ($AuditSummary.openAfterFirstChunkAtAccountExhaustionCount -gt 0) {
+    $results += Set-MonitorStatus $acceptedHeadersFirstChunk "blocked" "账号首次耗尽前已经 first_chunk_written 的 stream 在监测窗口结束时仍未观察到 terminal event" $accountExhaustionStreamEvidence
+  } elseif ($AuditSummary.firstChunkInFlightAtAccountExhaustionCount -gt 0 -and $AuditSummary.completedAfterFirstChunkAtAccountExhaustionCount -eq $AuditSummary.firstChunkInFlightAtAccountExhaustionCount) {
+    $results += Set-MonitorStatus $acceptedHeadersFirstChunk "pass" $null $accountExhaustionStreamEvidence
+  } elseif ($AuditSummary.accountExhaustionContinuityCount -gt 0) {
+    $results += Set-MonitorStatus $acceptedHeadersFirstChunk "not_observed" "已观察到账号耗尽，但耗尽瞬间没有已 first_chunk_written 且未结束的 stream；无法评估 headers/first-chunk 连续性" $accountExhaustionStreamEvidence
+  } else {
+    $results += Set-MonitorStatus $acceptedHeadersFirstChunk "skipped" "未观察到账号 usage_limit_reached 耗尽事件" $accountExhaustionStreamEvidence
   }
 
   $admittedFirstChunkExhaustionStream = New-MonitorResult "admitted_first_chunk_streams_survive_account_exhaustion"
@@ -3271,6 +3290,9 @@ function New-ContinuitySummary {
   } elseif ($AuditSummary.newRequestAvoidanceCount -gt 0) {
     $newRequestStatus = "pass"
     $newRequestReason = $null
+  } elseif ($AuditSummary.blockedAccountCount -gt 0) {
+    $newRequestStatus = "not_observed"
+    $newRequestReason = "已观察到 exhausted/cooldown 账号，但监测窗口内没有后续 independent request 样本"
   } elseif (-not $RequireQuotaFallback) {
     $newRequestStatus = "skipped"
     $newRequestReason = "未要求观察新请求避开 exhausted/cooldown 账号"
@@ -3375,6 +3397,21 @@ function New-ContinuitySummary {
       reason = if ($AuditSummary.terminalErrorAfterFirstChunkAtAccountExhaustionCount -gt 0 -or $AuditSummary.interruptedAfterFirstChunkAtAccountExhaustionCount -gt 0) { "first-chunk in-flight stream hit terminal error or cooldown interrupt after account exhaustion" } elseif ($AuditSummary.clientAbortedAfterFirstChunkAtAccountExhaustionCount -gt 0) { "first-chunk in-flight stream was client_aborted after account exhaustion" } elseif ($AuditSummary.openAfterFirstChunkAtAccountExhaustionCount -gt 0) { "first-chunk in-flight stream remained open at the end of the monitor window" } elseif ($AuditSummary.accountExhaustionContinuityCount -gt 0 -and $AuditSummary.firstChunkInFlightAtAccountExhaustionCount -eq 0) { "account exhaustion observed without first-chunk in-flight streams at that instant" } else { $null }
       evidence = [ordered]@{
         accountExhaustionContinuityCount = [int]$AuditSummary.accountExhaustionContinuityCount
+        firstChunkInFlightAtAccountExhaustionCount = [int]$AuditSummary.firstChunkInFlightAtAccountExhaustionCount
+        completedAfterFirstChunkAtAccountExhaustionCount = [int]$AuditSummary.completedAfterFirstChunkAtAccountExhaustionCount
+        terminalErrorAfterFirstChunkAtAccountExhaustionCount = [int]$AuditSummary.terminalErrorAfterFirstChunkAtAccountExhaustionCount
+        clientAbortedAfterFirstChunkAtAccountExhaustionCount = [int]$AuditSummary.clientAbortedAfterFirstChunkAtAccountExhaustionCount
+        interruptedAfterFirstChunkAtAccountExhaustionCount = [int]$AuditSummary.interruptedAfterFirstChunkAtAccountExhaustionCount
+        openAfterFirstChunkAtAccountExhaustionCount = [int]$AuditSummary.openAfterFirstChunkAtAccountExhaustionCount
+        accountExhaustionContinuitySummaries = @($AuditSummary.accountExhaustionContinuitySummaries)
+      }
+    }
+    acceptedHeadersFirstChunkContinuity = [ordered]@{
+      status = if ($AuditSummary.terminalErrorAfterFirstChunkAtAccountExhaustionCount -gt 0 -or $AuditSummary.interruptedAfterFirstChunkAtAccountExhaustionCount -gt 0) { "fail" } elseif ($AuditSummary.clientAbortedAfterFirstChunkAtAccountExhaustionCount -gt 0 -or $AuditSummary.openAfterFirstChunkAtAccountExhaustionCount -gt 0) { "blocked" } elseif ($AuditSummary.firstChunkInFlightAtAccountExhaustionCount -gt 0 -and $AuditSummary.completedAfterFirstChunkAtAccountExhaustionCount -eq $AuditSummary.firstChunkInFlightAtAccountExhaustionCount) { "pass" } elseif ($AuditSummary.accountExhaustionContinuityCount -gt 0) { "not_observed" } else { "skipped" }
+      reason = if ($AuditSummary.terminalErrorAfterFirstChunkAtAccountExhaustionCount -gt 0 -or $AuditSummary.interruptedAfterFirstChunkAtAccountExhaustionCount -gt 0) { "accepted headers/first-chunk stream hit terminal error or cooldown interrupt after account exhaustion" } elseif ($AuditSummary.clientAbortedAfterFirstChunkAtAccountExhaustionCount -gt 0) { "accepted headers/first-chunk stream was client_aborted after account exhaustion" } elseif ($AuditSummary.openAfterFirstChunkAtAccountExhaustionCount -gt 0) { "accepted headers/first-chunk stream remained open at the end of the monitor window" } elseif ($AuditSummary.accountExhaustionContinuityCount -gt 0 -and $AuditSummary.firstChunkInFlightAtAccountExhaustionCount -eq 0) { "account exhaustion observed without first-chunk in-flight streams at that instant" } else { $null }
+      evidence = [ordered]@{
+        accountExhaustionContinuityCount = [int]$AuditSummary.accountExhaustionContinuityCount
+        headersWrittenInFlightAtAccountExhaustionCount = [int]$AuditSummary.headersWrittenInFlightAtAccountExhaustionCount
         firstChunkInFlightAtAccountExhaustionCount = [int]$AuditSummary.firstChunkInFlightAtAccountExhaustionCount
         completedAfterFirstChunkAtAccountExhaustionCount = [int]$AuditSummary.completedAfterFirstChunkAtAccountExhaustionCount
         terminalErrorAfterFirstChunkAtAccountExhaustionCount = [int]$AuditSummary.terminalErrorAfterFirstChunkAtAccountExhaustionCount

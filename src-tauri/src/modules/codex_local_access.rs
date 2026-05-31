@@ -20035,11 +20035,16 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         assert_eq!(account.last_success_at_ms, Some(now + 1));
         assert!(!registry
             .model_cooldowns
-            .contains_key(&health_registry_model_key("account-model-success", "gpt-5.5")));
-        assert!(registry.model_cooldowns.contains_key(&health_registry_model_key(
-            "account-model-success",
-            "gpt-5.4-mini"
-        )));
+            .contains_key(&health_registry_model_key(
+                "account-model-success",
+                "gpt-5.5"
+            )));
+        assert!(registry
+            .model_cooldowns
+            .contains_key(&health_registry_model_key(
+                "account-model-success",
+                "gpt-5.4-mini"
+            )));
         assert!(health_registry_account_is_schedulable(
             &registry,
             "account-model-success",

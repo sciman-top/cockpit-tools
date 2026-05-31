@@ -956,6 +956,95 @@ fn normalize_optional_ref(value: Option<&str>) -> Option<String> {
     })
 }
 
+fn normalize_codex_plan_type(value: Option<&str>) -> Option<String> {
+    normalize_optional_ref(value)
+}
+
+fn is_paid_codex_plan_type(plan_type: Option<&str>) -> bool {
+    let Some(plan_type) = normalize_codex_plan_type(plan_type) else {
+        return false;
+    };
+    !plan_type.eq_ignore_ascii_case("free")
+        && !plan_type.eq_ignore_ascii_case(API_KEY_LOGIN_PLAN_TYPE)
+}
+
+fn raw_quota_plan_type(account: &CodexAccount) -> Option<String> {
+    account
+        .quota
+        .as_ref()
+        .and_then(|quota| quota.raw_data.as_ref())
+        .and_then(|raw_data| raw_data.get("plan_type"))
+        .and_then(|value| value.as_str())
+        .and_then(|value| normalize_codex_plan_type(Some(value)))
+}
+
+fn read_backup_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    let raw = keys
+        .iter()
+        .find_map(|key| value.get(*key).and_then(|item| item.as_str()))?;
+    normalize_optional_ref(Some(raw))
+}
+
+fn backup_paid_plan_type(account: &CodexAccount) -> Option<String> {
+    let path = get_accounts_dir().join(format!("{}.json.bak", account.id));
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+
+    if let Some(backup_email) = read_backup_string(&value, &["email", "account_email"]) {
+        if !account.email.trim().is_empty() && !account.email.eq_ignore_ascii_case(&backup_email) {
+            return None;
+        }
+    }
+    if let Some(backup_account_id) = read_backup_string(&value, &["account_id", "accountId"]) {
+        if normalize_optional_ref(account.account_id.as_deref()).as_deref()
+            != Some(backup_account_id.as_str())
+        {
+            return None;
+        }
+    }
+
+    read_backup_string(&value, &["plan_type", "planType"])
+        .filter(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+}
+
+pub(crate) fn resolve_observed_plan_type(
+    account: &CodexAccount,
+    observed_plan_type: Option<String>,
+) -> Option<String> {
+    if let Some(quota_plan_type) = raw_quota_plan_type(account) {
+        return Some(quota_plan_type);
+    }
+
+    let observed_plan_type = normalize_optional_value(observed_plan_type);
+    if observed_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+    {
+        return observed_plan_type;
+    }
+
+    let existing_plan_type = normalize_optional_ref(account.plan_type.as_deref());
+    if observed_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| plan_type.eq_ignore_ascii_case("free"))
+    {
+        if existing_plan_type
+            .as_deref()
+            .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+        {
+            return existing_plan_type;
+        }
+        if let Some(backup_plan_type) = backup_paid_plan_type(account) {
+            return Some(backup_plan_type);
+        }
+        return observed_plan_type;
+    }
+
+    existing_plan_type
+        .or_else(|| backup_paid_plan_type(account))
+        .or(observed_plan_type)
+}
+
 fn now_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -986,7 +1075,7 @@ fn sync_identity_from_tokens(account: &mut CodexAccount) {
             account.email = email;
         }
         account.user_id = user_id;
-        account.plan_type = plan_type;
+        account.plan_type = resolve_observed_plan_type(account, plan_type);
         account.account_id = normalize_optional_value(
             extract_chatgpt_account_id_from_access_token(&account.tokens.access_token)
                 .or(id_token_account_id)
@@ -1599,7 +1688,7 @@ fn upsert_account_with_hints(
         acc.api_provider_id = None;
         acc.api_provider_name = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
         acc.update_last_used();
@@ -1615,7 +1704,7 @@ fn upsert_account_with_hints(
         acc.api_provider_id = None;
         acc.api_provider_name = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
 
@@ -1623,7 +1712,7 @@ fn upsert_account_with_hints(
         index.accounts.push(CodexAccountSummary {
             id: existing_id.clone(),
             email: email.clone(),
-            plan_type: plan_type.clone(),
+            plan_type: acc.plan_type.clone(),
             created_at: acc.created_at,
             last_used: acc.last_used,
         });

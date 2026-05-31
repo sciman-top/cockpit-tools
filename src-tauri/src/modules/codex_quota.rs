@@ -2045,15 +2045,18 @@ fn sync_subscription_from_token(
     subscription_active_until: Option<String>,
 ) {
     let mut changed = false;
-    if let Some(ref new_plan) = plan_type {
-        let old_plan = account.plan_type.clone();
-        if account.plan_type.as_deref() != Some(new_plan) {
-            logger::log_info(&format!(
-                "Codex 账号 {} 订阅标识已更新: {:?} -> {:?}",
-                account.email, old_plan, plan_type
-            ));
-            account.plan_type = plan_type;
-            changed = true;
+    if plan_type.is_some() {
+        let resolved_plan_type = codex_account::resolve_observed_plan_type(account, plan_type);
+        if let Some(ref new_plan) = resolved_plan_type {
+            let old_plan = account.plan_type.clone();
+            if account.plan_type.as_deref() != Some(new_plan) {
+                logger::log_info(&format!(
+                    "Codex 账号 {} 订阅标识已更新: {:?} -> {:?}",
+                    account.email, old_plan, resolved_plan_type
+                ));
+                account.plan_type = resolved_plan_type;
+                changed = true;
+            }
         }
     }
 
@@ -2098,10 +2101,10 @@ async fn refresh_account_quota_once(account_id: &str) -> Result<CodexQuota, Stri
                     return Err(e);
                 }
             };
+            account.quota = Some(result.quota.clone());
             if result.plan_type.is_some() {
                 sync_subscription_from_token(&mut account, result.plan_type, None);
             }
-            account.quota = Some(result.quota.clone());
             account.quota_error = None;
             account.usage_updated_at = Some(chrono::Utc::now().timestamp());
             codex_account::save_account(&account)?;
@@ -2171,12 +2174,13 @@ async fn refresh_account_quota_once(account_id: &str) -> Result<CodexQuota, Stri
         }
     };
 
-    // 从 usage 响应中的 plan_type 更新订阅标识
+    account.quota = Some(result.quota.clone());
+
+    // 从 usage 响应中的 plan_type 更新订阅标识；先挂上 quota 原文，避免 token/free 覆盖 usage=plus。
     if result.plan_type.is_some() {
         sync_subscription_from_token(&mut account, result.plan_type, None);
     }
 
-    account.quota = Some(result.quota.clone());
     account.quota_error = None;
     account.usage_updated_at = Some(chrono::Utc::now().timestamp());
     codex_account::save_account(&account)?;

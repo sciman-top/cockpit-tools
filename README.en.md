@@ -4,7 +4,7 @@ English · [简体中文](README.md)
 
 [![GitHub release](https://img.shields.io/github/v/release/sciman-top/cockpit-tools-local?style=flat)](https://github.com/sciman-top/cockpit-tools-local/releases)
 
-> This is a personal self-use fork of `jlcodes99/cockpit-tools`. `main` is the Cockpit Tools Local self-use source line, `mirror/upstream-main` mirrors the latest upstream source, and `backup/*` keeps fixed snapshots or restore points. Releases publish Cockpit Tools Local self-use builds only; official installable assets are no longer mirrored here.
+> This is a personal self-use fork of `jlcodes99/cockpit-tools`. `main` is the Cockpit Tools Local self-use source line, and the official source is tracked through the local `upstream/main` remote-tracking ref; `mirror/upstream-main` is no longer the long-lived collaboration entrypoint. Releases publish Cockpit Tools Local self-use builds only; official installable assets are not mirrored here. See [Self-Use Delta](docs/SELF_USE_DELTA.md) and [Upstream Sync Policy](docs/UPSTREAM_SYNC_POLICY.md) for the merge policy.
 
 A **universal AI IDE account management tool**, currently supporting **Antigravity**, **Codex**, **GitHub Copilot**, **Windsurf**, **Kiro**, **Cursor**, **Gemini Cli**, **CodeBuddy**, **CodeBuddy CN**, **Qoder**, **Trae**, and **Zed**, with multi-instance parallel workflows.
 

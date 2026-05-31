@@ -1,0 +1,440 @@
+{
+  "timestamp": "2026-05-31T06:56:03.795Z",
+  "backupRoot": "C:\\Users\\sciman\\.antigravity_cockpit\\backups\\codex-plan-repair-20260531-065602",
+  "repairedCount": 29,
+  "repairs": [
+    {
+      "id": "codex_089b60dabbd97d159d7f34f7b8179a84",
+      "email": "film...@icloud.com",
+      "file": "codex_089b60dabbd97d159d7f34f7b8179a84.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_089b60dabbd97d159d7f34f7b8179a84.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.159Z"
+      },
+      "evidenceCount": 6
+    },
+    {
+      "id": "codex_0ccb7a76932335047af31a7c0d3c100b",
+      "email": "fate...@icloud.com",
+      "file": "codex_0ccb7a76932335047af31a7c0d3c100b.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_0ccb7a76932335047af31a7c0d3c100b.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:07.857Z"
+      },
+      "evidenceCount": 6
+    },
+    {
+      "id": "codex_0f9ab0f17a6b851aa67269a44ee66661",
+      "email": "feat...@icloud.com",
+      "file": "codex_0f9ab0f17a6b851aa67269a44ee66661.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_0f9ab0f17a6b851aa67269a44ee66661.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-30T09:03:48.880Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_1284b0064462ca2dffd0275da9097a3e",
+      "email": "fari...@icloud.com",
+      "file": "codex_1284b0064462ca2dffd0275da9097a3e.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_1284b0064462ca2dffd0275da9097a3e.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:07.914Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_1f243600bdd9d0e673ce76748f1aa592",
+      "email": "exur...@icloud.com",
+      "file": "codex_1f243600bdd9d0e673ce76748f1aa592.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_1f243600bdd9d0e673ce76748f1aa592.json.bak",
+        "kind": "detail",
+        "plan": "plus",
+        "mtime": "2026-05-30T09:01:44.414Z"
+      },
+      "evidenceCount": 5
+    },
+    {
+      "id": "codex_26a09ccbe392aadd3f0d7a52fa418d8b",
+      "email": "exce...@icloud.com",
+      "file": "codex_26a09ccbe392aadd3f0d7a52fa418d8b.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts.json.bak",
+        "kind": "index",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:47:34.013Z"
+      },
+      "evidenceCount": 5
+    },
+    {
+      "id": "codex_3542a8d0ef809ba7ea37fdba612a552a",
+      "email": "farr...@icloud.com",
+      "file": "codex_3542a8d0ef809ba7ea37fdba612a552a.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_3542a8d0ef809ba7ea37fdba612a552a.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:07.851Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_3dba43c0c1a598ff10370bab0f63bf28",
+      "email": "feis...@icloud.com",
+      "file": "codex_3dba43c0c1a598ff10370bab0f63bf28.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_3dba43c0c1a598ff10370bab0f63bf28.json.bak",
+        "kind": "detail",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.029Z"
+      },
+      "evidenceCount": 5
+    },
+    {
+      "id": "codex_4394a1faf4ddcd6af4268a21271c5055",
+      "email": "fan....@icloud.com",
+      "file": "codex_4394a1faf4ddcd6af4268a21271c5055.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_4394a1faf4ddcd6af4268a21271c5055.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:07.937Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_5990bc1975a9d45d1d80df2d82f1cd99",
+      "email": "find...@icloud.com",
+      "file": "codex_5990bc1975a9d45d1d80df2d82f1cd99.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_5990bc1975a9d45d1d80df2d82f1cd99.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.081Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_65eba9bbe4b6d16b5854330fa439c050",
+      "email": "feat...@icloud.com",
+      "file": "codex_65eba9bbe4b6d16b5854330fa439c050.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_65eba9bbe4b6d16b5854330fa439c050.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.042Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_6d6202913646a7858c8a578ffbc0a51e",
+      "email": "fing...@icloud.com",
+      "file": "codex_6d6202913646a7858c8a578ffbc0a51e.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_6d6202913646a7858c8a578ffbc0a51e.json.bak",
+        "kind": "detail",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.069Z"
+      },
+      "evidenceCount": 5
+    },
+    {
+      "id": "codex_6f629330a88bfdb7fcd38948442cfa1a",
+      "email": "fate...@icloud.com",
+      "file": "codex_6f629330a88bfdb7fcd38948442cfa1a.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts.json.bak.1780124905314",
+        "kind": "index",
+        "plan": "plus",
+        "mtime": "2026-05-30T07:08:25.287Z"
+      },
+      "evidenceCount": 4
+    },
+    {
+      "id": "codex_827bc0c977e52b5bf56d3475937b246e",
+      "email": "fate...@icloud.com",
+      "file": "codex_827bc0c977e52b5bf56d3475937b246e.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_827bc0c977e52b5bf56d3475937b246e.json.bak",
+        "kind": "detail",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.087Z"
+      },
+      "evidenceCount": 5
+    },
+    {
+      "id": "codex_8399b74d4ea75f312ce0c288a006724a",
+      "email": "fari...@icloud.com",
+      "file": "codex_8399b74d4ea75f312ce0c288a006724a.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_8399b74d4ea75f312ce0c288a006724a.json.bak",
+        "kind": "detail",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:07.699Z"
+      },
+      "evidenceCount": 5
+    },
+    {
+      "id": "codex_8793f9ed5226d2c252a6394321b4bf26",
+      "email": "feis...@icloud.com",
+      "file": "codex_8793f9ed5226d2c252a6394321b4bf26.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_8793f9ed5226d2c252a6394321b4bf26.json.bak",
+        "kind": "detail",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.048Z"
+      },
+      "evidenceCount": 5
+    },
+    {
+      "id": "codex_9e859bddf1e4c15780ffaf434c95b2e7",
+      "email": "filt...@icloud.com",
+      "file": "codex_9e859bddf1e4c15780ffaf434c95b2e7.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_9e859bddf1e4c15780ffaf434c95b2e7.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.137Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_a4b6650ec408a3e0695b4f77ccc93cca",
+      "email": "exce...@icloud.com",
+      "file": "codex_a4b6650ec408a3e0695b4f77ccc93cca.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts.json.bak.1780124905314",
+        "kind": "index",
+        "plan": "plus",
+        "mtime": "2026-05-30T07:08:25.287Z"
+      },
+      "evidenceCount": 4
+    },
+    {
+      "id": "codex_ae5a9b2ddbe9f0801b8a36ec0b44e2c2",
+      "email": "filt...@icloud.com",
+      "file": "codex_ae5a9b2ddbe9f0801b8a36ec0b44e2c2.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_ae5a9b2ddbe9f0801b8a36ec0b44e2c2.json.bak",
+        "kind": "detail",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.103Z"
+      },
+      "evidenceCount": 5
+    },
+    {
+      "id": "codex_b2bb22d2e71a66a4df1d25b85665b840",
+      "email": "find...@icloud.com",
+      "file": "codex_b2bb22d2e71a66a4df1d25b85665b840.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts.json.bak.1780124905314",
+        "kind": "index",
+        "plan": "plus",
+        "mtime": "2026-05-30T07:08:25.287Z"
+      },
+      "evidenceCount": 4
+    },
+    {
+      "id": "codex_b2f0adb661604013fa5d346f77e3704a",
+      "email": "farr...@icloud.com",
+      "file": "codex_b2f0adb661604013fa5d346f77e3704a.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_b2f0adb661604013fa5d346f77e3704a.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:07.882Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_bf6fac4bfb42ebe630799df3db09fd88",
+      "email": "fete...@icloud.com",
+      "file": "codex_bf6fac4bfb42ebe630799df3db09fd88.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_bf6fac4bfb42ebe630799df3db09fd88.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:07.971Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_bffa8dd6c56c26f70fc5e28bbd4256b7",
+      "email": "fete...@icloud.com",
+      "file": "codex_bffa8dd6c56c26f70fc5e28bbd4256b7.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_bffa8dd6c56c26f70fc5e28bbd4256b7.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:44:36.683Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_c16cf149021ab2411c96e15ba7bc505c",
+      "email": "ferr...@icloud.com",
+      "file": "codex_c16cf149021ab2411c96e15ba7bc505c.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_c16cf149021ab2411c96e15ba7bc505c.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.012Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_c70e98ba903eeb40383f593b0a54bc5d",
+      "email": "exur...@icloud.com",
+      "file": "codex_c70e98ba903eeb40383f593b0a54bc5d.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts.json.bak.1780124905314",
+        "kind": "index",
+        "plan": "plus",
+        "mtime": "2026-05-30T07:08:25.287Z"
+      },
+      "evidenceCount": 4
+    },
+    {
+      "id": "codex_c9b8ea728a123fab0b012fa465a18ddd",
+      "email": "ferr...@icloud.com",
+      "file": "codex_c9b8ea728a123fab0b012fa465a18ddd.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_c9b8ea728a123fab0b012fa465a18ddd.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.021Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_d291aad0d621ac106006ff5b6eb2afe5",
+      "email": "exur...@icloud.com",
+      "file": "codex_d291aad0d621ac106006ff5b6eb2afe5.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_d291aad0d621ac106006ff5b6eb2afe5.json.bak",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-28T13:46:53.570Z"
+      },
+      "evidenceCount": 3
+    },
+    {
+      "id": "codex_e3467cbc77b497cc77c974c61196e5ca",
+      "email": "fati...@icloud.com",
+      "file": "codex_e3467cbc77b497cc77c974c61196e5ca.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts\\codex_e3467cbc77b497cc77c974c61196e5ca.json",
+        "kind": "quota_raw",
+        "plan": "plus",
+        "mtime": "2026-05-31T06:15:08.062Z"
+      },
+      "evidenceCount": 7
+    },
+    {
+      "id": "codex_f2268b999f613509667095918cd08e90",
+      "email": "fete...@icloud.com",
+      "file": "codex_f2268b999f613509667095918cd08e90.json",
+      "from": "free",
+      "to": "plus",
+      "selectedEvidence": {
+        "source": "codex_accounts.json.bak.1780124905314",
+        "kind": "index",
+        "plan": "plus",
+        "mtime": "2026-05-30T07:08:25.287Z"
+      },
+      "evidenceCount": 4
+    }
+  ],
+  "notRepairedIcloudFree": [
+    {
+      "id": "codex_66fdd0744d6dfe92c507e8f2cf961bb0",
+      "email": "farr...@icloud.com",
+      "plan_type": "free"
+    },
+    {
+      "id": "codex_5ebed85f71423aae5b141dee279ee172",
+      "email": "fing...@icloud.com",
+      "plan_type": "free"
+    },
+    {
+      "id": "codex_9ea2c1a9043676a684e9f089204ded14",
+      "email": "farr...@icloud.com",
+      "plan_type": "free"
+    },
+    {
+      "id": "codex_521451fc1010a82881199e54b4d68e15",
+      "email": "fact...@icloud.com",
+      "plan_type": "free"
+    },
+    {
+      "id": "codex_3744a901cbad3f417e1e607d461dbc49",
+      "email": "filt...@icloud.com",
+      "plan_type": "free"
+    }
+  ]
+}

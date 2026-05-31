@@ -4,7 +4,7 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/sciman-top/cockpit-tools-local?style=flat)](https://github.com/sciman-top/cockpit-tools-local/releases)
 
-> 这是 `jlcodes99/cockpit-tools` 的个人自用版 fork。`main` 是 Cockpit Tools Local 自用源码主线，`mirror/upstream-main` 是官方上游最新版源码镜像，`backup/*` 是固定或自动恢复点。Releases 只发布 Cockpit Tools Local 自用版构建产物，不再镜像官方安装资产。
+> 这是 `jlcodes99/cockpit-tools` 的个人自用版 fork。`main` 是 Cockpit Tools Local 自用源码主线，官方原版通过本地 remote `upstream/main` 跟踪；不再把 `mirror/upstream-main` 作为长期协作入口。Releases 只发布 Cockpit Tools Local 自用版构建产物，不镜像官方安装资产。自用差异与上游吸收流程见 [自用差异清单](docs/SELF_USE_DELTA.md) 和 [官方上游吸收策略](docs/UPSTREAM_SYNC_POLICY.md)。
 
 一款**通用的 AI IDE 账号管理工具**，目前支持 **Antigravity**、**Codex**、**GitHub Copilot**、**Windsurf**、**Kiro**、**Cursor**、**Gemini Cli**、**CodeBuddy**、**CodeBuddy CN**、**Qoder**、**Trae** 和 **Zed**，并支持多账号多实例并行运行。
 

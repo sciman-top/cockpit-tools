@@ -402,20 +402,26 @@ fn parse_quota_from_usage(usage: &UsageResponse, raw_body: &str) -> Result<Codex
 
 /// 从 id_token 中提取 plan_type 并同步更新账号和索引
 fn sync_plan_type_from_token(account: &mut CodexAccount, plan_type: Option<String>) {
-    if let Some(ref new_plan) = plan_type {
-        let old_plan = account.plan_type.clone();
-        if account.plan_type.as_deref() != Some(new_plan) {
-            logger::log_info(&format!(
-                "Codex 账号 {} 订阅标识已更新: {:?} -> {:?}",
-                account.email, old_plan, plan_type
-            ));
-            account.plan_type = plan_type;
-            // 同步更新索引中的 plan_type
-            if let Err(e) =
-                codex_account::update_account_plan_type_in_index(&account.id, &account.plan_type)
-            {
-                logger::log_warn(&format!("更新索引 plan_type 失败: {}", e));
-            }
+    if plan_type.is_none() {
+        return;
+    }
+
+    let resolved_plan_type = codex_account::resolve_observed_plan_type(account, plan_type);
+    let Some(ref new_plan) = resolved_plan_type else {
+        return;
+    };
+    let old_plan = account.plan_type.clone();
+    if account.plan_type.as_deref() != Some(new_plan) {
+        logger::log_info(&format!(
+            "Codex 账号 {} 订阅标识已更新: {:?} -> {:?}",
+            account.email, old_plan, resolved_plan_type
+        ));
+        account.plan_type = resolved_plan_type;
+        // 同步更新索引中的 plan_type
+        if let Err(e) =
+            codex_account::update_account_plan_type_in_index(&account.id, &account.plan_type)
+        {
+            logger::log_warn(&format!("更新索引 plan_type 失败: {}", e));
         }
     }
 }
@@ -469,12 +475,13 @@ async fn refresh_account_quota_once(account_id: &str) -> Result<CodexQuota, Stri
         }
     };
 
-    // 从 usage 响应中的 plan_type 更新订阅标识
+    account.quota = Some(result.quota.clone());
+
+    // 从 usage 响应中的 plan_type 更新订阅标识；先挂上 quota 原文，避免 token/free 覆盖 usage=plus。
     if result.plan_type.is_some() {
         sync_plan_type_from_token(&mut account, result.plan_type);
     }
 
-    account.quota = Some(result.quota.clone());
     account.quota_error = None;
     account.usage_updated_at = Some(chrono::Utc::now().timestamp());
     codex_account::save_account(&account)?;

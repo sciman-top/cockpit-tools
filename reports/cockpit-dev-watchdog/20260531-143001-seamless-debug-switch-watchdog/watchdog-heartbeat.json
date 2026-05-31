@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-05-31T14:35:22.7819142+08:00",
+  "timestamp": "2026-05-31T15:21:30.5758046+08:00",
   "pid": 35852,
   "desiredInstance": "Debug",
   "debugSwitchMode": "PrebuildThenStop",
@@ -10,50 +10,25 @@
   "runningCockpitProcessCount": 1,
   "runningCockpitProcesses": [
     {
-      "ProcessId": 28508,
+      "ProcessId": 5036,
       "Name": "cockpit-tools.exe",
-      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe",
-      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe\""
+      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe",
+      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe\" "
     }
   ],
-  "runningDebugProcessCount": 1,
-  "runningDebugProcesses": [
+  "runningDebugProcessCount": 0,
+  "runningDebugProcesses": [],
+  "runningNonDebugProcessCount": 1,
+  "runningNonDebugProcesses": [
     {
-      "ProcessId": 28508,
+      "ProcessId": 5036,
       "Name": "cockpit-tools.exe",
-      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe",
-      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe\""
+      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe",
+      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe\" "
     }
   ],
-  "runningNonDebugProcessCount": 0,
-  "runningNonDebugProcesses": [],
-  "tauriDevLauncherCount": 4,
-  "tauriDevLaunchers": [
-    {
-      "ProcessId": 18308,
-      "Name": "cmd.exe",
-      "ExecutablePath": "C:\\WINDOWS\\system32\\cmd.exe",
-      "CommandLine": "C:\\WINDOWS\\system32\\cmd.exe /c \"\"C:\\\\Program Files\\nodejs\\npm.cmd\" run tauri dev\""
-    },
-    {
-      "ProcessId": 30472,
-      "Name": "node.exe",
-      "ExecutablePath": "C:\\Program Files\\nodejs\\node.exe",
-      "CommandLine": "\"C:\\Program Files\\nodejs\\\\node.exe\"  \"C:\\Users\\sciman\\AppData\\Roaming\\npm\\node_modules\\npm\\bin\\npm-cli.js\" run tauri dev"
-    },
-    {
-      "ProcessId": 36444,
-      "Name": "cmd.exe",
-      "ExecutablePath": "C:\\WINDOWS\\system32\\cmd.exe",
-      "CommandLine": "C:\\WINDOWS\\system32\\cmd.exe /d /s /c npm run sync-version && tauri dev"
-    },
-    {
-      "ProcessId": 32808,
-      "Name": "node.exe",
-      "ExecutablePath": "C:\\Program Files\\nodejs\\node.exe",
-      "CommandLine": "\"node\"   \"D:\\CODE\\external\\Cockpit-Tools-Local\\node_modules\\.bin\\\\..\\@tauri-apps\\cli\\tauri.js\" dev"
-    }
-  ],
+  "tauriDevLauncherCount": 0,
+  "tauriDevLaunchers": [],
   "stableLocalAccessGatewayProcesses": [
     {
       "ProcessId": 13280,
@@ -65,19 +40,15 @@
   "localAccessConfig": {
     "exists": true,
     "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access.json",
-    "enabled": true,
+    "enabled": false,
     "port": 45335,
-    "updatedAt": 1780207183903
+    "updatedAt": 1780211940885
   },
   "periodicStableLocalAccessGateway": null,
   "activeCodexStreamGuard": {
-    "activeStreamCount": 5,
+    "activeStreamCount": 1,
     "activeLeaseIds": [
-      "237",
-      "236",
-      "113",
-      "109",
-      "111"
+      "300"
     ],
     "auditPaths": [
       "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl.1",
@@ -85,18 +56,26 @@
     ],
     "dataRoot": "C:\\Users\\sciman\\.antigravity_cockpit",
     "windowMinutes": 720,
-    "lastEventTimestampMs": 1780209321233,
+    "lastEventTimestampMs": 1780211810753,
     "parseErrorCount": 0
   },
-  "launchCount": 0,
-  "prebuildCount": 0,
-  "releaseFallbackCount": 0,
-  "lastLaunchAt": null,
-  "lastPrebuildAt": null,
-  "lastReleaseFallbackAt": null,
+  "launchCount": 2,
+  "prebuildCount": 3,
+  "releaseFallbackCount": 2,
+  "lastLaunchAt": "2026-05-31T15:15:28.9332583+08:00",
+  "lastPrebuildAt": "2026-05-31T15:16:21.6510840+08:00",
+  "lastReleaseFallbackAt": "2026-05-31T15:15:28.9374976+08:00",
   "debugPrebuild": null,
-  "pendingDebugLaunchAfterPrebuild": false,
-  "pendingDebugLaunchPrebuild": null,
-  "debugMissingSince": null,
+  "pendingDebugLaunchAfterPrebuild": true,
+  "pendingDebugLaunchPrebuild": {
+    "processId": 26940,
+    "command": "cargo build --manifest-path src-tauri/Cargo.toml --bin cockpit-tools --no-default-features --color never",
+    "stdoutPath": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-143001-seamless-debug-switch-watchdog\\debug-prebuild.stdout.log",
+    "stderrPath": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-143001-seamless-debug-switch-watchdog\\debug-prebuild.stderr.log",
+    "startedAt": "2026-05-31T15:16:15.3671134+08:00",
+    "hasExited": true,
+    "exitCode": 0
+  },
+  "debugMissingSince": "2026-05-31T15:16:15.3546265+08:00",
   "stopSignalFile": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-143001-seamless-debug-switch-watchdog\\stop.signal"
 }

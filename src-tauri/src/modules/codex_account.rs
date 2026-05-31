@@ -1393,6 +1393,88 @@ fn normalize_optional_ref(value: Option<&str>) -> Option<String> {
     })
 }
 
+fn normalize_codex_plan_type(value: Option<&str>) -> Option<String> {
+    normalize_optional_ref(value)
+}
+
+fn is_paid_codex_plan_type(plan_type: Option<&str>) -> bool {
+    let Some(plan_type) = normalize_codex_plan_type(plan_type) else {
+        return false;
+    };
+    !plan_type.eq_ignore_ascii_case("free")
+        && !plan_type.eq_ignore_ascii_case(API_KEY_LOGIN_PLAN_TYPE)
+}
+
+fn raw_quota_plan_type(account: &CodexAccount) -> Option<String> {
+    account
+        .quota
+        .as_ref()
+        .and_then(|quota| quota.raw_data.as_ref())
+        .and_then(|raw_data| raw_data.get("plan_type"))
+        .and_then(|value| value.as_str())
+        .and_then(|value| normalize_codex_plan_type(Some(value)))
+}
+
+fn backup_paid_plan_type(account: &CodexAccount) -> Option<String> {
+    let path = get_accounts_dir().join(format!("{}.json.bak", account.id));
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+
+    if let Some(backup_email) = read_json_string(&value, &["email", "account_email"]) {
+        if !account.email.trim().is_empty() && !account.email.eq_ignore_ascii_case(&backup_email) {
+            return None;
+        }
+    }
+    if let Some(backup_account_id) = read_json_string(&value, &["account_id", "accountId"]) {
+        if normalize_optional_ref(account.account_id.as_deref()).as_deref()
+            != Some(backup_account_id.as_str())
+        {
+            return None;
+        }
+    }
+
+    read_json_string(&value, &["plan_type", "planType"])
+        .filter(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+}
+
+pub(crate) fn resolve_observed_plan_type(
+    account: &CodexAccount,
+    observed_plan_type: Option<String>,
+) -> Option<String> {
+    if let Some(quota_plan_type) = raw_quota_plan_type(account) {
+        return Some(quota_plan_type);
+    }
+
+    let observed_plan_type = normalize_optional_value(observed_plan_type);
+    if observed_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+    {
+        return observed_plan_type;
+    }
+
+    let existing_plan_type = normalize_optional_ref(account.plan_type.as_deref());
+    if observed_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| plan_type.eq_ignore_ascii_case("free"))
+    {
+        if existing_plan_type
+            .as_deref()
+            .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+        {
+            return existing_plan_type;
+        }
+        if let Some(backup_plan_type) = backup_paid_plan_type(account) {
+            return Some(backup_plan_type);
+        }
+        return observed_plan_type;
+    }
+
+    existing_plan_type
+        .or_else(|| backup_paid_plan_type(account))
+        .or(observed_plan_type)
+}
+
 fn now_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -1437,7 +1519,7 @@ fn sync_identity_from_tokens(account: &mut CodexAccount) -> bool {
             account.email = email;
         }
         account.user_id = user_id;
-        account.plan_type = plan_type;
+        account.plan_type = resolve_observed_plan_type(account, plan_type);
         account.subscription_active_until = subscription_active_until;
         account.account_id = normalize_optional_value(
             extract_chatgpt_account_id_from_access_token(&account.tokens.access_token)
@@ -2156,10 +2238,7 @@ fn normalize_account_for_runtime(account: &mut CodexAccount) -> bool {
     false
 }
 
-fn sync_loaded_account_summaries(
-    index: &mut CodexAccountIndex,
-    accounts: &[CodexAccount],
-) -> bool {
+fn sync_loaded_account_summaries(index: &mut CodexAccountIndex, accounts: &[CodexAccount]) -> bool {
     let mut changed = false;
     for account in accounts {
         let Some(summary) = index.accounts.iter_mut().find(|item| item.id == account.id) else {
@@ -3127,7 +3206,7 @@ fn upsert_account_with_hints(
         acc.api_provider_id = None;
         acc.api_provider_name = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
         acc.subscription_active_until = subscription_active_until.clone();
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
@@ -3144,7 +3223,7 @@ fn upsert_account_with_hints(
         acc.api_provider_id = None;
         acc.api_provider_name = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
         acc.subscription_active_until = subscription_active_until.clone();
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
@@ -3153,7 +3232,7 @@ fn upsert_account_with_hints(
         index.accounts.push(CodexAccountSummary {
             id: existing_id.clone(),
             email: email.clone(),
-            plan_type: plan_type.clone(),
+            plan_type: acc.plan_type.clone(),
             subscription_active_until: subscription_active_until.clone(),
             created_at: acc.created_at,
             last_used: acc.last_used,
@@ -4952,11 +5031,11 @@ mod tests {
         resolve_api_provider_config, run_startup_quota_consistency_scan_for_tests, save_account,
         save_account_index, should_accept_authority_snapshot, sync_account_from_auth_dir,
         sync_local_quota_observations, sync_managed_projection_from_auth_dir,
-        validate_api_key_credentials, write_api_key_provider_to_config_toml,
-        write_api_provider_to_config_toml, write_managed_projection_to_dir,
-        write_quick_config_to_config_toml, ApiProviderConfig, CodexAccountIndex,
-        CodexAccountSummary, CodexAuthFile, CodexAuthTokens, LocalCodexOAuthSnapshot,
-        CODEX_AUTO_COMPACT_DEFAULT_LIMIT, CODEX_CONTEXT_WINDOW_1M_VALUE,
+        upsert_account_with_hints, validate_api_key_credentials,
+        write_api_key_provider_to_config_toml, write_api_provider_to_config_toml,
+        write_managed_projection_to_dir, write_quick_config_to_config_toml, ApiProviderConfig,
+        CodexAccountIndex, CodexAccountSummary, CodexAuthFile, CodexAuthTokens,
+        LocalCodexOAuthSnapshot, CODEX_AUTO_COMPACT_DEFAULT_LIMIT, CODEX_CONTEXT_WINDOW_1M_VALUE,
         CODEX_LOCAL_ACCESS_FILE_NAME, CODEX_LOCAL_ACCESS_HEALTH_FILE,
         CODEX_MODEL_PROVIDERS_FILE_NAME, CODEX_PROFILE_SHARED_COCKPIT_API,
         CODEX_RUNTIME_MODEL_PROVIDER_ID, CODEX_WEEK_WINDOW_MINUTES,
@@ -6459,7 +6538,104 @@ mod tests {
     }
 
     #[test]
-    fn load_account_refreshes_stale_plan_type_from_token_claims() {
+    fn upsert_account_with_hints_preserves_paid_plan_when_token_claims_are_free() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-upsert-free-token-paid-plan");
+        let email = "fete_pigpen.4r+g2@icloud.com";
+        let account_id = "acc-upsert-paid";
+        let organization_id = "org-upsert-paid";
+        let storage_id = build_account_storage_id(email, Some(account_id), Some(organization_id));
+        let existing_id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-existing-free-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-existing-free-token",
+                "chatgpt_plan_type": "free",
+                "account_id": account_id,
+                "organization_id": organization_id
+            }
+        }));
+        let existing_access_token = make_jwt(serde_json::json!({
+            "sub": "access-existing-free-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "organization_id": organization_id,
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let old_tokens = CodexTokens {
+            id_token: existing_id_token,
+            access_token: existing_access_token,
+            refresh_token: Some("refresh-existing-free-token".to_string()),
+        };
+        let mut existing = CodexAccount::new(storage_id.clone(), email.to_string(), old_tokens);
+        existing.user_id = Some("user-existing-plus".to_string());
+        existing.plan_type = Some("plus".to_string());
+        existing.account_id = Some(account_id.to_string());
+        existing.organization_id = Some(organization_id.to_string());
+        save_account(&existing).expect("save existing paid account");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.clone(),
+            email: email.to_string(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: None,
+            created_at: existing.created_at,
+            last_used: existing.last_used,
+        });
+        save_account_index(&index).expect("save existing index");
+
+        let free_id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-upsert-free-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-upsert-free-token",
+                "chatgpt_plan_type": "free",
+                "account_id": account_id,
+                "organization_id": organization_id
+            }
+        }));
+        let free_access_token = make_jwt(serde_json::json!({
+            "sub": "access-upsert-free-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "organization_id": organization_id,
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let upserted = upsert_account_with_hints(
+            CodexTokens {
+                id_token: free_id_token,
+                access_token: free_access_token,
+                refresh_token: Some("refresh-upsert-free-token".to_string()),
+            },
+            None,
+            None,
+        )
+        .expect("upsert account");
+
+        assert_eq!(upserted.id, storage_id);
+        assert_eq!(upserted.plan_type.as_deref(), Some("plus"));
+
+        let reloaded = load_account(&storage_id).expect("reload account");
+        assert_eq!(reloaded.plan_type.as_deref(), Some("plus"));
+
+        let repaired_index = load_account_index();
+        let summary = repaired_index
+            .accounts
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("index summary");
+        assert_eq!(summary.plan_type.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn load_account_preserves_paid_plan_when_token_claims_are_free() {
         let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
         let _env = TestEnvGuard::new("codex-stale-plan-refresh");
         let email = "filter-raisins.9f+g1@icloud.com";
@@ -6508,14 +6684,14 @@ mod tests {
         save_account_index(&index).expect("save stale account index");
 
         let loaded = load_account(storage_id).expect("load account");
-        assert_eq!(loaded.plan_type.as_deref(), Some("free"));
+        assert_eq!(loaded.plan_type.as_deref(), Some("plus"));
 
         let listed = list_accounts_checked().expect("list accounts checked");
         let listed_account = listed
             .iter()
             .find(|item| item.id == storage_id)
             .expect("listed account");
-        assert_eq!(listed_account.plan_type.as_deref(), Some("free"));
+        assert_eq!(listed_account.plan_type.as_deref(), Some("plus"));
 
         let repaired_index = load_account_index();
         let repaired_summary = repaired_index
@@ -6523,7 +6699,130 @@ mod tests {
             .iter()
             .find(|item| item.id == storage_id)
             .expect("repaired summary");
-        assert_eq!(repaired_summary.plan_type.as_deref(), Some("free"));
+        assert_eq!(repaired_summary.plan_type.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn load_account_recovers_paid_plan_from_quota_raw_plan_when_token_claims_are_free() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-quota-plan-repair");
+        let email = "fete_pigpen.4r+g2@icloud.com";
+        let storage_id = "codex_quota_raw_plus";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-quota-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-quota-plan",
+                "chatgpt_plan_type": "free",
+                "account_id": "acc-quota-plan"
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-quota-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc-quota-plan",
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let mut account = CodexAccount::new(
+            storage_id.to_string(),
+            email.to_string(),
+            CodexTokens {
+                id_token,
+                access_token,
+                refresh_token: Some("refresh-quota-plan".to_string()),
+            },
+        );
+        account.plan_type = Some("free".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 53,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "plus" })),
+        });
+        save_account(&account).expect("save account with quota raw paid plan");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.to_string(),
+            email: email.to_string(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: account.created_at,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("save index");
+
+        let loaded = load_account(storage_id).expect("load account");
+        assert_eq!(loaded.plan_type.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn load_account_recovers_paid_plan_from_detail_backup_when_token_claims_are_free() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-backup-plan-repair");
+        let email = "filter-raisins.9f+g1@icloud.com";
+        let storage_id = "codex_backup_plus";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-backup-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-backup-plan",
+                "chatgpt_plan_type": "free",
+                "account_id": "acc-backup-plan"
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-backup-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc-backup-plan",
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let tokens = CodexTokens {
+            id_token,
+            access_token,
+            refresh_token: Some("refresh-backup-plan".to_string()),
+        };
+        let mut current = CodexAccount::new(storage_id.to_string(), email.to_string(), tokens);
+        current.plan_type = Some("free".to_string());
+        save_account(&current).expect("save current corrupted account");
+
+        let mut backup = current.clone();
+        backup.plan_type = Some("plus".to_string());
+        let backup_path = get_accounts_dir().join(format!("{}.json.bak", storage_id));
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&backup).expect("serialize backup account"),
+        )
+        .expect("write backup account");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.to_string(),
+            email: email.to_string(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: current.created_at,
+            last_used: current.last_used,
+        });
+        save_account_index(&index).expect("save index");
+
+        let listed = list_accounts_checked().expect("list accounts checked");
+        let repaired = listed
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("listed account");
+        assert_eq!(repaired.plan_type.as_deref(), Some("plus"));
     }
 
     fn seed_oauth_account(tokens: CodexTokens) -> CodexAccount {
