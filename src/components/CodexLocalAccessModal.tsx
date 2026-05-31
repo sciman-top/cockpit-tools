@@ -1630,8 +1630,8 @@ export function CodexLocalAccessModal({
   const handleChangeRuntimeMode = async (nextMode: string) => {
     if (nextMode === selectedRuntimeMode) return;
 
-    const forceDirectProjection = nextMode === 'direct_projection';
-    if (forceDirectProjection) {
+    const isDirectProjection = nextMode === 'direct_projection';
+    if (isDirectProjection) {
       const confirmed = await confirmDialog(
         t(
           'codex.localAccess.disableServiceConfirmMessage',
@@ -1652,9 +1652,7 @@ export function CodexLocalAccessModal({
 
     await runAction(
       async () => {
-        await onSetRuntimeMode(nextMode as CodexRuntimeIntegrationMode, {
-          force: forceDirectProjection,
-        });
+        await onSetRuntimeMode(nextMode as CodexRuntimeIntegrationMode);
       },
       nextMode === 'cockpit_api_service'
         ? t('codex.localAccess.runtimeModeGatewaySuccess', '已切换为 Cockpit API Service 模式')

@@ -322,6 +322,24 @@ function Convert-CountTable {
   return $result
 }
 
+function Get-CountValue {
+  param(
+    [object]$Table,
+    [string]$Key
+  )
+  if ($null -eq $Table) {
+    return 0
+  }
+  if ($Table -is [System.Collections.IDictionary] -and $Table.Contains($Key)) {
+    return [int]$Table[$Key]
+  }
+  $property = $Table.PSObject.Properties[$Key]
+  if ($null -ne $property) {
+    return [int]$property.Value
+  }
+  return 0
+}
+
 function Get-AuditSnapshot {
   param(
     [string]$Path,
@@ -585,6 +603,11 @@ $isLocalCockpitProvider = (
   ($providerSnapshot.provider["base_url"] -match '^https?://(?:127\.0\.0\.1|localhost|\[::1\]):')
 )
 $isCockpitListener = @($listenerProcessNames | Where-Object { $_ -like "cockpit-tools*" }).Count -gt 0
+$runtimeProjectionAuditEventCount = (
+  (Get-CountValue $auditSnapshot.counts.phase "runtime_mode_transition") +
+  (Get-CountValue $auditSnapshot.counts.phase "local_access_enabled_transition")
+)
+$localRequestAuditEventCount = [Math]::Max(0, [int]$auditSnapshot.totalWindowEvents - [int]$runtimeProjectionAuditEventCount)
 
 $report = [ordered]@{
   schemaVersion = 1
@@ -611,10 +634,13 @@ $report = [ordered]@{
     currentPathParticipates = ($isLocalCockpitProvider -and $isCockpitListener)
     isLocalCockpitProvider = $isLocalCockpitProvider
     isCockpitListener = $isCockpitListener
+    localRequestAuditEventCount = $localRequestAuditEventCount
+    runtimeProjectionAuditEventCount = $runtimeProjectionAuditEventCount
     evidence = @(
       if ($isLocalCockpitProvider) { "active provider or base_url points to localhost/local codex access" }
       if ($isCockpitListener) { "localhost provider port is owned by cockpit-tools" }
-      if ($auditSnapshot.totalWindowEvents -gt 0) { "local access audit has events in the incident window" }
+      if ($localRequestAuditEventCount -gt 0) { "local access request/stream audit has events in the incident window" }
+      elseif ($runtimeProjectionAuditEventCount -gt 0) { "only runtime projection audit events were found in the incident window" }
       if ($sessionHits.hits.Count -gt 0) { "Codex session logs contain reconnect/stream keywords in the incident window" }
     )
     nextStep = if ($isLocalCockpitProvider -and $isCockpitListener) {

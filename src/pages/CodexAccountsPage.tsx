@@ -5132,7 +5132,6 @@ export function CodexAccountsPage() {
   const handleToggleLocalAccessEnabled = useCallback(async () => {
     if (!localAccessCollection) return;
     const nextEnabled = !localAccessCollection.enabled;
-    let force = false;
     if (nextEnabled) {
       const confirmed = await requestLocalAccessRiskNotice("service");
       if (!confirmed) return;
@@ -5153,15 +5152,11 @@ export function CodexAccountsPage() {
         },
       );
       if (!confirmedDisable) return;
-      force = true;
     }
     setLocalAccessSaving(true);
     try {
       const nextState =
-        await codexLocalAccessService.setCodexLocalAccessEnabled(
-          nextEnabled,
-          { force },
-        );
+        await codexLocalAccessService.setCodexLocalAccessEnabled(nextEnabled);
       setLocalAccessState(nextState);
       setMessage({
         text: nextState.collection?.enabled
@@ -5356,7 +5351,7 @@ export function CodexAccountsPage() {
           },
         );
         if (!confirmedDisable) return;
-        await handleSetCodexRuntimeMode("direct_projection", { force: true });
+        await handleSetCodexRuntimeMode("direct_projection");
         return;
       }
       await handleQuickActivateLocalAccess();
