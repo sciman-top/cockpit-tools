@@ -2201,6 +2201,19 @@ export function CodexAccountsPage() {
         : null,
     [localAccessCollection?.boundOauthAccountId, oauthAccounts],
   );
+  const oauthBindingHasExistingBinding = useMemo(() => {
+    if (oauthBindingTargetKind === "local_access") {
+      return Boolean(localAccessCollection?.boundOauthAccountId);
+    }
+    if (oauthBindingTargetKind === "api_key_account") {
+      return Boolean(oauthBindingAccount?.bound_oauth_account_id?.trim());
+    }
+    return false;
+  }, [
+    localAccessCollection?.boundOauthAccountId,
+    oauthBindingAccount?.bound_oauth_account_id,
+    oauthBindingTargetKind,
+  ]);
   const oauthBindingTargetActive =
     oauthBindingTargetKind === "local_access" ||
     (oauthBindingTargetKind === "api_key_account" && Boolean(oauthBindingAccount));
@@ -2964,8 +2977,7 @@ export function CodexAccountsPage() {
     [accounts],
   );
 
-  const closeOAuthBindingModal = useCallback(() => {
-    if (oauthBindingSaving) return;
+  const resetOAuthBindingModal = useCallback(() => {
     setOauthBindingTargetKind(null);
     setOauthBindingAccountId(null);
     setOauthBindingSelectedAccountId("");
@@ -2974,7 +2986,12 @@ export function CodexAccountsPage() {
     setOauthBindingFilterTypes([]);
     setOauthBindingTagFilter([]);
     setOauthBindingError(null);
-  }, [oauthBindingSaving, setOauthBindingError]);
+  }, [setOauthBindingError]);
+
+  const closeOAuthBindingModal = useCallback(() => {
+    if (oauthBindingSaving) return;
+    resetOAuthBindingModal();
+  }, [oauthBindingSaving, resetOAuthBindingModal]);
 
   const openOAuthBindingModal = useCallback(
     (account: CodexAccount, options?: { autoSwitch?: boolean }) => {
@@ -3175,20 +3192,6 @@ export function CodexAccountsPage() {
 
   const handleSwitch = async (accountId: string) => {
     const targetAccount = accounts.find((account) => account.id === accountId);
-    if (
-      targetAccount &&
-      isCodexApiKeyAccount(targetAccount) &&
-      !resolveBoundOAuthAccount(targetAccount)
-    ) {
-      openOAuthBindingModal(targetAccount, { autoSwitch: true });
-      setMessage({
-        text: t(
-          "codex.api.oauthBinding.switchRequiresBinding",
-          "请先绑定 OAuth 账号",
-        ),
-      });
-      return;
-    }
 
     try {
       const currentKind = await resolveCurrentCodexLaunchCredentialKind();
@@ -3252,14 +3255,7 @@ export function CodexAccountsPage() {
       const shouldSwitch =
         oauthBindingTargetKind === "api_key_account" && oauthBindingAutoSwitch;
       const accountId = oauthBindingAccount?.id ?? "";
-      setOauthBindingTargetKind(null);
-      setOauthBindingAccountId(null);
-      setOauthBindingSelectedAccountId("");
-      setOauthBindingAutoSwitch(false);
-      setOauthBindingSearchQuery("");
-      setOauthBindingFilterTypes([]);
-      setOauthBindingTagFilter([]);
-      setOauthBindingError(null);
+      resetOAuthBindingModal();
       if (shouldSwitch) {
         await executeCodexAccountSwitch(accountId);
       }
@@ -3279,6 +3275,49 @@ export function CodexAccountsPage() {
     oauthBindingAutoSwitch,
     oauthBindingTargetKind,
     selectedOAuthBindingAccount,
+    setMessage,
+    setOauthBindingError,
+    t,
+    updateApiKeyBoundOAuthAccount,
+    resetOAuthBindingModal,
+  ]);
+
+  const handleClearOAuthBinding = useCallback(async () => {
+    if (!oauthBindingTargetKind) return;
+    if (oauthBindingTargetKind === "api_key_account" && !oauthBindingAccount) {
+      return;
+    }
+
+    setOauthBindingSaving(true);
+    setOauthBindingError(null);
+    try {
+      if (oauthBindingTargetKind === "local_access") {
+        const nextState =
+          await codexLocalAccessService.updateCodexLocalAccessBoundOAuthAccount(
+            null,
+          );
+        setLocalAccessState(nextState);
+      } else if (oauthBindingAccount) {
+        await updateApiKeyBoundOAuthAccount(oauthBindingAccount.id, null);
+      }
+      setMessage({
+        text: t("codex.api.oauthBinding.clearSuccess", "OAuth 绑定已解除"),
+      });
+      resetOAuthBindingModal();
+    } catch (err) {
+      setOauthBindingError(
+        t("codex.api.oauthBinding.clearFailed", {
+          defaultValue: "解除 OAuth 绑定失败：{{error}}",
+          error: String(err).replace(/^Error:\s*/, ""),
+        }),
+      );
+    } finally {
+      setOauthBindingSaving(false);
+    }
+  }, [
+    oauthBindingAccount,
+    oauthBindingTargetKind,
+    resetOAuthBindingModal,
     setMessage,
     setOauthBindingError,
     t,
@@ -5651,15 +5690,6 @@ export function CodexAccountsPage() {
         t("codex.localAccess.testUnavailable", "当前 API 服务地址不可用"),
       );
     }
-    if (!boundLocalAccessOAuthAccount) {
-      openLocalAccessOAuthBindingModal();
-      throw new Error(
-        t(
-          "codex.api.oauthBinding.switchRequiresBinding",
-          "请先绑定 OAuth 账号",
-        ),
-      );
-    }
 
     setLocalAccessTesting(true);
     try {
@@ -5669,12 +5699,7 @@ export function CodexAccountsPage() {
     } finally {
       setLocalAccessTesting(false);
     }
-  }, [
-    boundLocalAccessOAuthAccount,
-    localAccessCollection,
-    openLocalAccessOAuthBindingModal,
-    t,
-  ]);
+  }, [localAccessCollection, t]);
 
   const handleActivateLocalAccess = useCallback(
     async (options?: { showSuccessMessage?: boolean }) => {
@@ -5682,16 +5707,6 @@ export function CodexAccountsPage() {
         throw new Error(
           t("codex.localAccess.testUnavailable", "当前 API 服务地址不可用"),
         );
-      }
-      if (!boundLocalAccessOAuthAccount) {
-        openLocalAccessOAuthBindingModal();
-        setMessage({
-          text: t(
-            "codex.api.oauthBinding.switchRequiresBinding",
-            "请先绑定 OAuth 账号",
-          ),
-        });
-        return;
       }
       if (!localAccessCollection.enabled) {
         const confirmedEnableAndSwitch = await confirmDialog(
@@ -5738,7 +5753,6 @@ export function CodexAccountsPage() {
     },
     [
       fetchCurrentAccount,
-      boundLocalAccessOAuthAccount,
       localAccessCollection,
       reloadCodexRuntimeMode,
       openLocalAccessOAuthBindingModal,
@@ -10541,11 +10555,11 @@ export function CodexAccountsPage() {
                         {oauthBindingTargetKind === "local_access"
                           ? t(
                               "codex.localAccess.oauthBinding.desc",
-                              "切换或测试 API 服务时，登录态使用绑定的 OAuth 账号，Provider 使用当前 API 服务配置。",
+                              "可选绑定。未绑定时 API 服务按原 API Key 逻辑运行；绑定后登录态使用 OAuth 账号，Provider 使用当前 API 服务配置。",
                             )
                           : t(
                               "codex.api.oauthBinding.desc",
-                              "切换该 API Key 账号时，登录态使用绑定的 OAuth 账号，Provider 使用当前 API Key 账号配置。",
+                              "可选绑定。未绑定时该账号按原 API Key 逻辑切换；绑定后登录态使用 OAuth 账号，Provider 使用当前 API Key 账号配置。",
                             )}
                       </p>
                       <div className="section-desc codex-oauth-binding-current-target">
@@ -10812,6 +10826,18 @@ export function CodexAccountsPage() {
                           disabled={oauthBindingSaving}
                         >
                           {t("codex.addModal.oauth", "OAuth 授权")}
+                        </button>
+                      )}
+                      {oauthBindingHasExistingBinding && (
+                        <button
+                          className="btn btn-secondary codex-oauth-binding-clear"
+                          onClick={() => void handleClearOAuthBinding()}
+                          disabled={oauthBindingSaving}
+                        >
+                          {t(
+                            "codex.api.oauthBinding.clearAction",
+                            "解除绑定",
+                          )}
                         </button>
                       )}
                       <button
