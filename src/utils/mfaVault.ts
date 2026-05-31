@@ -21,11 +21,20 @@ const LEGACY_STORAGE_KEY_SAVED_2FA = 'agtools.two_factor_auth.saved.v2';
 const LEGACY_STORAGE_KEY_HISTORY_2FA = 'agtools.two_factor_auth.history.v2';
 const MAX_HISTORY = 50;
 
+function createRandomSuffix(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const bytes = new Uint32Array(2);
+    crypto.getRandomValues(bytes);
+    return Array.from(bytes, value => value.toString(36)).join('');
+  }
+  return Date.now().toString(36);
+}
+
 export function createMfaRecordId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
-  return `mfa-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  return `mfa-${Date.now()}-${createRandomSuffix()}`;
 }
 
 export function normalizeStrictBase32(raw: string): string | null {
@@ -219,4 +228,20 @@ export function loadMfaHistoryRecords(): MfaRecord[] {
     .filter((item): item is MfaRecord => !!item);
 
   return dedupeMfaRecordsBySecret(merged).slice(0, MAX_HISTORY);
+}
+
+export function clearPersistedMfaRecords(): void {
+  [
+    MFA_STORAGE_KEY_SAVED,
+    MFA_STORAGE_KEY_HISTORY,
+    LEGACY_STORAGE_KEY_SAVED_MFA,
+    LEGACY_STORAGE_KEY_SAVED_2FA,
+    LEGACY_STORAGE_KEY_HISTORY_2FA,
+  ].forEach(key => {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // ignore storage cleanup failures
+    }
+  });
 }

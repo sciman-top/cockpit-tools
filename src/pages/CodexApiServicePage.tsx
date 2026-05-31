@@ -216,13 +216,28 @@ function formatLatencyMs(value: number): string {
   return `${Math.round(value)}ms`;
 }
 
+let fallbackClientIdCounter = 0;
+
+function createClientId(prefix: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint32Array(2);
+    crypto.getRandomValues(bytes);
+    return `${prefix}-${Date.now()}-${Array.from(bytes, (value) => value.toString(36)).join("")}`;
+  }
+  fallbackClientIdCounter += 1;
+  return `${prefix}-${Date.now()}-${fallbackClientIdCounter.toString(36)}`;
+}
+
 function createTestChatMessage(
   role: TestChatMessage["role"],
   content: string,
   extra: Partial<Omit<TestChatMessage, "id" | "role" | "content">> = {},
 ): TestChatMessage {
   return {
-    id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: createClientId(role),
     role,
     content,
     ...extra,
@@ -1088,9 +1103,7 @@ export function CodexApiServicePage() {
     setTestChatInput("");
     setTestDialogError("");
     setTestDialogRunning(true);
-    const sessionId = `api-service-test-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
+    const sessionId = createClientId("api-service-test");
     let unlisten: (() => void) | null = null;
     try {
       const apiMessages: CodexLocalAccessChatMessage[] = nextMessages
@@ -1953,7 +1966,7 @@ export function CodexApiServicePage() {
     }
     const now = Date.now();
     const preset: CodexLocalAccessTimeoutPreset = {
-      id: `custom_${crypto.randomUUID?.() ?? `${now}_${Math.random().toString(36).slice(2)}`}`,
+      id: createClientId("custom"),
       name,
       timeouts: payload,
       createdAt: now,
