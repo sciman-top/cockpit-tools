@@ -62,7 +62,7 @@
 - **专属支持**：专为 Codex 优化的账号管理体验
 - **配额展示**：清晰展示 Hourly 和 Weekly 配额状态
 - **计划识别**：自动识别账号 Plan 类型 (Basic, Plus, Team 等)
-- **切换归属**：Cockpit Tools 原生负责 Codex Direct OAuth、Direct API/API Key provider 与本地 API Service 的往返切换，包括 Local API Service 单账号池/跟随当前账号、provider 写入、会话可见性修复与托管实例启动状态；不需要外部 governed-runtime repair、gateway 或 guard 参与。
+- **API 服务与切换归属**：Cockpit Tools Local 原生负责 Codex Direct OAuth、Direct API/API Key provider 与本地 API Service 的往返切换，包括单账号池/跟随当前账号、provider 写入、会话可见性修复、托管实例启动状态、账号同步、配置投影、状态与用量统计；本地版优先保留 hardened gateway 与连续性守卫，并兼容官方 CLIProxyAPI sidecar 的配置模型。
 
 > ![Codex Accounts](docs/images/codex_list.png)
 
@@ -400,7 +400,7 @@ QQ 交流群、微信群或新建的 Telegram 畅聊群都可以加入。
 ## 致谢
 
 - Antigravity IDE 账号切号逻辑参考：[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
-- Codex API 服务实现参考：[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
+- Codex API 服务由内置 sidecar 集成：[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
 感谢项目作者的开源贡献！如果这些项目对你有帮助，也请给他们点个 ⭐ Star 支持一下！
 

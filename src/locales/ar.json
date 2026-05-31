@@ -2605,6 +2605,7 @@
       "column": "ينتهي",
       "unknown": "أعد التفويض",
       "missingDetail": "أعد التفويض للجلب",
+      "refresh": "تحديث الاشتراك",
       "expired": "منتهي",
       "hoursLeft": "{{count}}س",
       "daysLeft": "{{count}}ي",

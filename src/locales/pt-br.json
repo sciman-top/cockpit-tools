@@ -2559,6 +2559,7 @@
       "column": "Expira",
       "unknown": "Reautorizar",
       "missingDetail": "Reautorize para buscar",
+      "refresh": "Atualizar assinatura",
       "expired": "Expirada",
       "hoursLeft": "{{count}} h",
       "daysLeft": "{{count}} d",

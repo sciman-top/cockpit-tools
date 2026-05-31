@@ -61,7 +61,7 @@ Run multiple Antigravity IDE instances in parallel with different accounts. For 
 - **Dedicated Support**: Optimized account management experience for Codex
 - **Quota Display**: Clear display of Hourly and Weekly quota status
 - **Plan Recognition**: Automatically identifies account Plan types (Basic, Plus, Team, etc.)
-- **Switching Ownership**: Cockpit Tools natively owns Codex roundtrip switching among Direct OAuth, Direct API/API Key providers, and the Local API Service, including Local API Service single-account/follow-current behavior, provider writes, session visibility repair, and managed instance launch state; no external governed-runtime repair, gateway, or guard is required.
+- **API Service & Switching Ownership**: Cockpit Tools Local natively owns Codex roundtrip switching among Direct OAuth, Direct API/API Key providers, and the Local API Service, including single-account/follow-current behavior, provider writes, session visibility repair, managed instance launch state, account sync, config projection, status, and usage statistics; the local edition keeps the hardened gateway and continuity guards first while staying compatible with the official CLIProxyAPI sidecar configuration model.
 
 > ![Codex Accounts](docs/images/codex_list.png)
 
@@ -393,7 +393,7 @@ Every bit of support helps sustain open-source development. Thank you!
 ## Acknowledgments
 
 - Antigravity IDE account switching logic based on: [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
-- Codex API service implementation references: [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
+- Codex API service sidecar integration: [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
 Thanks to the project author for their open-source contributions! If these projects have helped you, please give them a ⭐ Star to show your support!
 
