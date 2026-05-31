@@ -5,11 +5,10 @@ use crate::models::codex_local_access::{
     CodexLocalAccessConcurrencyDiagnostics, CodexLocalAccessGlobalError,
     CodexLocalAccessHealthRegistry, CodexLocalAccessHealthSummary, CodexLocalAccessModelCooldown,
     CodexLocalAccessPortCleanupResult, CodexLocalAccessRoutingStrategy, CodexLocalAccessScope,
-    CodexLocalAccessState,
-    CodexLocalAccessStats, CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding,
-    CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessUsageEvent,
-    CodexLocalAccessUsageStats, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
-    CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
+    CodexLocalAccessState, CodexLocalAccessStats, CodexLocalAccessStatsWindow,
+    CodexLocalAccessStickyBinding, CodexLocalAccessTestFailure, CodexLocalAccessTestResult,
+    CodexLocalAccessUsageEvent, CodexLocalAccessUsageStats, CodexLocalApiFallbackMode,
+    CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind,
     CodexRuntimeIntegrationMode, CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
     CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
 };
@@ -1536,7 +1535,7 @@ async fn materialize_cockpit_api_service_projection() -> Result<(), String> {
         .base_url
         .clone()
         .unwrap_or_else(|| build_base_url(enabled_collection.port));
-    let runtime_account = build_runtime_account(base_url, api_key, &projection_account);
+    let runtime_account = build_runtime_account(base_url, api_key, Some(projection_account.id));
     codex_account::write_account_bundle_to_dir(&codex_account::get_codex_home(), &runtime_account)?;
     crate::modules::codex_instance::update_default_settings(None, None, Some(true), None)?;
     repair_runtime_projection_history_visibility()?;
@@ -1730,6 +1729,26 @@ fn sync_runtime_collection(runtime: &mut GatewayRuntime, collection: CodexLocalA
     runtime.loaded = true;
     runtime.last_error = None;
     prune_prepared_account_cache(runtime, now_ms());
+}
+
+fn normalize_optional_account_ref(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+}
+
+fn validate_local_access_bound_oauth_account(
+    bound_oauth_account_id: &str,
+) -> Result<CodexAccount, String> {
+    let bound_id = normalize_optional_account_ref(Some(bound_oauth_account_id))
+        .ok_or_else(|| "请选择要绑定的 OAuth 账号".to_string())?;
+    let oauth_account = codex_account::load_account(&bound_id)
+        .ok_or_else(|| format!("绑定的 OAuth 账号不存在: {}", bound_id))?;
+    if oauth_account.is_api_key_auth() {
+        return Err("API 服务只能绑定 OAuth 账号，不能绑定 API Key 账号".to_string());
+    }
+    Ok(oauth_account)
 }
 
 async fn cache_prepared_account(account: &CodexAccount) {
@@ -7248,9 +7267,8 @@ fn parse_windows_ipconfig_candidates(output: &str) -> Vec<LanIpv4Candidate> {
 fn build_runtime_account(
     base_url: String,
     api_key: String,
-    current_account: &CodexAccount,
+    bound_oauth_account_id: Option<String>,
 ) -> CodexAccount {
-    let _ = current_account;
     let mut runtime_account = CodexAccount::new_api_key(
         "codex_local_access_runtime".to_string(),
         "api-service-local".to_string(),
@@ -7261,6 +7279,7 @@ fn build_runtime_account(
         Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME.to_string()),
     );
     runtime_account.account_name = Some("API Service".to_string());
+    runtime_account.bound_oauth_account_id = bound_oauth_account_id;
     runtime_account
 }
 
@@ -7845,7 +7864,8 @@ fn sanitize_collection(
     changed |= normalize_local_api_safety_config(collection);
 
     if collection.port == 0 || collection.port == LEGACY_DEFAULT_CODEX_LOCAL_ACCESS_PORT {
-        collection.port = allocate_stable_local_access_port(bind_host_for_collection(collection), None)?;
+        collection.port =
+            allocate_stable_local_access_port(bind_host_for_collection(collection), None)?;
         changed = true;
     }
     if collection.api_key.trim().is_empty() {
@@ -7865,13 +7885,32 @@ fn sanitize_collection(
         changed = true;
     }
 
-    let valid_account_ids: HashSet<String> = codex_account::list_accounts_checked()?
+    let accounts = codex_account::list_accounts_checked()?;
+    let valid_bound_oauth_account_ids: HashSet<String> = accounts
+        .iter()
+        .filter(|account| !account.is_api_key_auth())
+        .map(|account| account.id.clone())
+        .collect();
+    let valid_account_ids: HashSet<String> = accounts
         .into_iter()
         .filter(|account| {
             is_local_access_eligible_account(account, collection.restrict_free_accounts)
         })
         .map(|account| account.id)
         .collect();
+
+    let normalized_bound_oauth_account_id =
+        normalize_optional_account_ref(collection.bound_oauth_account_id.as_deref());
+    if normalized_bound_oauth_account_id != collection.bound_oauth_account_id {
+        collection.bound_oauth_account_id = normalized_bound_oauth_account_id;
+        changed = true;
+    }
+    if let Some(bound_id) = collection.bound_oauth_account_id.as_deref() {
+        if !valid_bound_oauth_account_ids.contains(bound_id) {
+            collection.bound_oauth_account_id = None;
+            changed = true;
+        }
+    }
 
     let deduped =
         filter_local_access_account_ids(collection.account_ids.iter().cloned(), &valid_account_ids);
@@ -7904,8 +7943,9 @@ async fn ensure_runtime_loaded_without_start() -> Result<(), String> {
             safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
-            restrict_free_accounts: false,
+            restrict_free_accounts: true,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: Vec::new(),
             created_at: now_ms(),
             updated_at: now_ms(),
@@ -8410,9 +8450,16 @@ pub async fn activate_local_access_for_dir(
         .base_url
         .clone()
         .unwrap_or_else(|| build_base_url(collection.port));
-    let projection_account = resolve_local_access_projection_account(&collection)?;
-    let runtime_account =
-        build_runtime_account(base_url, collection.api_key.clone(), &projection_account);
+    let bound_oauth_account_id =
+        normalize_optional_account_ref(collection.bound_oauth_account_id.as_deref())
+            .ok_or_else(|| "API 服务需先绑定 OAuth 账号".to_string())?;
+    let _ = validate_local_access_bound_oauth_account(&bound_oauth_account_id)?;
+    let _ = codex_account::ensure_managed_account_fresh(&bound_oauth_account_id).await?;
+    let runtime_account = build_runtime_account(
+        base_url,
+        collection.api_key.clone(),
+        Some(bound_oauth_account_id),
+    );
     codex_account::write_account_bundle_to_dir(profile_dir, &runtime_account)?;
     Ok(state)
 }
@@ -8791,11 +8838,15 @@ pub async fn test_local_access_with_cli() -> Result<CodexLocalAccessTestResult, 
             Some(model_id),
         )));
     }
-    let projection_account = resolve_local_access_projection_account(&collection)?;
+    let bound_oauth_account_id =
+        normalize_optional_account_ref(collection.bound_oauth_account_id.as_deref())
+            .ok_or_else(|| "API 服务需先绑定 OAuth 账号".to_string())?;
+    let _ = validate_local_access_bound_oauth_account(&bound_oauth_account_id)?;
+    let _ = codex_account::ensure_managed_account_fresh(&bound_oauth_account_id).await?;
     let runtime_account = build_runtime_account(
         base_url.clone(),
         collection.api_key.clone(),
-        &projection_account,
+        Some(bound_oauth_account_id),
     );
     if let Err(err) = codex_account::write_account_bundle_to_dir(&temp_home, &runtime_account) {
         let _ = std::fs::remove_dir_all(&temp_home);
@@ -8889,8 +8940,9 @@ pub async fn save_local_access_accounts(
                 safety_config: CodexLocalApiSafetyConfig::default(),
                 access_scope: CodexLocalAccessScope::Localhost,
                 routing_strategy: CodexLocalAccessRoutingStrategy::default(),
-                restrict_free_accounts: false,
+                restrict_free_accounts: true,
                 follow_current_account: false,
+                bound_oauth_account_id: None,
                 account_ids: Vec::new(),
                 created_at: now_ms(),
                 updated_at: now_ms(),
@@ -9083,6 +9135,37 @@ pub async fn rotate_local_access_api_key() -> Result<CodexLocalAccessState, Stri
     };
 
     collection.api_key = generate_local_api_key();
+    collection.updated_at = now_ms();
+    save_collection_to_disk(&collection)?;
+
+    {
+        let mut runtime = gateway_runtime().lock().await;
+        sync_runtime_collection(&mut runtime, collection);
+    }
+
+    snapshot_state().await
+}
+
+pub async fn update_local_access_bound_oauth_account(
+    bound_oauth_account_id: &str,
+) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded().await?;
+
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    };
+
+    let Some(mut collection) = maybe_collection else {
+        return Err("本地接入集合尚未创建".to_string());
+    };
+
+    let bound_account = validate_local_access_bound_oauth_account(bound_oauth_account_id)?;
+    if collection.bound_oauth_account_id.as_deref() == Some(bound_account.id.as_str()) {
+        return snapshot_state().await;
+    }
+
+    collection.bound_oauth_account_id = Some(bound_account.id);
     collection.updated_at = now_ms();
     save_collection_to_disk(&collection)?;
 
@@ -14467,6 +14550,7 @@ mod tests {
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-a".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -14547,6 +14631,7 @@ mod tests {
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-a".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -21778,6 +21863,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-a".to_string(), "acc-b".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -21816,6 +21902,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-a".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -22159,6 +22246,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-a".to_string(), "acc-b".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -22245,6 +22333,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec![
                 "acc-primary".to_string(),
                 "acc-secondary".to_string(),
@@ -22315,6 +22404,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: (0..500).map(|index| format!("acc-{index:03}")).collect(),
             created_at: 1,
             updated_at: 2,
@@ -22555,6 +22645,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-b".to_string(), "acc-a".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -22581,6 +22672,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec![
                 "acc-third".to_string(),
                 "acc-primary".to_string(),
@@ -22634,6 +22726,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec![
                 "acc-primary".to_string(),
                 "acc-secondary".to_string(),
@@ -22664,6 +22757,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec![
                 "acc-primary".to_string(),
                 "acc-secondary".to_string(),
@@ -22779,6 +22873,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-old".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -22801,6 +22896,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: true,
+            bound_oauth_account_id: None,
             account_ids: vec![
                 "acc-old".to_string(),
                 "acc-third".to_string(),
@@ -22830,6 +22926,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-old".to_string(), "acc-third".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -22856,6 +22953,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: vec!["acc-old".to_string()],
             created_at: 1,
             updated_at: 2,
@@ -23245,6 +23343,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
             restrict_free_accounts: false,
             follow_current_account: false,
+            bound_oauth_account_id: None,
             account_ids: Vec::new(),
             created_at: now,
             updated_at: now,
@@ -23330,7 +23429,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         let runtime = build_runtime_account(
             "http://127.0.0.1:2876/v1".to_string(),
             "agt_codex_local".to_string(),
-            &source,
+            Some(source.id.clone()),
         );
 
         assert_eq!(
@@ -23346,6 +23445,10 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME)
         );
         assert_eq!(runtime.openai_api_key.as_deref(), Some("agt_codex_local"));
+        assert_eq!(
+            runtime.bound_oauth_account_id.as_deref(),
+            Some("codex_apikey_source")
+        );
     }
 
     #[test]

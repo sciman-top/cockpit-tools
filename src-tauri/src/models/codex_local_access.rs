@@ -233,6 +233,8 @@ pub struct CodexLocalAccessCollection {
     pub restrict_free_accounts: bool,
     #[serde(default = "default_follow_current_account")]
     pub follow_current_account: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_oauth_account_id: Option<String>,
     pub account_ids: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,

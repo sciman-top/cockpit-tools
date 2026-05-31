@@ -1920,6 +1920,10 @@
         "manualRequired": "{{count}} erfordern manuelle Aktion",
         "disabled": "{{count}} deaktiviert",
         "unknown": "unbekannter Status"
+      },
+      "oauthBinding": {
+        "desc": "Beim Wechsel zur API-Dienst-Konfiguration oder beim Testen verwendet der Anmeldestatus das gebundene OAuth-Konto, während der Provider die aktuelle API-Dienst-Konfiguration nutzt.",
+        "currentService": "API-Dienst: {{name}}"
       }
     },
     "local": {
@@ -2328,6 +2332,21 @@
         "cockpit_api": {
           "name": "Cockpit Api"
         }
+      },
+      "oauthBinding": {
+        "label": "OAuth-Bindung",
+        "unbound": "Nicht gebunden",
+        "action": "OAuth binden",
+        "actionShort": "Binden",
+        "title": "OAuth-Konto binden",
+        "desc": "Beim Wechsel zu diesem API-Key-Konto nutzt die Anmeldung das gebundene OAuth-Konto; der Provider nutzt die Konfiguration dieses API-Key-Kontos.",
+        "currentAccount": "API-Key-Konto: {{name}}",
+        "selectLabel": "OAuth-Konto wählen",
+        "empty": "Noch kein OAuth-Konto vorhanden. Bitte zuerst ein OAuth-Konto hinzufügen.",
+        "validationRequired": "Bitte ein OAuth-Konto wählen",
+        "saveSuccess": "OAuth-Bindung aktualisiert",
+        "saveFailed": "OAuth-Bindung fehlgeschlagen: {{error}}",
+        "switchRequiresBinding": "Bitte zuerst ein OAuth-Konto binden"
       }
     },
     "modelProviders": {
