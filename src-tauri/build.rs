@@ -79,6 +79,7 @@ fn emit_sidecar_rerun_inputs(path: &Path) {
     }
 }
 
+#[allow(clippy::suspicious_command_arg_space)]
 fn build_go_sidecar(
     sidecar_dir: &Path,
     output_dir: &Path,
@@ -100,6 +101,7 @@ fn build_go_sidecar(
         .arg("build")
         .arg("-trimpath")
         .arg("-ldflags")
+        // Go expects the linker flags as one value after -ldflags.
         .arg("-s -w")
         .arg("-o")
         .arg(&output)
