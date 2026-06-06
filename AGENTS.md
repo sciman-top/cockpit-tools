@@ -23,10 +23,11 @@
 - 默认中文沟通、中文解释、中文汇报；代码标识符、命令、日志、报错、API 名和 schema 字段保留英文原文。
 - 维护 Cockpit 时把当前 Codex 与正在运行中的 Cockpit 连续性当作硬护栏：未经当前任务明确确认，不停止、重启、kill、自动拉起、覆盖、替换或原地升级 `Codex App`、`codex`、Cockpit release exe、packaged exe、desktop shortcut 指向目标或 live dev app/server。
 - 需要 live UI、packaged exe 或“正在运行的 Cockpit 是否已是最新代码”验证时，先做只读进程、路径、hash、端口或配置探针；若仍需启动、重启、替换、覆盖、安装或单实例唤醒 Cockpit，先说明确切命令、原因、端口/窗口/单实例唤醒/资源占用/Codex 与 Cockpit 连续性影响，并询问：`是否允许我现在执行 <command> 进行实时验证？`
-- Codex API service、routing、quota、pool scheduling 或 failover 变更前，优先查本仓 `docs/reference-gateway-best-practices.md` 和 `D:\CODE\external\_reference_gateway_sources`；外部参考只作结构证据，不覆盖本仓运行事实。
+- Codex API service、routing、quota、pool scheduling 或 failover 变更前，优先查本仓 `docs/reference-gateway-best-practices.md` 和 `D:\CODE\external\Cockpit-Tools-Local-references`；外部参考只作结构证据，不覆盖本仓运行事实。
 
 <!-- auto-merged target-local additions -->
 - Codex API service routing、quota continuity、pool scheduling, sorting, or risk-reduction changes 必须优先对照本机参考源；Official `openai-codex` source is the highest reference。若参考源陈旧，只允许非破坏性 `git fetch --prune` / `pull --ff-only` 刷新后再用作证据。
+
 ### A.3 N/A 分类与字段
 - `platform_na`：平台能力缺失、命令不存在或非交互限制导致命令不可用。
 - `gate_na`：门禁步骤客观不可执行（含脚本缺失、当前任务纯文档/注释/排版、live dev/build 未获授权）。

@@ -21,6 +21,14 @@
 
 完整差异与合并守卫见 [自用差异清单](docs/SELF_USE_DELTA.md)，后续吸收官方新版按 [官方上游吸收策略](docs/UPSTREAM_SYNC_POLICY.md) 执行。
 
+Hardened API 相关产品合同、总控入口与执行文档见：
+
+- [产品需求书](docs/HARDENED_API_PRODUCT_REQUIREMENTS.md)
+- [总控计划](docs/HARDENED_API_MASTER_PLAN.md)
+- [Codex 协议附录](docs/LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md)
+- [用户旅程验收矩阵](docs/LOCAL_HARDENED_API_ACCEPTANCE_MATRIX.md)
+- [总体路线图](docs/LOCAL_HARDENED_API_ROADMAP.md)
+
 一款**通用的 AI IDE 账号管理工具**，目前支持 **Antigravity IDE**、**Codex**、**GitHub Copilot**、**Windsurf**、**Kiro**、**Cursor**、**Gemini Cli**、**CodeBuddy**、**CodeBuddy CN**、**Qoder**、**Trae** 和 **Zed**，并支持多账号多实例并行运行。
 
 

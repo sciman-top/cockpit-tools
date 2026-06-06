@@ -6,6 +6,8 @@
 
 本专项承接 `docs/LOCAL_HARDENED_API.md`、`docs/LOCAL_HARDENED_API_ROADMAP.md`、`docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md` 和 `docs/reference-gateway-best-practices.md`。当前落点是 Cockpit 本机 API service 的多账号号池调度；目标归宿是高连续性、低并发、低刷新、可解释、可手动恢复的自用调度系统。Codex-facing 行为优先复刻官方 `openai-codex` 源码；参考项目和社区最佳实践只用于 Cockpit 内部调度、排序、cooldown、限流和风控降噪结构。
 
+产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；关键语义合同和文档角色分工见 `docs/HARDENED_API_MASTER_PLAN.md`。
+
 本专项不追求把 500+ free 账号做成高频吞吐池，也不把随机轮换、全池扫射或风控规避作为优化目标。高效调度的定义是：
 
 - 当前任务不因单个账号额度耗尽而过早中断。
@@ -18,12 +20,12 @@
 
 官方源码和官方文档用于确认 Codex-facing、限流和错误语义；社区优秀项目只作为结构参考。调度、排序、风控降噪的实现和验收必须按下列顺序取证：
 
-- 官方 `openai-codex` 源码是 Codex-facing `/v1/responses`、turn state sticky routing、turn metadata observability、stream terminal、同 turn 禁止静默跨账号重放、`previous_response_id` continuation 和本地 completed Responses 闭合的最高参考源。参考路径：`D:\CODE\external\_reference_gateway_sources\openai-codex`。
+- 官方 `openai-codex` 源码是 Codex-facing `/v1/responses`、turn state sticky routing、turn metadata observability、stream terminal、同 turn 禁止静默跨账号重放、`previous_response_id` continuation 和本地 completed Responses 闭合的最高参考源。参考路径：`D:\CODE\external\Cockpit-Tools-Local-references\openai-codex`。
 - OpenAI 官方限流文档说明 rate limits 按 RPM/RPD/TPM 等维度生效，且可在 organization 和 project 层定义；失败重试仍会消耗 per-minute limit，所以不能连续重发。参考：<https://developers.openai.com/api/docs/guides/rate-limits>
 - OpenAI 官方错误码文档将 429 区分为 request rate limit 和 quota/billing limit，将 503 slow down 解释为突增流量导致的临时节流；建议 pacing、backoff、尊重 response headers，并保持稳定速率后逐步恢复。参考：<https://developers.openai.com/api/docs/guides/error-codes>
 - Gemini API 官方 rate limits 明确限制按 project 统计，不按 API key 统计；多个 key 不应被假设为多个独立额度池。参考：<https://ai.google.dev/gemini-api/docs/rate-limits>
 - Anthropic 官方 rate limits 文档说明限制按 organization/workspace/model class 管理，并通过 `retry-after` header 表达等待窗口。参考：<https://docs.anthropic.com/en/api/rate-limits>
-- 本地参考源仍优先使用 `D:\CODE\external\_reference_gateway_sources` 和 `docs/reference-gateway-best-practices.md`，只吸收 `IsSchedulable()`、persistent cooldown、fill-first/session affinity、pre-call rate checks、首字节后不重试等可本地文件化的模式。
+- 本地参考源仍优先使用 `D:\CODE\external\Cockpit-Tools-Local-references` 和 `docs/reference-gateway-best-practices.md`，只吸收 `IsSchedulable()`、persistent cooldown、fill-first/session affinity、pre-call rate checks、首字节后不重试等可本地文件化的模式。
 - 统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
 
 变更准入要求：

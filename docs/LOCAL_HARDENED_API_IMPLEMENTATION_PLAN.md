@@ -6,9 +6,11 @@
 
 本计划承接 `docs/LOCAL_HARDENED_API_ROADMAP.md` 和 `docs/reference-gateway-best-practices.md`。当前落点是 `src-tauri/src/modules/codex_local_access.rs` 驱动的本机 Cockpit API Service；目标归宿是一个默认保守、低并发、可观察、可回滚的自用 Hardened Local API Mode。
 
+产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；文档总控入口和关键语义合同见 `docs/HARDENED_API_MASTER_PLAN.md`。
+
 不做事项保持不变：不做公网/LAN 网关，不做请求级随机扫号，不把 LiteLLM/New API/Sub2API/CLIProxyAPI 变成强依赖，不把 500+ free 账号池当作高频自动刷新对象。
 
-本地参考源：`D:\CODE\external\_reference_gateway_sources` 保存 `CLIProxyAPI`、`litellm`、`new-api`、`sub2api` 的源码快照。改动 retry/fallback、health registry、audit trail、selector、stream guard 或路线图时，优先参考该目录和 `docs/reference-gateway-best-practices.md`，再决定是否需要外部资料。账号池调度后续专项任务以 `docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md` 为任务清单入口；账号刷新、配额刷新、托盘刷新和当前账号自动刷新降噪以 `docs/ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md` 为任务清单入口。
+本地参考源：`D:\CODE\external\Cockpit-Tools-Local-references` 保存 `CLIProxyAPI`、`litellm`、`new-api`、`sub2api` 的源码快照。改动 retry/fallback、health registry、audit trail、selector、stream guard 或路线图时，优先参考该目录和 `docs/reference-gateway-best-practices.md`，再决定是否需要外部资料。账号池调度后续专项任务以 `docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md` 为任务清单入口；账号刷新、配额刷新、托盘刷新和当前账号自动刷新降噪以 `docs/ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md` 为任务清单入口。
 
 统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
 

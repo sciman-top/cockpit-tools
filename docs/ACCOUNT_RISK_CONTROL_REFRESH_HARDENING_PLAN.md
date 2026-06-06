@@ -6,12 +6,14 @@
 
 本专项承接 `docs/LOCAL_HARDENED_API_ROADMAP.md`、`docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md`、`docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md` 和 `docs/reference-gateway-best-practices.md`。当前落点是各平台账号刷新、配额刷新、托盘快捷刷新、Codex quota 批量刷新和当前账号自动刷新 UI；目标归宿是低并发、低刷新、尊重 cooldown、可解释、可手动恢复的账号风控降噪系统。
 
+产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；关键语义合同和文档总控入口见 `docs/HARDENED_API_MASTER_PLAN.md`。
+
 本专项不做绕过平台限制、验证码/风控规避、UA/IP/指纹伪装、跨账号扫射或高频额度探测。风控风险降低只通过保守调度、减少无意义刷新、减少并发尖峰、持久化 cooldown 证据和用户可见状态实现。
 
 ## 证据分层
 
 - 本仓代码事实、focused tests、smoke/preflight report 是最终裁决源。
-- 官方 `openai-codex` 源码用于 Codex-facing turn、stream、quota/status 和 `previous_response_id` 语义；当前本地参考源为 `D:\CODE\external\_reference_gateway_sources\openai-codex`，2026-06-06 已刷新到 `87b808bb5`。
+- 官方 `openai-codex` 源码用于 Codex-facing turn、stream、quota/status 和 `previous_response_id` 语义；当前本地参考源为 `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex`，2026-06-06 已刷新到 `87b808bb5`。
 - OpenAI 官方错误码与 rate limit 文档用于解释 429/503、`Retry-After`、backoff 和“失败重试仍消耗 per-minute limit”。
 - Sub2API、CLIProxyAPI、LiteLLM、New API 只借鉴可本地化的 `IsSchedulable()`、persistent cooldown、fill-first、pre-call limiter、首字节后不重试和 channel disable 结构。
 - 社区文章、issue 和最佳实践只作为待核线索，不覆盖官方源码、本仓实测或本专项合同。
@@ -49,8 +51,8 @@
 
 验证：
 
-- [x] `git -C D:\CODE\external\_reference_gateway_sources\openai-codex status --short --branch`
-- [x] `git -C D:\CODE\external\_reference_gateway_sources\openai-codex rev-parse --short=8 HEAD`
+- [x] `git -C D:\CODE\external\Cockpit-Tools-Local-references\openai-codex status --short --branch`
+- [x] `git -C D:\CODE\external\Cockpit-Tools-Local-references\openai-codex rev-parse --short=8 HEAD`
 
 ### Phase 1 - 刷新入口降尖峰
 
@@ -170,4 +172,4 @@
 - 文档变更：Git 回滚本文件、`docs/reference-gateway-best-practices.md`、`docs/LOCAL_HARDENED_API_ROADMAP.md`、`docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md`。
 - 前端刷新入口：回滚 `src/App.tsx`、Settings、Quick Settings 和 `src/utils/currentAccountRefresh.ts` 相关 diff。
 - Rust 刷新入口：回滚 `src-tauri/src/modules/web_report.rs`、`src-tauri/src/modules/codex_quota.rs`、`src-tauri/src/commands/codex.rs` 相关 diff。
-- 本地参考源：`D:\CODE\external\_reference_gateway_sources\openai-codex` 仅作为只读参考；若需要复现旧审查，使用历史 SHA，不回滚主仓代码。
+- 本地参考源：`D:\CODE\external\Cockpit-Tools-Local-references\openai-codex` 仅作为只读参考；若需要复现旧审查，使用历史 SHA，不回滚主仓代码。

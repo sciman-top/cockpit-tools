@@ -79,8 +79,8 @@
 
 ## Reference Sync Evidence
 - Upstream mirror branch `mirror/upstream-main` was pushed to `0f8d9e0c`.
-- Local official `openai-codex` source at `D:\CODE\external\_reference_gateway_sources\openai-codex` was refreshed to `3ea9e9833`.
-- Local upstream Cockpit source was cloned at `D:\CODE\external\_reference_gateway_sources\cockpit-tools-upstream`.
+- Local official `openai-codex` source at `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex` was refreshed to `3ea9e9833`.
+- Local upstream Cockpit source was cloned at `D:\CODE\external\Cockpit-Tools-Local-references\cockpit-tools-upstream`.
 
 ## Backups And Rollback
 - Runtime projection backup before API service live switch:

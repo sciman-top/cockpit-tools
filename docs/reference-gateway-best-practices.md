@@ -3,21 +3,21 @@
 审查时间：2026-05-29
 
 2026-06-02 刷新说明：本文件保留 2026-05-29 的长篇结构性审查和历史行号锚点；最新参考源 HEAD 与 stream/quota continuity 对齐矩阵见 `reports/codex-api-service-source-audit/20260531-source-audit-matrix.md`。
-2026-06-06 刷新说明：`D:\CODE\external\_reference_gateway_sources` 已重新补齐并同步到本机当前 HEAD；旧快照保留为历史证据，当前镜像版本以下方 `Current Source Snapshot (2026-06-06)` 为准。
+2026-06-06 刷新说明：`D:\CODE\external\Cockpit-Tools-Local-references` 已重新补齐并同步到本机当前 HEAD；旧快照保留为历史证据，当前镜像版本以下方 `Current Source Snapshot (2026-06-06)` 为准。
 
 审查目标：为 Cockpit Tools Local 的个人本机 API service / Hardened Local API Mode 提炼可借鉴实践。本文只作为设计参考，不把社区项目的策略直接等同于本仓应启用的默认行为。Codex-facing 行为以官方 `openai-codex` 源码和本仓实测为最高语义锚点，社区项目只用于调度结构、cooldown、限流和可观测性启发。
 
-统一参考入口见 `docs/reference-sources.md`；当前项目约定的本地参考镜像目录为 `D:\CODE\external\_reference_gateway_sources`。
+统一参考入口见 `docs/reference-sources.md`；当前项目约定的本地参考镜像目录为 `D:\CODE\external\Cockpit-Tools-Local-references`。
 
 ## Source Snapshot (2026-05-29 Historical)
 
 | Project | Local path | Revision | Role |
 | --- | --- | --- | --- |
-| OpenAI Codex | `D:\CODE\external\_reference_gateway_sources\openai-codex` | `8a827d6` | 官方 Codex 源码；Codex-facing `/v1/responses`、stream terminal、turn metadata、重放/连续性语义 |
-| New API | `D:\CODE\external\_reference_gateway_sources\new-api` | `5b86ce0` | 渠道网关、渠道禁用、重试、限流 |
-| Sub2API | `D:\CODE\external\_reference_gateway_sources\sub2api` | `c3cd2b9f` | 账号健康、调度、临时不可调度、粘性会话 |
-| CLIProxyAPI | `D:\CODE\external\_reference_gateway_sources\CLIProxyAPI` | `2bcc7622` | CLI/OAuth 代理、凭据选择、模型冷却、流式重试边界 |
-| LiteLLM | `D:\CODE\external\_reference_gateway_sources\litellm` | `5699a06` | 通用 router、cooldown、pre-call rate checks、proxy limits |
+| OpenAI Codex | `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex` | `8a827d6` | 官方 Codex 源码；Codex-facing `/v1/responses`、stream terminal、turn metadata、重放/连续性语义 |
+| New API | `D:\CODE\external\Cockpit-Tools-Local-references\new-api` | `5b86ce0` | 渠道网关、渠道禁用、重试、限流 |
+| Sub2API | `D:\CODE\external\Cockpit-Tools-Local-references\sub2api` | `c3cd2b9f` | 账号健康、调度、临时不可调度、粘性会话 |
+| CLIProxyAPI | `D:\CODE\external\Cockpit-Tools-Local-references\CLIProxyAPI` | `2bcc7622` | CLI/OAuth 代理、凭据选择、模型冷却、流式重试边界 |
+| LiteLLM | `D:\CODE\external\Cockpit-Tools-Local-references\litellm` | `5699a06` | 通用 router、cooldown、pre-call rate checks、proxy limits |
 
 ## Source Snapshot Refresh (2026-06-03 Historical)
 
@@ -37,11 +37,13 @@
 
 | Project | Branch | Revision | Status |
 | --- | --- | --- | --- |
+<!-- BEGIN:gateway-current-rows -->
 | OpenAI Codex | `main` | `87b808bb5` | clean |
-| New API | `main` | `adc390c5f` | clean |
-| Sub2API | `main` | `635ad81cd` | clean |
 | CLIProxyAPI | `main` | `fca12a263` | clean |
+| Sub2API | `main` | `635ad81cd` | clean |
+| New API | `main` | `adc390c5f` | clean |
 | LiteLLM | `litellm_internal_staging` | `22186f457` | clean |
+<!-- END:gateway-current-rows -->
 
 ## Evidence Precedence
 

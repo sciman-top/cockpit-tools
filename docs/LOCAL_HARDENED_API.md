@@ -2,9 +2,13 @@
 
 本页是自用版 Cockpit API service 的执行说明。它只描述本机低风险用法；代码、运行事实和 `docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md` 优先级更高。
 
+产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；关键语义合同和文档总控入口见 `docs/HARDENED_API_MASTER_PLAN.md`。
+
 账号池调度专项见 `docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md`。该专项固定默认策略为 `sticky_process + fill_first + capped fallback`，并明确禁止随机扫号、高频 live probe 和风控规避型逻辑。
 
-Codex-facing 行为优先参考官方 `openai-codex` 源码：`D:\CODE\external\_reference_gateway_sources\openai-codex`。社区网关项目可以提供号池调度、cooldown、pre-call limiter 和 stream guard 的结构参考，但不能覆盖官方 Codex turn/stream/Responses terminal 语义。
+Codex-facing `pool_unavailable` / local completed Responses 协议附录见 `docs/LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md`；用户旅程验收矩阵见 `docs/LOCAL_HARDENED_API_ACCEPTANCE_MATRIX.md`。
+
+Codex-facing 行为优先参考官方 `openai-codex` 源码：`D:\CODE\external\Cockpit-Tools-Local-references\openai-codex`。社区网关项目可以提供号池调度、cooldown、pre-call limiter 和 stream guard 的结构参考，但不能覆盖官方 Codex turn/stream/Responses terminal 语义。
 
 统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
 

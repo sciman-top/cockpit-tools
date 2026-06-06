@@ -25,7 +25,7 @@ Date: 2026-05-27
 
 ## Official Contract Comparison
 
-本机参考源码：`D:\CODE\external\_reference_gateway_sources\openai-codex`
+本机参考源码：`D:\CODE\external\Cockpit-Tools-Local-references\openai-codex`
 
 - `codex-rs/core/src/client.rs` 说明 `ModelClientSession` 按 turn 创建；`x-codex-turn-state` 必须在同一 turn 的 retries、incremental appends 与 continuation requests 中原样复用，不得跨 turn 复用。
 - `codex-rs/core/src/session/turn.rs` 在同一 turn 的 sampling loop 内复用同一个 `ModelClientSession`。
@@ -91,7 +91,7 @@ Date: 2026-05-27
   - `x-codex-turn-state:sha256:73bb1cede902` repeated the same pattern on account `sha256:07420f7e5566`, with upstream `429 usage_limit_reached` and `retry_after_ms=603168000`.
   - This is expected once both pool accounts are exhausted: same-turn sticky routing must not consume another account; the terminal must be quick, structured, and attributable to upstream quota.
 - Official source comparison:
-  - Local reference `D:\CODE\external\_reference_gateway_sources\openai-codex` at `c4e53d103c102f8d5201247adbc60bbddd47c88d` documents `x-codex-turn-state` as a per-turn sticky-routing token replayed for retries, incremental appends, and continuation requests.
+  - Local reference `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex` at `c4e53d103c102f8d5201247adbc60bbddd47c88d` documents `x-codex-turn-state` as a per-turn sticky-routing token replayed for retries, incremental appends, and continuation requests.
   - `previous_response_id` is generated for websocket incremental continuation; `x-codex-turn-metadata` remains observability lineage only.
 - Additional fix:
   - `write_proxy_dispatch_error_response` now derives final audit error type from sticky Responses 429 context and records `provider_code=usage_limit_reached`, `terminal_origin=upstream_quota_error`, and `sticky_boundary`.

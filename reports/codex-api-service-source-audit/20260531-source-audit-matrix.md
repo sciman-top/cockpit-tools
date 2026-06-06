@@ -22,11 +22,11 @@
 
 | Source | Local path | Branch | HEAD | Role |
 | --- | --- | --- | --- | --- |
-| OpenAI Codex | `D:\CODE\external\_reference_gateway_sources\openai-codex` | `main` | `66814464779e` | 官方最高优先级：Codex Responses/SSE/turn state/`previous_response_id` 语义；本次 `a8a6071279b6..66814464779e` 未触及 `codex-rs/core`、`codex-rs/codex-api` 或 `responses-api-proxy` 的相关语义 |
-| LiteLLM | `D:\CODE\external\_reference_gateway_sources\litellm` | `litellm_internal_staging` | `28c0d85` | cooldown、pre-call rate checks、proxy 429/`retry-after` 参考 |
-| New API | `D:\CODE\external\_reference_gateway_sources\new-api` | `main` | `9a2e60d` | 渠道重试、自动禁用、全局/模型限流参考 |
-| Sub2API | `D:\CODE\external\_reference_gateway_sources\sub2api` | `main` | `aa69e394` | 账号可调度状态机、粘性清理、脱敏参考 |
-| CLIProxyAPI | `D:\CODE\external\_reference_gateway_sources\CLIProxyAPI` | `main` | `05b97247` | fill-first/round-robin、stream bootstrap retry 边界、Responses translator 参考 |
+| OpenAI Codex | `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex` | `main` | `66814464779e` | 官方最高优先级：Codex Responses/SSE/turn state/`previous_response_id` 语义；本次 `a8a6071279b6..66814464779e` 未触及 `codex-rs/core`、`codex-rs/codex-api` 或 `responses-api-proxy` 的相关语义 |
+| LiteLLM | `D:\CODE\external\Cockpit-Tools-Local-references\litellm` | `litellm_internal_staging` | `28c0d85` | cooldown、pre-call rate checks、proxy 429/`retry-after` 参考 |
+| New API | `D:\CODE\external\Cockpit-Tools-Local-references\new-api` | `main` | `9a2e60d` | 渠道重试、自动禁用、全局/模型限流参考 |
+| Sub2API | `D:\CODE\external\Cockpit-Tools-Local-references\sub2api` | `main` | `aa69e394` | 账号可调度状态机、粘性清理、脱敏参考 |
+| CLIProxyAPI | `D:\CODE\external\Cockpit-Tools-Local-references\CLIProxyAPI` | `main` | `05b97247` | fill-first/round-robin、stream bootstrap retry 边界、Responses translator 参考 |
 
 ## Evidence Precedence
 

@@ -6,9 +6,11 @@
 
 当前落点是 Cockpit-Tools-Local 自用版的 Codex API service。目标归宿是在保留现有桌面账号管理、配额展示、Codex App/CLI 投影能力的前提下，把本地 API service 改造成默认保守、可观测、可回滚的 Hardened Local API Mode。
 
+产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；文档总控入口和关键语义合同见 `docs/HARDENED_API_MASTER_PLAN.md`。
+
 本路线不以公网网关、多用户服务、商业中转或请求级账号扫射为目标。`new-api`、`sub2api`、`CLIProxyAPI`、`LiteLLM` 只作为结构参考，不作为默认架构替代。
 
-本地参考源码优先使用 `D:\CODE\external\_reference_gateway_sources`，其中包含官方 `openai-codex`、`CLIProxyAPI`、`litellm`、`new-api`、`sub2api` 快照；参考结论汇总在 `docs/reference-gateway-best-practices.md`。Codex-facing 行为以官方 `openai-codex` 源码和本仓实测为最高语义锚点，社区项目只作为调度、cooldown、限流和可观测性结构参考。
+本地参考源码优先使用 `D:\CODE\external\Cockpit-Tools-Local-references`，其中包含官方 `openai-codex`、`CLIProxyAPI`、`litellm`、`new-api`、`sub2api` 快照；参考结论汇总在 `docs/reference-gateway-best-practices.md`。Codex-facing 行为以官方 `openai-codex` 源码和本仓实测为最高语义锚点，社区项目只作为调度、cooldown、限流和可观测性结构参考。
 
 统一清单和当前本地 revision 见 `docs/reference-sources.md`。
 

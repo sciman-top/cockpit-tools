@@ -16,7 +16,7 @@
 
 项目当前统一使用以下目录保存外部参考源码：
 
-`D:\CODE\external\_reference_gateway_sources`
+`D:\CODE\external\Cockpit-Tools-Local-references`
 
 该目录已经补齐。后续项目文档、源码审查和手工对照，优先引用这里的镜像路径。
 
@@ -24,14 +24,16 @@
 
 | Project | Local path | Branch | Current revision | 用途 |
 | --- | --- | --- | --- | --- |
-| OpenAI Codex | `D:\CODE\external\_reference_gateway_sources\openai-codex` | `main` | `87b808bb5` | 官方 Codex CLI 源码；`/v1/responses`、stream terminal、turn metadata、`previous_response_id`、provider/model/config 行为 |
-| CLIProxyAPI | `D:\CODE\external\_reference_gateway_sources\CLIProxyAPI` | `main` | `fca12a263` | CLI/OAuth 代理、本地 API sidecar、fill-first、session affinity、首字节后不重试边界 |
-| Sub2API | `D:\CODE\external\_reference_gateway_sources\sub2api` | `main` | `635ad81cd` | 账号健康状态机、persistent cooldown、sticky 会话、临时不可调度 |
-| New API | `D:\CODE\external\_reference_gateway_sources\new-api` | `main` | `adc390c5f` | 渠道网关、渠道禁用、重试、限流、统一入口和 backpressure 结构 |
-| LiteLLM | `D:\CODE\external\_reference_gateway_sources\litellm` | `litellm_internal_staging` | `22186f457` | 通用 router、pre-call rate checks、cooldown matrix、proxy observability |
-| Cockpit Tools Upstream | `D:\CODE\external\_reference_gateway_sources\cockpit-tools-upstream` | `main` | `28cae0d22` | 官方原版 Cockpit Tools 只读镜像，便于与当前本地 fork 做纯净对照 |
-| Tauri | `D:\CODE\external\_reference_gateway_sources\tauri` | `dev` | `66f873d62` | Tauri 2 核心源码，适合核对 capability、window lifecycle、updater 和 runtime 语义 |
-| Official Tauri Plugins | `D:\CODE\external\_reference_gateway_sources\plugins-workspace` | `v2` | `4350ca652` | 官方插件实现，适合对照 `dialog/fs/opener/process/updater/single-instance/deep-link/autostart` |
+<!-- BEGIN:reference-current-rows -->
+| OpenAI Codex | `D:\\CODE\\external\\Cockpit-Tools-Local-references\openai-codex` | `main` | `87b808bb5` | 官方 Codex CLI 源码；`/v1/responses`、stream terminal、turn metadata、`previous_response_id`、provider/model/config 行为 |
+| CLIProxyAPI | `D:\\CODE\\external\\Cockpit-Tools-Local-references\CLIProxyAPI` | `main` | `fca12a263` | CLI/OAuth 代理、本地 API sidecar、fill-first、session affinity、首字节后不重试边界 |
+| Sub2API | `D:\\CODE\\external\\Cockpit-Tools-Local-references\sub2api` | `main` | `635ad81cd` | 账号健康状态机、persistent cooldown、sticky 会话、临时不可调度 |
+| New API | `D:\\CODE\\external\\Cockpit-Tools-Local-references\new-api` | `main` | `adc390c5f` | 渠道网关、渠道禁用、重试、限流、统一入口和 backpressure 结构 |
+| LiteLLM | `D:\\CODE\\external\\Cockpit-Tools-Local-references\litellm` | `litellm_internal_staging` | `22186f457` | 通用 router、pre-call rate checks、cooldown matrix、proxy observability |
+| Cockpit Tools Upstream | `D:\\CODE\\external\\Cockpit-Tools-Local-references\cockpit-tools-upstream` | `main` | `28cae0d22` | 官方原版 Cockpit Tools 只读镜像，便于与当前本地 fork 做纯净对照 |
+| Tauri | `D:\\CODE\\external\\Cockpit-Tools-Local-references\tauri` | `dev` | `66f873d62` | Tauri 2 核心源码，适合核对 capability、window lifecycle、updater 和 runtime 语义 |
+| Official Tauri Plugins | `D:\\CODE\\external\\Cockpit-Tools-Local-references\plugins-workspace` | `v2` | `4350ca652` | 官方插件实现，适合对照 `dialog/fs/opener/process/updater/single-instance/deep-link/autostart` |
+<!-- END:reference-current-rows -->
 
 ## 项目内入口
 
@@ -57,8 +59,8 @@
 ### 2. 重复源码的处理
 
 - 本仓已有 `git remote upstream` 指向 `jlcodes99/cockpit-tools`；`cockpit-tools-upstream` 仍保留为只读源码镜像，便于不污染当前工作区地翻上游实现。
-- 本仓已有 vendored sidecar 路径 `sidecars/cockpit-cliproxy/cdk/CLIProxyAPI`；该目录更适合作为随仓版本的一部分。若要看 CLIProxyAPI 最新 upstream 实现，优先使用 `D:\CODE\external\_reference_gateway_sources\CLIProxyAPI`。
-- `D:\CODE\external\ai-coding-runtime-references\repos\openai-codex` 已存在另一份 `openai-codex`。对 Cockpit Tools Local 而言，后续统一以 `D:\CODE\external\_reference_gateway_sources\openai-codex` 为项目约定入口，避免文档和脚本继续分叉。
+- 本仓已有 vendored sidecar 路径 `sidecars/cockpit-cliproxy/cdk/CLIProxyAPI`；该目录更适合作为随仓版本的一部分。若要看 CLIProxyAPI 最新 upstream 实现，优先使用 `D:\CODE\external\Cockpit-Tools-Local-references\CLIProxyAPI`。
+- `D:\CODE\external\ai-coding-runtime-references\repos\openai-codex` 已存在另一份 `openai-codex`。对 Cockpit Tools Local 而言，后续统一以 `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex` 为项目约定入口，避免文档和脚本继续分叉。
 
 ### 3. 适合直接借鉴的层面
 
@@ -74,7 +76,7 @@
 统一刷新命令：
 
 ```powershell
-$root = 'D:\CODE\external\_reference_gateway_sources'
+$root = 'D:\CODE\external\Cockpit-Tools-Local-references'
 
 git -C "$root\openai-codex" pull --ff-only origin main
 git -C "$root\CLIProxyAPI" pull --ff-only origin main
@@ -91,3 +93,9 @@ git -C "$root\plugins-workspace" pull --ff-only origin v2
 - 本文件里的 `Current revision`
 - [reference-gateway-best-practices.md](/D:/CODE/external/Cockpit-Tools-Local/docs/reference-gateway-best-practices.md) 的 Source Snapshot
 - 相关计划文档里引用的 SHA 或本地路径说明
+
+推荐直接使用：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/update-reference-snapshots.ps1 -Apply
+```

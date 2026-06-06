@@ -9,11 +9,13 @@ The current implementation is considered broadly successful for ordinary admitte
 
 It is not acceptable to treat a hard-affinity continuation as locally successful when the original account is exhausted. A request carrying official sticky state must either complete upstream on the bound account, retry the same account only inside the short reset window, or return an explicit quota terminal error.
 
+Protocol-level interpretation of local completed Responses now lives in `docs/LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md`; this memo remains the sticky-boundary and quota-continuity guardrail addendum.
+
 ## Official Codex Compatibility Anchors
 
 Reviewed against local official source mirror:
 
-- `D:\CODE\external\_reference_gateway_sources\openai-codex`
+- `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex`
 - commit `8a827d6` (`Expose MCP server info as part of server status (#24698)`)
 - current local mirror HEAD `87b808bb5` (`Support custom shell environment for local shell tool (#27023)`)
 

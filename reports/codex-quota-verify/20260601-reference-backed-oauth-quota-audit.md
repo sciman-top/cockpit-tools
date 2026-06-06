@@ -5,7 +5,7 @@ Branch: codex/upstream-sync-v0.24.11-20260601
 
 ## Evidence sources
 
-- Local official source: `D:\CODE\external\_reference_gateway_sources\openai-codex`, commit `f27bbbd49 Add goal extension GoalApi (#25096)`.
+- Local official source: `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex`, commit `f27bbbd49 Add goal extension GoalApi (#25096)`.
 - Official source anchors:
   - `codex-rs/protocol/src/auth.rs`: known raw plan values are `free`, `go`, `plus`, `pro`, `prolite`, `team`, `self_serve_business_usage_based`, `business`, `enterprise_cbp_usage_based`, `enterprise`/`hc`, `education`/`edu`.
   - `codex-rs/protocol/src/account.rs`: app-facing plan type keeps `ProLite`, usage-based business variants, workspace helper groups.
