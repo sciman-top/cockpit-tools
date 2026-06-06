@@ -29,7 +29,7 @@
 
 Cockpit Tools Local 的最佳终态不是“更大的通用公网网关”，而是：
 
-**一个 Windows-first 的本地桌面控制面 + 一个只监听 `127.0.0.1` 的本地 Hardened API Runtime。**
+**一个 Windows-first 的本地桌面控制面 + 一个默认只监听 `127.0.0.1` 的本地 Hardened API Runtime。**
 
 它的核心职责是：
 
@@ -37,12 +37,14 @@ Cockpit Tools Local 的最佳终态不是“更大的通用公网网关”，而
 - 对 Codex 提供官方语义优先的本地 runtime，包括 Responses、turn continuity、quota/cooldown、sticky routing 和显式 recovery。
 - 对其他平台保持适配器式扩展，而不是把整个项目重心拖成多租户服务端网关。
 
+如果未来补充局域网监听，它也只能作为高级显式选项，服务于受控 LAN 协作或旁路验证；它不改变本项目“本地控制面优先、非公网、非多租户”的终态。
+
 ## 3. 最佳产品形态
 
 | 领域 | 最佳终态 | 不应演化成 |
 | --- | --- | --- |
 | 产品身份 | 自用桌面控制台 + 本地 runtime | 公网 SaaS、中转平台、多租户网关 |
-| 网络边界 | 仅本机 loopback，默认 `127.0.0.1` | LAN/public listen |
+| 网络边界 | 默认本机 loopback；LAN 仅高级显式 opt-in；绝不公网默认开放 | listen-first 的 LAN/public 暴露 |
 | Codex 支持 | Responses-first、本地 continuity/runtime 合同 | 只做浅层 OpenAI-compatible 转发 |
 | 账号池 | 小池、低并发、可解释、可恢复 | 500+ 账号高频扫射池 |
 | 可观测性 | health registry + audit trail + acceptance summary | 只有零散日志、出事后手查 |
@@ -184,7 +186,10 @@ Control plane 负责：
 | --- | --- | --- | --- |
 | OpenAI 官方文档 | Responses、`previous_response_id`、error codes、rate limits、compaction | 公开协议语义与错误处理边界 | 非本地产品上下文中的默认运营假设 |
 | `openai/codex` | turn state、continuation、stream terminal、phase/state 管理 | Codex-facing runtime 语义 | 与本项目无关的 CLI/TUI 细节 |
+| `openai/openai-openapi` | 端点、字段、schema、协议结构 | 官方请求/响应契约参考 | 把规范层直接误当作运行时行为说明 |
 | Tauri 2 官方 | capability、security、updater、runtime 边界 | 最小权限和桌面宿主最佳实践 | 不经审查地扩大插件/权限窗口 |
+| `tauri-apps/tao` | 无 | 窗口生命周期、单实例、托盘、焦点行为 | 把底层窗口实现细节直接暴露成产品层契约 |
+| `tauri-apps/wry` | 无 | WebView、导航、深链、宿主集成行为 | 把底层 WebView workaround 当成产品默认策略 |
 | `CLIProxyAPI` | 无 | fill-first、session affinity、首字节后不重试 | 平台化多凭据激进重试默认值 |
 | `sub2api` | 无 | `IsSchedulable()`、persistent cooldown、health panel 思路 | DB/Redis/scheduler 重量级基础设施 |
 | `LiteLLM` | 无 | pre-call rate checks、cooldown matrix、proxy observability | 把整个代理平台架构搬进桌面产品 |
@@ -212,6 +217,7 @@ Control plane 负责：
 最佳安全终态应满足：
 
 - 本地 API 默认只监听 `127.0.0.1`
+- 如未来支持 LAN 监听，也只能作为高级显式 opt-in，并保留单独风险提示、回滚入口和 hotspot review
 - Tauri capability 按功能最小化拆分
 - updater 被视为高影响面能力，并有明确签名/回滚语义
 - 日志、UI、report 不泄露完整 key/token/email/prompt/response
@@ -219,7 +225,7 @@ Control plane 负责：
 
 不应为了“方便调试”长期保留：
 
-- LAN/public binding
+- 公网 binding，或没有明确风险提示的默认 LAN binding
 - 宽泛 shell/process/fs 权限
 - 原始 upstream body 日志
 - 高频 quota recovery probing

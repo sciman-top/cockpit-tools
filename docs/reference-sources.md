@@ -8,9 +8,9 @@
 
 原则保持与现有项目文档一致：
 
-- Codex-facing 行为以官方 `openai-codex` 源码和本仓实测为最高语义锚点。
+- Codex-facing 行为以官方 `openai-codex` 源码、官方 `openai-openapi` 规范和本仓实测为最高语义锚点。
 - `sub2api`、`new-api`、`CLIProxyAPI`、`litellm` 主要作为调度、cooldown、限流、observability 和网关结构参考。
-- `cockpit-tools-upstream`、`tauri`、`plugins-workspace` 主要作为上游产品和框架实现参考，不直接替代本仓设计。
+- `cockpit-tools-upstream`、`tauri`、`tao`、`wry`、`plugins-workspace` 主要作为上游产品、桌面宿主和框架实现参考，不直接替代本仓设计。
 
 ## 本地路径约定
 
@@ -26,12 +26,15 @@
 | --- | --- | --- | --- | --- |
 <!-- BEGIN:reference-current-rows -->
 | OpenAI Codex | `D:\\CODE\\external\\Cockpit-Tools-Local-references\openai-codex` | `main` | `87b808bb5` | 官方 Codex CLI 源码；`/v1/responses`、stream terminal、turn metadata、`previous_response_id`、provider/model/config 行为 |
+| OpenAI OpenAPI | `D:\\CODE\\external\\Cockpit-Tools-Local-references\openai-openapi` | `master` | `5162af98d` | 官方 OpenAPI 规范；端点、字段、schema、兼容层契约与请求/响应结构参考 |
 | CLIProxyAPI | `D:\\CODE\\external\\Cockpit-Tools-Local-references\CLIProxyAPI` | `main` | `fca12a263` | CLI/OAuth 代理、本地 API sidecar、fill-first、session affinity、首字节后不重试边界 |
 | Sub2API | `D:\\CODE\\external\\Cockpit-Tools-Local-references\sub2api` | `main` | `635ad81cd` | 账号健康状态机、persistent cooldown、sticky 会话、临时不可调度 |
 | New API | `D:\\CODE\\external\\Cockpit-Tools-Local-references\new-api` | `main` | `adc390c5f` | 渠道网关、渠道禁用、重试、限流、统一入口和 backpressure 结构 |
 | LiteLLM | `D:\\CODE\\external\\Cockpit-Tools-Local-references\litellm` | `litellm_internal_staging` | `22186f457` | 通用 router、pre-call rate checks、cooldown matrix、proxy observability |
 | Cockpit Tools Upstream | `D:\\CODE\\external\\Cockpit-Tools-Local-references\cockpit-tools-upstream` | `main` | `28cae0d22` | 官方原版 Cockpit Tools 只读镜像，便于与当前本地 fork 做纯净对照 |
 | Tauri | `D:\\CODE\\external\\Cockpit-Tools-Local-references\tauri` | `dev` | `66f873d62` | Tauri 2 核心源码，适合核对 capability、window lifecycle、updater 和 runtime 语义 |
+| Tao | `D:\\CODE\\external\\Cockpit-Tools-Local-references\tao` | `dev` | `47d38f369` | Tauri 底层窗口库；window lifecycle、single-instance、tray、focus 和窗口行为语义 |
+| Wry | `D:\\CODE\\external\\Cockpit-Tools-Local-references\wry` | `dev` | `f3e53ca6a` | Tauri 底层 WebView 库；webview、navigation、deep-link、host integration 行为 |
 | Official Tauri Plugins | `D:\\CODE\\external\\Cockpit-Tools-Local-references\plugins-workspace` | `v2` | `4350ca652` | 官方插件实现，适合对照 `dialog/fs/opener/process/updater/single-instance/deep-link/autostart` |
 <!-- END:reference-current-rows -->
 
@@ -39,6 +42,7 @@
 
 以下文档已经把这些参考源纳入决策链或设计论证：
 
+- [COCKPIT_LOCAL_TARGET_ARCHITECTURE.md](/D:/CODE/external/Cockpit-Tools-Local/docs/COCKPIT_LOCAL_TARGET_ARCHITECTURE.md)
 - [reference-gateway-best-practices.md](/D:/CODE/external/Cockpit-Tools-Local/docs/reference-gateway-best-practices.md)
 - [LOCAL_HARDENED_API_ROADMAP.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_ROADMAP.md)
 - [LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md)
@@ -50,10 +54,10 @@
 
 ### 1. 官方优先级
 
-如果官方 `openai-codex`、官方 Tauri 源码与社区网关项目出现冲突：
+如果官方 `openai-codex`、`openai-openapi`、官方 Tauri 系源码与社区网关项目出现冲突：
 
 1. 先看本仓运行事实和 focused tests。
-2. 再看官方 `openai-codex` / Tauri 源码。
+2. 再看官方 `openai-codex` / `openai-openapi` / `tauri` / `tao` / `wry` 源码或规范。
 3. 最后才参考 `sub2api`、`new-api`、`CLIProxyAPI`、`litellm` 的结构做法。
 
 ### 2. 重复源码的处理
@@ -65,11 +69,15 @@
 ### 3. 适合直接借鉴的层面
 
 - `openai-codex`：Codex 本体语义、配置写回、provider/model 行为。
+- `openai-openapi`：官方端点、字段、schema、兼容层契约。
 - `CLIProxyAPI`：本地 API sidecar、流式边界、凭据选择。
 - `sub2api`：账号池调度、健康状态、cooldown。
 - `new-api`：网关限流、禁用策略、重试框架。
 - `litellm`：pre-call limiter、router cooldown、proxy observability。
-- `tauri` / `plugins-workspace`：桌面宿主能力、插件实现、updater/runtime 细节。
+- `tauri`：桌面宿主能力、capability、updater/runtime 细节。
+- `tao`：窗口生命周期、单实例、托盘、焦点和原生窗口行为。
+- `wry`：WebView、导航、深链和宿主集成行为。
+- `plugins-workspace`：官方插件实现和权限窗口。
 
 ## 刷新方式
 
@@ -79,12 +87,15 @@
 $root = 'D:\CODE\external\Cockpit-Tools-Local-references'
 
 git -C "$root\openai-codex" pull --ff-only origin main
+git -C "$root\openai-openapi" pull --ff-only origin master
 git -C "$root\CLIProxyAPI" pull --ff-only origin main
 git -C "$root\sub2api" pull --ff-only origin main
 git -C "$root\new-api" pull --ff-only origin main
 git -C "$root\litellm" pull --ff-only origin litellm_internal_staging
 git -C "$root\cockpit-tools-upstream" pull --ff-only origin main
 git -C "$root\tauri" pull --ff-only origin dev
+git -C "$root\tao" pull --ff-only origin dev
+git -C "$root\wry" pull --ff-only origin dev
 git -C "$root\plugins-workspace" pull --ff-only origin v2
 ```
 

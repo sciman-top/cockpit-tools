@@ -24,6 +24,7 @@
 | `HARDENED_API_MASTER_PLAN.md` | 总控导航与语义合同 | 判断“哪份文档才是当前权威入口” |
 | `LOCAL_HARDENED_API_ROADMAP.md` | 总体阶段路线图 | 判断当前在哪个阶段、下一阶段是什么 |
 | `LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md` | 实施任务清单 | 实际写代码和安排切片时使用 |
+| `LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md` | 下一阶段 backlog | 收口暂不阻塞当前蓝图、但必须继续澄清的问题 |
 | `LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md` | 调度专项 | 账号池、selector、fallback、pool_unavailable 相关修改 |
 | `ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md` | 刷新专项 | quota refresh、tray refresh、当前账号自动刷新相关修改 |
 | `LOCAL_HARDENED_API_PERFORMANCE_PLAN.md` | 性能专项 | 启动、轮询、切换、刷新等性能问题 |
@@ -99,6 +100,12 @@
 - 不能 retroactively cancel 当前 active stream
 - 只能等它自然 terminal、客户端断开、或 transport fatal error
 
+### 3.8 Loopback Default / Advanced LAN
+
+- hardened 默认和当前运行手册只覆盖 `127.0.0.1` loopback。
+- `lan_base_url` 只是兼容字段，不构成默认推荐入口。
+- 如未来支持 LAN 监听，也只能作为高级显式 opt-in，必须带风险提示、hotspot review、回滚入口和独立 release acceptance；公网开放不在范围内。
+
 ## 4. 当前执行状态
 
 ### 已经相对明确的部分
@@ -110,16 +117,18 @@
 
 ### 仍然需要增强的部分
 
-1. 产品级成功指标刚刚补齐，后续需要把它们映射进各专项验收。
+1. `fallbackMode` / same-request rescue / next-request reselection / loopback default 语义仍需持续同步回局部文档和 UI。
 2. 性能计划仍需要真实基线样本和阶段性复测报告。
 3. Windows-first 与跨平台支持边界还需要从架构建议落成发布级语义。
 4. 部分 UI/人工恢复场景的自动化验收仍偏弱。
+5. 高级显式 LAN 模式是否进入正式 release 合同，仍需单独决策。
 
 ## 5. 推荐下一优先级
 
 ### Priority A
 
 - 把 `fallbackMode` / same-request rescue / next-request reselection 语义同步回所有局部文档
+- 把“默认 loopback / 高级显式 LAN opt-in”语义同步回所有局部文档
 - 用真实报告验证新性能阈值
 
 ### Priority B
@@ -153,3 +162,4 @@
 1. `Codex-facing local completed Responses` 是否长期保留为正式合同。
 2. Windows-first 与跨平台同权支持的边界如何写入发布语义。
 3. 新性能阈值是否需要按 50 账号 / 200 账号两档分别固化到 release report。
+4. 高级显式 LAN 模式是否需要成为正式 release 合同，以及它与 hardened 默认之间的边界如何落文档和验收。

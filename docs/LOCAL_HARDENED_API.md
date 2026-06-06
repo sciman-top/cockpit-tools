@@ -1,6 +1,7 @@
 # Cockpit Local Hardened API
 
 本页是自用版 Cockpit API service 的执行说明。它只描述本机低风险用法；代码、运行事实和 `docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md` 优先级更高。
+本页当前只覆盖默认 loopback 的低风险 runbook；如未来支持高级显式 LAN 模式，应单独补 release 合同、UI 风险提示和验收脚本，而不是把它混入 hardened 默认说明。
 
 产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；关键语义合同和文档总控入口见 `docs/HARDENED_API_MASTER_PLAN.md`。
 
@@ -11,10 +12,11 @@ Codex-facing `pool_unavailable` / local completed Responses 协议附录见 `doc
 Codex-facing 行为优先参考官方 `openai-codex` 源码：`D:\CODE\external\Cockpit-Tools-Local-references\openai-codex`。社区网关项目可以提供号池调度、cooldown、pre-call limiter 和 stream guard 的结构参考，但不能覆盖官方 Codex turn/stream/Responses terminal 语义。
 
 统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
+剩余待收敛问题见 `docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md`。
 
 ## 目标
 
-- 只监听 `127.0.0.1`，不提供 LAN/public 入口。
+- 默认只监听 `127.0.0.1`；当前执行说明不覆盖 LAN/public 入口。若未来支持 LAN 监听，也只能作为高级显式 opt-in，且不属于 hardened 推荐路径。
 - 单账号先跑通；多账号池只在 health registry、stream guard、backpressure 和 audit trail 均可用后启用。
 - 当前请求一旦开始写出，后续不换账号；额度耗尽只影响下一个请求的选择。
 - 号池调度、排序和风控降噪必须保持低并发、低刷新、sticky/fill-first、persistent cooldown、手动恢复和脱敏 audit，不使用随机轮换、全池扫射或 UA/IP/指纹伪装作为默认策略。
@@ -342,7 +344,7 @@ codex exec --skip-git-repo-check --json "Reply with exactly OK"
 
 ## 风险边界
 
-- 不把 API service 暴露到 `0.0.0.0`、LAN IP 或公网。
+- 不把 API service 默认暴露到 `0.0.0.0`、LAN IP 或公网；如未来支持高级 LAN 模式，也必须保留显式风险提示和一键回退到 loopback。
 - 不把 OAuth token、refresh token、cookie 或 ChatGPT session 写入 LiteLLM。
 - 不通过 quota reset wakeup 自动把刷新间隔调到高频。
 - 不在 cooldown 期间用刷新任务反复探测账号是否恢复。

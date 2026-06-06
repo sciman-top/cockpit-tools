@@ -1,6 +1,6 @@
 # Cockpit-Tools-Local 自用 Hardened API Mode 路线图
 
-更新时间：2026-05-24
+更新时间：2026-06-06
 
 ## 目标归宿
 
@@ -18,6 +18,8 @@
 账号池调度的下一阶段专项计划见 `docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md`。该文档只负责多账号 API 服务号池调度、风控降噪、可观测性和验收任务清单，不替代本路线图的总体阶段划分。
 
 账号刷新、配额刷新、托盘刷新和当前账号自动刷新降噪的专项计划见 `docs/ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md`。该文档只负责减少刷新尖峰、默认强制 live refresh、UI 低间隔误导和跨平台批量刷新风险，不改变本路线图的 API service 总体架构。
+
+仍需继续澄清但不应阻塞当前蓝图收敛的问题，统一收口到 `docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md`。
 
 ## 当前判断
 
@@ -71,7 +73,7 @@
 
 ## 设计原则
 
-1. 默认保守：单并发、低频率、不公网、不局域网、少刷新。
+1. 默认保守：单并发、低频率、不公网、默认 loopback、少刷新；LAN 仅高级显式 opt-in。
 2. 先阻断风险，再追求额度利用率。
 3. 不做请求级随机轮询，不做高速跨账号扫射。
 4. 一个任务尽量固定账号，失败后按状态机切换。
@@ -177,15 +179,15 @@ flowchart LR
 - `src/types/codexLocalAccess.ts`
 - `src-tauri/src/modules/codex_local_access.rs`
 
-任务 2：强制本机监听和 UI 去误导
+任务 2：默认本机监听和 UI 去误导
 
-描述：hardened mode 下只允许 `127.0.0.1`，UI 不展示可用 LAN 地址。
+描述：hardened mode 默认只允许 `127.0.0.1`，UI 不展示可用 LAN 地址；如未来支持 LAN 监听，也只能作为高级显式 opt-in，且不进入 hardened 推荐路径。
 
 验收：
 
-- [ ] API service 监听地址只能是 `127.0.0.1`。
+- [ ] hardened 默认监听地址只能是 `127.0.0.1`。
 - [ ] UI 不再显示“本机/局域网”作为 hardened 默认说明。
-- [ ] 任何 LAN/public 配置在 hardened mode 下被忽略并提示。
+- [ ] public 配置在 hardened mode 下被拒绝；LAN 配置只有在高级显式模式下才允许并提示风险。
 
 可能文件：
 
@@ -479,7 +481,7 @@ Phase 3 checkpoint：
 文档必须包含：
 
 - 功能目标。
-- 不支持公网/局域网开放。
+- 不支持公网开放；LAN 监听不作为默认能力或 hardened 推荐路径。
 - 推荐配置。
 - Codex CLI 连接方式。
 - 风险边界。
@@ -526,6 +528,7 @@ P2 增强：
 ## 关键验收标准
 
 - [ ] hardened mode 默认只监听 `127.0.0.1`。
+- [ ] 若未来支持 LAN 监听，它只能作为高级显式 opt-in，且不改变默认 loopback 发布姿态。
 - [x] 同一时间最多 1 个上游请求。
 - [x] 新请求默认至少间隔 20 秒。
 - [x] 不记录 prompt、response、OAuth token、refresh token、cookie、Authorization header、完整邮箱。
@@ -571,7 +574,7 @@ git diff --check
 
 ## 不做事项
 
-- 不实现公网或局域网开放。
+- 不实现公网开放，也不把 LAN 监听做成默认能力。
 - 不实现请求级随机账号轮询作为默认策略。
 - 不做无限重试。
 - 不做高频额度刷新。
@@ -581,4 +584,4 @@ git diff --check
 
 ## 下一步建议
 
-下一步按账号池调度专项计划先补 smoke/report 调度摘要、selector audit 候选原因，以及账号卡片/分组/API 服务推荐排序合同，再补 audit UI 最近脱敏事件列表。AI 推荐这样做的理由：核心 API service 请求链路、HLA-11 lease、request_id audit chain、audit degraded 可见性和 Codex CLI direct smoke 都已完成 focused tests + ephemeral gateway/CLI 实跑，剩余高收益点是把“为什么选这个账号/为什么不切号/为什么老号重置后优先/为什么号池不可用”直接暴露给用户排障。
+下一步按账号池调度专项计划先补 smoke/report 调度摘要、selector audit 候选原因，以及账号卡片/分组/API 服务推荐排序合同，再补 audit UI 最近脱敏事件列表；剩余未收敛问题统一记录在 `docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md`。AI 推荐这样做的理由：核心 API service 请求链路、HLA-11 lease、request_id audit chain、audit degraded 可见性和 Codex CLI direct smoke 都已完成 focused tests + ephemeral gateway/CLI 实跑，剩余高收益点是把“为什么选这个账号/为什么不切号/为什么老号重置后优先/为什么号池不可用”直接暴露给用户排障。

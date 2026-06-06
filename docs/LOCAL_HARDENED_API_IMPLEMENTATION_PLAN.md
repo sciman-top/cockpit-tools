@@ -1,6 +1,6 @@
 # Cockpit-Tools-Local 自用 Hardened API Mode 实施计划
 
-更新时间：2026-05-18
+更新时间：2026-06-06
 
 ## 目标与边界
 
@@ -8,11 +8,12 @@
 
 产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；文档总控入口和关键语义合同见 `docs/HARDENED_API_MASTER_PLAN.md`。
 
-不做事项保持不变：不做公网/LAN 网关，不做请求级随机扫号，不把 LiteLLM/New API/Sub2API/CLIProxyAPI 变成强依赖，不把 500+ free 账号池当作高频自动刷新对象。
+不做事项保持不变：不做公网网关；LAN 只允许作为未来高级显式 opt-in compatibility 模式，不进入 hardened 默认；不做请求级随机扫号，不把 LiteLLM/New API/Sub2API/CLIProxyAPI 变成强依赖，不把 500+ free 账号池当作高频自动刷新对象。
 
 本地参考源：`D:\CODE\external\Cockpit-Tools-Local-references` 保存 `CLIProxyAPI`、`litellm`、`new-api`、`sub2api` 的源码快照。改动 retry/fallback、health registry、audit trail、selector、stream guard 或路线图时，优先参考该目录和 `docs/reference-gateway-best-practices.md`，再决定是否需要外部资料。账号池调度后续专项任务以 `docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md` 为任务清单入口；账号刷新、配额刷新、托盘刷新和当前账号自动刷新降噪以 `docs/ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md` 为任务清单入口。
 
 统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
+下一阶段待补的语义收敛、性能基线、发布口径和高级 LAN 模式合同见 `docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md`。
 
 ## 审查结论固化
 

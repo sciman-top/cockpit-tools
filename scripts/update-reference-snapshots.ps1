@@ -17,6 +17,12 @@ $allReferences = @(
     Purpose = '官方 Codex CLI 源码；`/v1/responses`、stream terminal、turn metadata、`previous_response_id`、provider/model/config 行为'
   },
   [ordered]@{
+    Label = "OpenAI OpenAPI"
+    Directory = "openai-openapi"
+    ExpectedBranch = "master"
+    Purpose = '官方 OpenAPI 规范；端点、字段、schema、兼容层契约与请求/响应结构参考'
+  },
+  [ordered]@{
     Label = "CLIProxyAPI"
     Directory = "CLIProxyAPI"
     ExpectedBranch = "main"
@@ -51,6 +57,18 @@ $allReferences = @(
     Directory = "tauri"
     ExpectedBranch = "dev"
     Purpose = 'Tauri 2 核心源码，适合核对 capability、window lifecycle、updater 和 runtime 语义'
+  },
+  [ordered]@{
+    Label = "Tao"
+    Directory = "tao"
+    ExpectedBranch = "dev"
+    Purpose = 'Tauri 底层窗口库；window lifecycle、single-instance、tray、focus 和窗口行为语义'
+  },
+  [ordered]@{
+    Label = "Wry"
+    Directory = "wry"
+    ExpectedBranch = "dev"
+    Purpose = 'Tauri 底层 WebView 库；webview、navigation、deep-link、host integration 行为'
   },
   [ordered]@{
     Label = "Official Tauri Plugins"

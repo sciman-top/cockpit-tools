@@ -66,7 +66,7 @@
 
 ### U1. 单账号稳定执行
 
-用户启用 Local API Service 后，用单账号完成一次真实 Codex 任务，过程中不出现 LAN 误导、不暴露敏感信息、不因为本地策略导致中断。
+用户启用 Local API Service 后，用单账号完成一次真实 Codex 任务，过程中不出现默认 LAN 误导、不暴露敏感信息、不因为本地策略导致中断。
 
 ### U2. 小池安全切换
 
@@ -118,7 +118,8 @@
 
 ### S1. 本地边界
 
-- 默认只监听 `127.0.0.1`。
+- 默认只监听 `127.0.0.1`，这是 hardened 推荐路径和发布默认值。
+- 如未来支持 LAN 监听，也只能作为高级显式选项，由用户手动开启并明确提示风险；它不改变“非公网、非多租户、非默认推荐”的产品身份。
 - 不把兼容字段 `lan_base_url` 当成产品推荐入口。
 
 ### S2. Tauri capability 边界
@@ -150,6 +151,7 @@
 2. `Codex-facing local completed Responses` 是长期正式合同，还是阶段性兼容合同。
 3. Windows-first 是否继续作为一级体验目标；macOS/Linux 是否只保持兼容。
 4. “性能成功”到底以什么阈值衡量：启动时间、轮询时间、切换时间，还是大账号池排序延迟。
+5. 是否把“高级显式 LAN 监听”升格为正式 release 合同；若升格，UI 风险提示、绑定范围、回滚和 acceptance 应如何定义。
 
 ## 11. 文档地图
 
@@ -157,6 +159,7 @@
 - 总控入口：[HARDENED_API_MASTER_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/HARDENED_API_MASTER_PLAN.md)
 - 总体方向：[LOCAL_HARDENED_API_ROADMAP.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_ROADMAP.md)
 - 实施任务：[LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md)
+- 下一阶段 backlog：[LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md)
 - 调度专项：[LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md)
 - 刷新专项：[ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md)
 - 性能专项：[LOCAL_HARDENED_API_PERFORMANCE_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_PERFORMANCE_PLAN.md)

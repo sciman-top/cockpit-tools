@@ -233,7 +233,7 @@
 12. 日志只记录结构化元数据：timestamp、route、model、account hash/alias、status、latency、error type、request id、cooldown_until；禁止 prompt/response/token/cookie/Authorization/header/body。
 13. 日志要有 size/age cleanup，且清理不应依赖用户手动打开 UI。
 14. UI 要把策略分成 Conservative / Balanced / Aggressive 三档，并明确 Aggressive 可能增加风控风险。
-15. 127.0.0.1 是 hardened mode 的硬边界：不监听 `0.0.0.0`、LAN IP 或 public IP。
+15. 127.0.0.1 是 hardened 默认边界：不监听 `0.0.0.0` 或 public IP；如未来支持 LAN IP，也只能作为高级显式 opt-in。
 
 ## Recommended Cockpit Defaults
 
@@ -241,7 +241,7 @@
 
 | Area | Recommended default |
 | --- | --- |
-| listen host | `127.0.0.1` only |
+| listen host | default `127.0.0.1`; advanced LAN only via explicit opt-in |
 | concurrency | `max_concurrent_requests = 1` |
 | request start interval | `min_request_interval_seconds = 20`, `burst = 1` |
 | route mode | `sticky_process` |
@@ -283,7 +283,7 @@ UI 必须提示：该模式更可能触发上游风控，不属于 hardened 默�
 - 不把 401/403 账号自动删除。
 - 不通过高频额度刷新判断账号是否恢复。
 - 不记录 prompt、response、OAuth token、refresh token、cookie、Authorization header。
-- 不在 hardened mode 暴露 LAN/public host。
+- 不在 hardened 默认模式暴露 LAN/public host；如未来提供 LAN，也必须单独提示风险并保留 loopback 回退。
 - 不用随机 UA 当主要安全策略；它只能是低价值兼容项，不能替代低频、低并发、粘性路由和最小日志。
 
 ## Suggested Implementation Shape

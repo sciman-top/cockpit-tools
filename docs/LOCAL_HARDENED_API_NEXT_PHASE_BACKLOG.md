@@ -1,0 +1,67 @@
+# Local Hardened API Next Phase Backlog
+
+状态：active
+更新时间：2026-06-06
+
+## 1. 作用
+
+本文件收口那些“已经识别出价值，但不应阻塞当前蓝图收敛”的后续事项。它不替代 PRD、路线图和实施计划，而是把下一阶段仍需澄清、细化和补证据的问题集中起来，避免再次散落到讨论记录里。
+
+产品合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`，总控入口见 `docs/HARDENED_API_MASTER_PLAN.md`，最佳终态蓝图见 `docs/COCKPIT_LOCAL_TARGET_ARCHITECTURE.md`。
+
+## 2. 当前已达成共识
+
+- 最现实的最佳终态是“Windows-first 本地桌面控制面 + 本地 Hardened API Runtime”，不是公网 SaaS，也不是多租户网关。
+- Hardened 默认边界仍是 `127.0.0.1` loopback。
+- 如果未来支持 LAN 监听，它也只能作为高级显式 opt-in，而不是 hardened 默认推荐路径，更不是公网开放入口。
+- Codex-facing 行为以本仓运行事实、官方 `openai-codex` 源码和 `openai-openapi` 规范为最高语义锚点；社区项目只提供调度、cooldown、backpressure 和 observability 结构参考。
+
+## 3. 下一阶段待收敛事项
+
+| ID | 主题 | 当前问题 | 期望产出 |
+| --- | --- | --- | --- |
+| NPB-01 | `fallbackMode` 语义彻底收敛 | 产品、路线图、实现、UI 容易把 `fallbackMode`、same-request rescue、next-request reselection 混为一谈 | 固化统一术语、配置命名草案、UI 文案和 release summary 对照表 |
+| NPB-02 | 高级显式 LAN 模式合同 | 已确认“可以有，但不能是默认”，仍缺正式 release 级边界 | 独立合同：开启条件、风险提示、可绑定范围、回滚、验收和 hotspot review |
+| NPB-03 | 性能基线报告 | 性能计划已有阈值，但缺真实样本和阶段性报告 | `reports/` 下的启动、轮询、切换、刷新、大号池排序基线与复测报告 |
+| NPB-04 | Release acceptance summary | 用户旅程矩阵、专项计划和 release preflight 之间还缺一张总表 | 把 U1-U10 映射到 release gate、报告文件和 fail/block 条件 |
+| NPB-05 | Windows-first / cross-platform 发布语义 | 架构蓝图已说“Windows-first”，但 release 语义仍不够硬 | 明确 Windows 一级体验，macOS/Linux 的兼容级别、阻断条件和回归口径 |
+| NPB-06 | UI smoke 自动化 | U3/U9 仍偏依赖手工检查 | 最小 UI smoke：health panel、manual recovery、selector reason、risk prompt |
+| NPB-07 | 推荐排序与解释性 | “为什么优先老号/为什么跳过新号”仍主要靠审计或口头解释 | UI 和报告里直接展示 selector reason、blocked reason、recover action |
+
+## 4. 高级 LAN 模式草案边界
+
+以下是当前建议，不代表已经进入默认实现：
+
+1. 默认发布姿态保持 `127.0.0.1`，LAN 不是默认入口。
+2. 只能通过高级显式开关启用，且需要明确风险提示。
+3. 不支持把 LAN 模式包装成“hardened 推荐路径”。
+4. 不支持公网开放，不支持把 `0.0.0.0` 作为默认值。
+5. 需要一键回退到 loopback，并留下审计与回滚证据。
+6. 需要单独通过 hotspot review：capability、凭据、日志、updater、live continuity。
+7. `lan_base_url` 继续只作为兼容字段，不能提前当作产品推荐入口。
+
+## 5. 官方与社区后续怎么用
+
+- 官方优先：继续以本仓运行事实、OpenAI 官方文档、`openai-codex`、`openai-openapi`、Tauri 官方系源码作为第一证据层。
+- 社区限于结构：`CLIProxyAPI`、`sub2api`、`new-api`、`litellm` 继续只提供 selector、cooldown、retry boundary、observability 的结构启发。
+- 不新增“为了看起来完整而囤积”的参考镜像。当前本地参考仓库已足够支撑主线工作。
+
+## 6. 参考仓库策略
+
+### 6.1 保留
+
+继续保留当前已拉取的本地参考镜像，统一入口为 `D:\CODE\external\Cockpit-Tools-Local-references` 与 `docs/reference-sources.md`。
+
+### 6.2 现在无需新增
+
+当前没有“必须立刻再拉”的参考仓库。就本项目现阶段而言，官方 Codex/OpenAPI/Tauri 系，加上 `CLIProxyAPI`、`sub2api`、`new-api`、`litellm`，已经覆盖了主线决策需要的证据面。
+
+### 6.3 按需增补
+
+只有在出现明确缺口时才按问题驱动增补，例如：
+
+- 官方 SDK 字段或 streaming 行为需要额外对照。
+- Tauri 底层原生窗口、菜单、托盘或 WebView 行为出现源码级疑难问题。
+- 本地 HTTP/SSE runtime 的底层边界需要更深一层官方或框架源码佐证。
+
+在没有具体问题前，不建议继续扩大镜像集合。
