@@ -25,7 +25,7 @@
 | NPB-03 | 性能基线报告 | 性能计划已有阈值，但缺真实样本和阶段性报告 | `reports/` 下的启动、轮询、切换、刷新、大号池排序基线与复测报告 |
 | NPB-04 | Release acceptance summary | 用户旅程矩阵、专项计划和 release preflight 之间还缺一张总表 | 把 U1-U10 映射到 release gate、报告文件和 fail/block 条件 |
 | NPB-05 | Windows-first / cross-platform 发布语义 | 架构蓝图已说“Windows-first”，但 release 语义仍不够硬 | 明确 Windows 一级体验，macOS/Linux 的兼容级别、阻断条件和回归口径 |
-| NPB-06 | UI smoke 自动化 | U3/U9 仍偏依赖手工检查 | 最小 UI smoke：health panel、manual recovery、selector reason、risk prompt |
+| NPB-06 | UI smoke 自动化 | preview/default 路径已由 browser-preview 覆盖，仍缺 live Tauri/tray/wakeup 等高风险交互自动化 | 聚焦高风险 live UI smoke：tray、wakeup、risk prompt、live continuity 提示 |
 | NPB-07 | 推荐排序与解释性 | “为什么优先老号/为什么跳过新号”仍主要靠审计或口头解释 | UI 和报告里直接展示 selector reason、blocked reason、recover action |
 
 ## 4. 高级 LAN 模式草案边界

@@ -2749,7 +2749,7 @@ export function CodexApiServicePage() {
                 <label>
                   <span>{t("codex.localAccess.apiKey", "密钥")}</span>
                   <div className="codex-api-service-copy-row">
-                    <code title={collection?.apiKey || "-"}>
+                    <code>
                       {collection
                         ? keyVisible
                           ? collection.apiKey
@@ -2954,7 +2954,7 @@ export function CodexApiServicePage() {
                           "Key 名称",
                         )}
                       />
-                      <code title={apiKey.key}>
+                      <code>
                         {keyVisible
                           ? apiKey.key
                           : `${apiKey.key.slice(0, 10)}••••••••••••`}

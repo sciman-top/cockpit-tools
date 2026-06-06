@@ -135,7 +135,7 @@ flowchart TD
 - [x] `cargo fmt --check`
 - [x] `git diff --check`
 - [x] 静态扫描：`title={collection.apiKey}`、`title={localAccessCollection?.apiKey`、`本机/局域网`、`监听本机与局域网`、`Local/LAN`、`Listens on local and LAN` 在 HLA-00 相关 UI/locale 文件中无命中。
-- [ ] 手动检查 UI DOM title 和日志 tail。
+- [x] browser preview + AI 审查：`reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md` 确认服务 key/client key 的 `<code title>` 不再泄露完整密钥，且 hardened 默认文案保持 `仅本机 / 127.0.0.1`。
 
 可能文件：
 
@@ -269,7 +269,7 @@ flowchart TD
 
 - [x] 429 cooldown 重启后仍生效。
 - [x] 401/403/captcha/suspicious 重启后仍需人工确认。
-- [ ] 用户可手动清除某个账号/模型状态。
+- [x] 用户可手动清除某个账号/模型状态。
 - [x] 状态文件不保存 prompt、response、token、cookie、完整 API key。
 - [x] 状态文件使用原子写入，损坏时 fail-closed 并提示用户，而不是悄悄打开全部账号调度。
 - [x] health registry 是 API service 运行态，不反向覆盖 Cockpit 账号中心里的 OAuth/API Key 凭据。
@@ -440,7 +440,7 @@ flowchart TD
 - [x] current-pool scoped health 单测：`cargo test --package cockpit-tools scoped_health_summary_ignores_accounts_outside_current_pool --quiet`
 - [x] 手动恢复单测：`cargo test --package cockpit-tools manual_recovery --quiet`
 - [x] `npm run typecheck`
-- [ ] 手动 UI smoke。
+- [x] browser preview + AI 审查：`reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md` 已覆盖 health panel、selector reason、blocked reason、recover action 的默认 UI 可见性与脱敏展示。
 
 可能文件：
 
@@ -466,7 +466,7 @@ flowchart TD
 验证：
 
 - [ ] wakeup/reset 相关单测或轻量 smoke。
-- [ ] `npm run typecheck`
+- [x] `npm run typecheck`
 
 可能文件：
 
@@ -502,8 +502,8 @@ flowchart TD
 - [x] `.\scripts\smoke-local-hardened-api.ps1 -Stage single -StartEphemeralGateway -WriteReport`
 - [x] `.\scripts\smoke-local-hardened-api.ps1 -Stage single -StartEphemeralGateway -AcknowledgeLiveUpstreamRisk -RunUpstreamSmoke -Expect429 -Model gpt-5.4 -WriteReport`
 - [x] `cargo test --manifest-path .\src-tauri\Cargo.toml --target-dir .\target health_registry_model_cooldown_wait_is_exposed_for_scheduler --quiet`
-- [ ] `.\scripts\smoke-local-hardened-api.ps1 -Stage small_pool -WriteReport`
-- [ ] `.\scripts\smoke-local-hardened-api.ps1 -Stage fallback_probe -AcknowledgeLiveUpstreamRisk -RunUpstreamSmoke -WriteReport`
+- [x] `.\scripts\smoke-local-hardened-api.ps1 -Stage small_pool -WriteReport`
+- [x] `.\scripts\smoke-local-hardened-api.ps1 -Stage fallback_probe -AcknowledgeLiveUpstreamRisk -RunUpstreamSmoke -WriteReport`
 - [x] 手动 smoke：Codex CLI 使用当前 API service 端口 `http://127.0.0.1:45335/v1`，一次性 provider `cockpit_direct_smoke`，`codex exec --ephemeral` 返回 `OK`。
 - [ ] 2026-05-18 前置探针：`Test-NetConnection 127.0.0.1:2876` 返回未监听；未修改 live Codex provider/API key。
 

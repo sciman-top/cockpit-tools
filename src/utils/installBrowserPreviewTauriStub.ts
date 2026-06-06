@@ -47,6 +47,15 @@ function readBrowserPreviewCurrentCodexAccount(): unknown {
   );
 }
 
+function readBrowserPreviewLocalAccessState(): ReturnType<
+  typeof buildBrowserPreviewLocalAccessState
+> {
+  return readBrowserPreviewJson(
+    'agtools.codex.local_access.state.preview',
+    buildBrowserPreviewLocalAccessState(),
+  );
+}
+
 function findBrowserPreviewCodexAccount(args: unknown): unknown {
   const accountId =
     args && typeof args === 'object' && 'accountId' in args
@@ -153,7 +162,7 @@ function buildBrowserPreviewLocalAccessState() {
 }
 
 function buildBrowserPreviewLocalAccessLightState() {
-  const state = buildBrowserPreviewLocalAccessState();
+  const state = readBrowserPreviewLocalAccessState();
   return {
     running: state.running,
     apiPortUrl: state.apiPortUrl,
@@ -230,7 +239,7 @@ async function browserPreviewInvoke(
     return 0;
   }
   if (command === 'codex_local_access_get_state') {
-    return buildBrowserPreviewLocalAccessState();
+    return readBrowserPreviewLocalAccessState();
   }
   if (command === 'codex_local_access_get_light_state') {
     return buildBrowserPreviewLocalAccessLightState();
