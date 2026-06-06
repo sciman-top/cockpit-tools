@@ -15,6 +15,7 @@ export interface CodexModelProvider {
   baseUrl: string;
   website?: string;
   apiKeyUrl?: string;
+  supportsWebsockets: boolean;
   apiKeys: CodexModelProviderApiKey[];
   createdAt: number;
   updatedAt: number;
@@ -125,6 +126,10 @@ function toValidProviderList(raw: unknown): CodexModelProvider[] {
       baseUrl,
       website: sanitizeName(String((item as { website?: unknown }).website ?? '')) || undefined,
       apiKeyUrl: sanitizeName(String((item as { apiKeyUrl?: unknown }).apiKeyUrl ?? '')) || undefined,
+      supportsWebsockets: Boolean(
+        (item as { supportsWebsockets?: unknown; supports_websockets?: unknown }).supportsWebsockets ??
+          (item as { supports_websockets?: unknown }).supports_websockets,
+      ),
       apiKeys: toValidApiKeys((item as { apiKeys?: unknown }).apiKeys, now),
       createdAt: Number((item as { createdAt?: unknown }).createdAt ?? now),
       updatedAt: Number((item as { updatedAt?: unknown }).updatedAt ?? now),
@@ -227,6 +232,7 @@ export async function createCodexModelProvider(input: {
   baseUrl: string;
   website?: string;
   apiKeyUrl?: string;
+  supportsWebsockets?: boolean;
   initialApiKey?: string;
   initialApiKeyName?: string;
 }): Promise<CodexModelProvider> {
@@ -246,6 +252,7 @@ export async function createCodexModelProvider(input: {
     baseUrl,
     website: sanitizeName(input.website ?? '') || undefined,
     apiKeyUrl: sanitizeName(input.apiKeyUrl ?? '') || undefined,
+    supportsWebsockets: Boolean(input.supportsWebsockets),
     apiKeys: [],
     createdAt: now,
     updatedAt: now,
@@ -265,6 +272,7 @@ export async function updateCodexModelProvider(
     baseUrl?: string;
     website?: string;
     apiKeyUrl?: string;
+    supportsWebsockets?: boolean;
   },
 ): Promise<CodexModelProvider> {
   const providers = await ensureProvidersLoaded();
@@ -294,6 +302,9 @@ export async function updateCodexModelProvider(
   }
   if (patch.apiKeyUrl !== undefined) {
     provider.apiKeyUrl = sanitizeName(patch.apiKeyUrl) || undefined;
+  }
+  if (patch.supportsWebsockets !== undefined) {
+    provider.supportsWebsockets = Boolean(patch.supportsWebsockets);
   }
   provider.updatedAt = Date.now();
   await writeProviders(providers);
@@ -361,6 +372,7 @@ export async function upsertCodexModelProviderFromCredential(
         sanitizeName(input.providerName ?? '') ||
         deriveProviderNameFromBaseUrl(apiBaseUrl),
       baseUrl: apiBaseUrl,
+      supportsWebsockets: false,
       apiKeys: [],
       createdAt: now,
       updatedAt: now,

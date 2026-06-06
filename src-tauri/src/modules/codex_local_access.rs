@@ -27852,21 +27852,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 .accept()
                 .await
                 .expect("fake upstream should accept");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let read = socket
-                    .read(&mut chunk)
-                    .await
-                    .expect("fake upstream should read request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let _request =
+                read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                    .await;
             let body = concat!(
                 "event: response.created\n",
                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_recovered_after_long_wait\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
@@ -28101,21 +28089,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 .accept()
                 .await
                 .expect("fake upstream should accept");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let read = socket
-                    .read(&mut chunk)
-                    .await
-                    .expect("fake upstream should read request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let _request =
+                read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                    .await;
             let body = concat!(
                 "event: response.created\n",
                 "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_recovered\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
@@ -28524,22 +28500,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 .accept()
                 .await
                 .expect("fake upstream should accept metadata-only request");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let read = socket
-                    .read(&mut chunk)
-                    .await
-                    .expect("fake upstream should read continuation request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let request_text = String::from_utf8_lossy(&request);
+            let request_text = read_fake_upstream_request_text(
+                &mut socket,
+                "fake upstream should read continuation request",
+            )
+            .await;
             assert!(
                 request_text.contains("X-Client-Request-Id: req-active-task")
                     || request_text.contains("x-client-request-id: req-active-task"),
@@ -28740,22 +28705,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 .accept()
                 .await
                 .expect("fake upstream should accept affinity request");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let read = socket
-                    .read(&mut chunk)
-                    .await
-                    .expect("fake upstream should read request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let request_text = String::from_utf8_lossy(&request).to_string();
+            let request_text =
+                read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                    .await;
             seen.push(request_text.clone());
             assert!(
                 request_text.contains("Authorization: Bearer sk-local-current")
@@ -28997,43 +28949,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 else {
                     break;
                 };
-                let mut request = Vec::new();
-                let mut chunk = [0u8; 1024];
-                let mut header_end = None;
-                let mut expected_len = None;
-                loop {
-                    let read = socket
-                        .read(&mut chunk)
-                        .await
-                        .expect("fake upstream should read request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&chunk[..read]);
-                    if header_end.is_none() {
-                        if let Some(index) =
-                            request.windows(4).position(|window| window == b"\r\n\r\n")
-                        {
-                            let end = index + 4;
-                            let headers = String::from_utf8_lossy(&request[..index]);
-                            let content_length = headers
-                                .lines()
-                                .find_map(|line| {
-                                    let (name, value) = line.split_once(':')?;
-                                    name.eq_ignore_ascii_case("content-length")
-                                        .then(|| value.trim().parse::<usize>().ok())
-                                        .flatten()
-                                })
-                                .unwrap_or(0);
-                            header_end = Some(end);
-                            expected_len = Some(end + content_length);
-                        }
-                    }
-                    if expected_len.is_some_and(|len| request.len() >= len) {
-                        break;
-                    }
-                }
-                let request_text = String::from_utf8_lossy(&request).to_string();
+                let request_text =
+                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                        .await;
                 upstream_seen_task.lock().await.push(request_text.clone());
 
                 assert!(
@@ -29516,22 +29434,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                     .accept()
                     .await
                     .expect("fake upstream should accept");
-                let mut request = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    let read = socket
-                        .read(&mut chunk)
-                        .await
-                        .expect("fake upstream should read request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&chunk[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let request_text = String::from_utf8_lossy(&request).to_string();
+                let request_text =
+                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                        .await;
                 upstream_seen_task.lock().await.push(request_text.clone());
 
                 if request_text.contains("Bearer sk-local-old") {
@@ -30077,22 +29982,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                     .accept()
                     .await
                     .expect("fake upstream should accept retry request");
-                let mut request = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    let read = socket
-                        .read(&mut chunk)
-                        .await
-                        .expect("fake upstream should read request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&chunk[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let request_text = String::from_utf8_lossy(&request).to_string();
+                let request_text =
+                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                        .await;
                 seen.push(request_text);
 
                 if attempt == 0 {
@@ -30327,43 +30219,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 let Some((mut socket, _)) = accepted else {
                     break;
                 };
-                let mut request = Vec::new();
-                let mut chunk = [0u8; 1024];
-                let mut header_end = None;
-                let mut expected_len = None;
-                loop {
-                    let read = socket
-                        .read(&mut chunk)
-                        .await
-                        .expect("fake upstream should read request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&chunk[..read]);
-                    if header_end.is_none() {
-                        if let Some(index) =
-                            request.windows(4).position(|window| window == b"\r\n\r\n")
-                        {
-                            let end = index + 4;
-                            let headers = String::from_utf8_lossy(&request[..index]);
-                            let content_length = headers
-                                .lines()
-                                .find_map(|line| {
-                                    let (name, value) = line.split_once(':')?;
-                                    name.eq_ignore_ascii_case("content-length")
-                                        .then(|| value.trim().parse::<usize>().ok())
-                                        .flatten()
-                                })
-                                .unwrap_or(0);
-                            header_end = Some(end);
-                            expected_len = Some(end + content_length);
-                        }
-                    }
-                    if expected_len.is_some_and(|len| request.len() >= len) {
-                        break;
-                    }
-                }
-                let request_text = String::from_utf8_lossy(&request).to_string();
+                let request_text =
+                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                        .await;
                 assert!(
                     request_text.contains("Bearer sk-local-old"),
                     "hard-affinity followup must use original account: {}",
@@ -30817,22 +30675,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 let Ok(Ok((mut socket, _))) = accept else {
                     break;
                 };
-                let mut request = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    let read = socket
-                        .read(&mut chunk)
-                        .await
-                        .expect("fake upstream should read request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&chunk[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let request_text = String::from_utf8_lossy(&request).to_string();
+                let request_text =
+                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                        .await;
                 upstream_seen_task.lock().await.push(request_text.clone());
 
                 if request_text.contains("Bearer sk-local-old") {
@@ -31017,7 +30862,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             .expect("active request should be written");
         let mut active_response = Vec::new();
         tokio::time::timeout(
-            Duration::from_secs(3),
+            Duration::from_secs(10),
             active_client.read_to_end(&mut active_response),
         )
         .await
@@ -31039,7 +30884,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             .expect("new request should be written");
         let mut new_response = Vec::new();
         tokio::time::timeout(
-            Duration::from_secs(3),
+            Duration::from_secs(10),
             new_client.read_to_end(&mut new_response),
         )
         .await

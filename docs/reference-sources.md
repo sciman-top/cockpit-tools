@@ -64,7 +64,7 @@
 
 - 本仓已有 `git remote upstream` 指向 `jlcodes99/cockpit-tools`；`cockpit-tools-upstream` 仍保留为只读源码镜像，便于不污染当前工作区地翻上游实现。
 - 本仓已有 vendored sidecar 路径 `sidecars/cockpit-cliproxy/cdk/CLIProxyAPI`；该目录更适合作为随仓版本的一部分。若要看 CLIProxyAPI 最新 upstream 实现，优先使用 `D:\CODE\external\Cockpit-Tools-Local-references\CLIProxyAPI`。
-- `D:\CODE\external\ai-coding-runtime-references\repos\openai-codex` 已存在另一份 `openai-codex`。对 Cockpit Tools Local 而言，后续统一以 `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex` 为项目约定入口，避免文档和脚本继续分叉。
+- `openai-codex` 当前已收敛到共享底座 `D:\CODE\external\_shared\repos\openai-codex`。对 Cockpit Tools Local 而言，仍统一以 `D:\CODE\external\Cockpit-Tools-Local-references\openai-codex` 作为项目约定入口；该路径允许是共享底座联接，而不要求项目文档和脚本切换到共享物理路径。
 
 ### 3. 适合直接借鉴的层面
 

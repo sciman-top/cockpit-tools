@@ -5165,6 +5165,40 @@
   transform: translateY(-1px);
 }
 
+.codex-provider-modal .codex-provider-checkbox-group {
+  margin-top: -4px;
+}
+
+.codex-provider-modal .codex-provider-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 0;
+  cursor: pointer;
+}
+
+.codex-provider-modal .codex-provider-checkbox-row input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--primary);
+  box-shadow: none;
+  transform: none;
+}
+
+.codex-provider-modal .codex-provider-checkbox-row span {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.codex-provider-modal .codex-provider-checkbox-hint {
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 .codex-provider-modal .modal-body {
   max-height: min(70vh, 720px);
 }

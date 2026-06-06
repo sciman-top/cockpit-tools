@@ -154,6 +154,7 @@ struct ApiProviderConfig {
     base_url: Option<String>,
     provider_id: Option<String>,
     provider_name: Option<String>,
+    supports_websockets: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -162,6 +163,12 @@ struct StoredCodexModelProvider {
     name: Option<String>,
     #[serde(rename = "baseUrl", alias = "base_url")]
     base_url: Option<String>,
+    #[serde(
+        default,
+        rename = "supportsWebsockets",
+        alias = "supports_websockets"
+    )]
+    supports_websockets: bool,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -273,6 +280,7 @@ fn resolve_api_provider_config(
             base_url: normalized_base_url.filter(|base_url| !is_default_openai_base_url(base_url)),
             provider_id: None,
             provider_name: None,
+            supports_websockets: false,
         }),
         CodexApiProviderMode::Custom => {
             let base_url = normalized_base_url.ok_or("自定义供应商缺少 Base URL")?;
@@ -285,6 +293,7 @@ fn resolve_api_provider_config(
                 base_url: Some(base_url),
                 provider_id,
                 provider_name,
+                supports_websockets: false,
             })
         }
     }
@@ -307,6 +316,7 @@ fn infer_api_provider_config(
         base_url: None,
         provider_id: None,
         provider_name: None,
+        supports_websockets: false,
     })
 }
 
@@ -802,6 +812,7 @@ fn read_api_provider_from_config_toml(base_dir: &Path) -> ApiProviderConfig {
                 base_url: None,
                 provider_id: None,
                 provider_name: None,
+                supports_websockets: false,
             };
         }
     };
@@ -814,6 +825,7 @@ fn read_api_provider_from_config_toml(base_dir: &Path) -> ApiProviderConfig {
                 base_url: None,
                 provider_id: None,
                 provider_name: None,
+                supports_websockets: false,
             };
         }
     };
@@ -843,6 +855,12 @@ fn read_api_provider_from_config_toml(base_dir: &Path) -> ApiProviderConfig {
             .and_then(|item| item.get("base_url"))
             .and_then(|item| item.as_str())
             .and_then(|raw| normalize_api_base_url(Some(raw)));
+        let supports_websockets = doc
+            .get(CODEX_CONFIG_MODEL_PROVIDERS_KEY)
+            .and_then(|item| item.get(provider_id.as_str()))
+            .and_then(|item| item.get("supports_websockets"))
+            .and_then(|item| item.as_bool())
+            .unwrap_or(false);
         let provider_name = normalize_api_provider_name(
             doc.get(CODEX_CONFIG_MODEL_PROVIDERS_KEY)
                 .and_then(|item| item.get(provider_id.as_str()))
@@ -850,12 +868,14 @@ fn read_api_provider_from_config_toml(base_dir: &Path) -> ApiProviderConfig {
                 .and_then(|item| item.as_str()),
         );
 
-        return infer_api_provider_config(
+        let mut provider_config = infer_api_provider_config(
             provider_base_url.as_deref(),
             Some(CodexApiProviderMode::Custom),
             Some(provider_id.as_str()),
             provider_name.as_deref(),
         );
+        provider_config.supports_websockets = supports_websockets;
+        return provider_config;
     }
 
     infer_api_provider_config(
@@ -972,6 +992,7 @@ fn write_api_provider_to_config_toml(
                     base_url: Some(base_url.to_string()),
                     provider_id: Some(provider_id.to_string()),
                     provider_name: Some(provider_name.to_string()),
+                    supports_websockets: false,
                 },
             )?;
         }
@@ -1056,6 +1077,7 @@ fn stored_provider_config_from_model_provider(
         base_url: Some(base_url),
         provider_id: Some(provider_id),
         provider_name: Some(provider_name),
+        supports_websockets: provider.supports_websockets,
     })
 }
 
@@ -1095,7 +1117,43 @@ fn load_local_access_provider_config() -> Option<ApiProviderConfig> {
         base_url: Some(format!("http://127.0.0.1:{}/v1", port)),
         provider_id: Some(CODEX_RUNTIME_MODEL_PROVIDER_ID.to_string()),
         provider_name: Some("Cockpit API Service".to_string()),
+        supports_websockets: false,
     })
+}
+
+fn provider_configs_match(a: &ApiProviderConfig, b: &ApiProviderConfig) -> bool {
+    if let (Some(left), Some(right)) = (
+        normalize_optional_ref(a.provider_id.as_deref()),
+        normalize_optional_ref(b.provider_id.as_deref()),
+    ) {
+        if left.eq_ignore_ascii_case(&right) {
+            return true;
+        }
+    }
+
+    match (
+        normalize_api_base_url_for_match(a.base_url.as_deref()),
+        normalize_api_base_url_for_match(b.base_url.as_deref()),
+    ) {
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn resolve_saved_provider_capabilities(
+    provider_config: &ApiProviderConfig,
+) -> Option<ApiProviderConfig> {
+    load_saved_model_provider_configs()
+        .into_iter()
+        .find(|saved| provider_configs_match(saved, provider_config))
+}
+
+fn hydrate_provider_capabilities(provider_config: &ApiProviderConfig) -> ApiProviderConfig {
+    if provider_config.supports_websockets {
+        return provider_config.clone();
+    }
+
+    resolve_saved_provider_capabilities(provider_config).unwrap_or_else(|| provider_config.clone())
 }
 
 fn preserve_projectable_model_provider_sections(
@@ -1137,6 +1195,7 @@ fn write_model_provider_section(
     doc: &mut Document,
     provider_config: &ApiProviderConfig,
 ) -> Result<(), String> {
+    let provider_config = hydrate_provider_capabilities(provider_config);
     let provider_id = provider_config
         .provider_id
         .as_deref()
@@ -1155,7 +1214,7 @@ fn write_model_provider_section(
     provider_table["base_url"] = value(base_url);
     provider_table["wire_api"] = value(CODEX_PROVIDER_WIRE_API);
     provider_table["requires_openai_auth"] = value(false);
-    provider_table["supports_websockets"] = value(false);
+    provider_table["supports_websockets"] = value(provider_config.supports_websockets);
     Ok(())
 }
 
@@ -1204,6 +1263,7 @@ fn write_api_key_provider_to_config_toml(
     provider_config: &ApiProviderConfig,
     bearer_token: &str,
 ) -> Result<(), String> {
+    let provider_config = hydrate_provider_capabilities(provider_config);
     let config_path = get_config_toml_path(base_dir);
     let bearer_token = normalize_api_key(bearer_token)
         .ok_or_else(|| "API Key 账号缺少可写入 provider 的密钥".to_string())?;
@@ -1246,7 +1306,7 @@ fn write_api_key_provider_to_config_toml(
     provider_table["wire_api"] = value(CODEX_PROVIDER_WIRE_API);
     provider_table["requires_openai_auth"] = value(true);
     provider_table[CODEX_CONFIG_EXPERIMENTAL_BEARER_TOKEN_KEY] = value(bearer_token);
-    provider_table["supports_websockets"] = value(false);
+    provider_table["supports_websockets"] = value(provider_config.supports_websockets);
     preserve_projectable_model_provider_sections(&mut doc, Some(CODEX_RUNTIME_MODEL_PROVIDER_ID))?;
 
     if let Some(parent) = config_path.parent() {
@@ -4756,6 +4816,7 @@ pub fn write_auth_file_to_dir(base_dir: &Path, account: &CodexAccount) -> Result
             base_url: None,
             provider_id: None,
             provider_name: None,
+            supports_websockets: false,
         };
         write_api_provider_to_config_toml(base_dir, &provider_config)?;
         provider_config
@@ -10353,6 +10414,7 @@ mod tests {
                 base_url: Some("https://api.example.com".to_string()),
                 provider_id: None,
                 provider_name: None,
+                supports_websockets: false,
             }
         );
 
@@ -10556,6 +10618,44 @@ supports_websockets = false
     }
 
     #[test]
+    fn api_key_config_toml_uses_saved_provider_websocket_capability() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-api-key-provider-websocket-capability-test");
+        fs::write(
+            guard
+                .accounts_data_dir()
+                .join(CODEX_MODEL_PROVIDERS_FILE_NAME),
+            serde_json::json!([
+                {
+                    "id": "cmp_ws_relay",
+                    "name": "WS Relay",
+                    "baseUrl": "https://relay.example.com/v1",
+                    "supportsWebsockets": true,
+                    "apiKeys": []
+                }
+            ])
+            .to_string(),
+        )
+        .expect("write saved providers");
+        let provider_config = resolve_api_provider_config(
+            Some("https://relay.example.com/v1"),
+            Some(CodexApiProviderMode::Custom),
+            Some("cmp_ws_relay"),
+            Some("WS Relay"),
+        )
+        .expect("resolve provider config");
+
+        write_api_key_provider_to_config_toml(&guard.codex_home(), &provider_config, "sk-test")
+            .expect("write config");
+
+        let content =
+            fs::read_to_string(guard.codex_home().join("config.toml")).expect("read config");
+        assert!(content.contains("model_provider = \"codex_local_access\""));
+        assert!(content.contains("base_url = \"https://relay.example.com/v1\""));
+        assert!(content.contains("supports_websockets = true"));
+    }
+
+    #[test]
     fn config_toml_cleans_managed_api_key_providers_for_builtin_openai() {
         let base_dir = make_temp_dir("codex-config-clean-managed-provider-test");
         let config_path = base_dir.join("config.toml");
@@ -10619,6 +10719,7 @@ requires_openai_auth = false
                 base_url: None,
                 provider_id: None,
                 provider_name: None,
+                supports_websockets: false,
             }
         );
 
@@ -10656,6 +10757,7 @@ requires_openai_auth = false
                 base_url: Some("https://relay.example.com/v1".to_string()),
                 provider_id: Some("relay".to_string()),
                 provider_name: Some("Relay".to_string()),
+                supports_websockets: false,
             }
         );
 
@@ -10723,6 +10825,7 @@ requires_openai_auth = false
                 base_url: Some("https://api.openai.com/v1".to_string()),
                 provider_id: Some("codex_local_access".to_string()),
                 provider_name: Some("OpenAI Official".to_string()),
+                supports_websockets: false,
             }
         );
 
@@ -10906,6 +11009,7 @@ requires_openai_auth = false
                 base_url: Some("https://relay.example.com/v1".to_string()),
                 provider_id: Some("codex_local_access".to_string()),
                 provider_name: Some("Relay".to_string()),
+                supports_websockets: false,
             }
         );
 

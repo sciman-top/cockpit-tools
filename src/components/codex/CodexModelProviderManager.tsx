@@ -55,6 +55,7 @@ interface ProviderFormState {
   baseUrl: string;
   website: string;
   apiKeyUrl: string;
+  supportsWebsockets: boolean;
   newApiKeyName: string;
   newApiKey: string;
 }
@@ -65,6 +66,7 @@ const EMPTY_FORM: ProviderFormState = {
   baseUrl: "",
   website: "",
   apiKeyUrl: "",
+  supportsWebsockets: false,
   newApiKeyName: "",
   newApiKey: "",
 };
@@ -214,6 +216,7 @@ export function CodexModelProviderManager({
       baseUrl: provider.baseUrl,
       website: provider.website ?? "",
       apiKeyUrl: provider.apiKeyUrl ?? "",
+      supportsWebsockets: provider.supportsWebsockets,
       newApiKeyName: "",
       newApiKey: "",
     });
@@ -347,6 +350,7 @@ export function CodexModelProviderManager({
           baseUrl,
           website: form.website,
           apiKeyUrl: form.apiKeyUrl,
+          supportsWebsockets: form.supportsWebsockets,
           initialApiKey: newApiKey || undefined,
           initialApiKeyName: form.newApiKeyName,
         });
@@ -356,6 +360,7 @@ export function CodexModelProviderManager({
           baseUrl,
           website: form.website,
           apiKeyUrl: form.apiKeyUrl,
+          supportsWebsockets: form.supportsWebsockets,
         });
         if (newApiKey) {
           await addApiKeyToCodexModelProvider(
@@ -590,6 +595,19 @@ export function CodexModelProviderManager({
                     })}
                   </span>
                   <span
+                    className={`provider-badge ${provider.supportsWebsockets ? "primary" : ""}`}
+                  >
+                    {provider.supportsWebsockets
+                      ? t(
+                          "codex.modelProviders.websocketSupportEnabled",
+                          "Responses WebSocket 已启用",
+                        )
+                      : t(
+                          "codex.modelProviders.websocketSupportDisabled",
+                          "Responses WebSocket 未启用",
+                        )}
+                  </span>
+                  <span
                     className={`provider-badge ${referenceCount > 0 ? "danger" : ""}`}
                   >
                     {t("codex.modelProviders.referencesCount", {
@@ -799,6 +817,32 @@ export function CodexModelProviderManager({
                   }
                   disabled={saving}
                 />
+              </div>
+              <div className="form-group codex-provider-checkbox-group">
+                <label className="codex-provider-checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={form.supportsWebsockets}
+                    onChange={(event) =>
+                      mutateForm({
+                        supportsWebsockets: event.target.checked,
+                      })
+                    }
+                    disabled={saving}
+                  />
+                  <span>
+                    {t(
+                      "codex.modelProviders.fields.supportsWebsockets",
+                      "支持 Responses WebSocket",
+                    )}
+                  </span>
+                </label>
+                <p className="codex-provider-checkbox-hint">
+                  {t(
+                    "codex.modelProviders.fields.supportsWebsocketsHint",
+                    "仅在确认该 relay 支持 Codex Responses WebSocket 时启用；SSE-only 提供方请保持关闭。",
+                  )}
+                </p>
               </div>
 
               {currentEditingProvider &&
