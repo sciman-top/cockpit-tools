@@ -352,6 +352,29 @@ export interface CodexLocalAccessHealthSummary {
   auditDegraded: boolean;
   auditError: string | null;
   auditDegradedAtMs: number | null;
+  selectorInsight?: CodexLocalAccessSelectorInsight | null;
+  blockedInsight?: CodexLocalAccessBlockedInsight | null;
+}
+
+export interface CodexLocalAccessSelectorInsight {
+  updatedAt: number;
+  modelKey: string | null;
+  selectedReason: string | null;
+  candidateCount: number;
+  eligibleCount: number;
+  skippedCountsByReason: Record<string, number>;
+  capApplied: boolean;
+  capLimit: number;
+  stickyCleared: boolean;
+}
+
+export interface CodexLocalAccessBlockedInsight {
+  updatedAt: number;
+  status: number | null;
+  errorType: string | null;
+  reason: string | null;
+  recoverAction: string | null;
+  retryAfterMs: number | null;
 }
 
 export interface CodexLocalAccessConcurrencyDiagnostics {

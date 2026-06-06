@@ -884,6 +884,36 @@ pub struct CodexLocalAccessHealthSummary {
     pub audit_degraded: bool,
     pub audit_error: Option<String>,
     pub audit_degraded_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector_insight: Option<CodexLocalAccessSelectorInsight>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_insight: Option<CodexLocalAccessBlockedInsight>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessSelectorInsight {
+    pub updated_at: i64,
+    pub model_key: Option<String>,
+    pub selected_reason: Option<String>,
+    pub candidate_count: usize,
+    pub eligible_count: usize,
+    #[serde(default)]
+    pub skipped_counts_by_reason: BTreeMap<String, usize>,
+    pub cap_applied: bool,
+    pub cap_limit: usize,
+    pub sticky_cleared: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessBlockedInsight {
+    pub updated_at: i64,
+    pub status: Option<u16>,
+    pub error_type: Option<String>,
+    pub reason: Option<String>,
+    pub recover_action: Option<String>,
+    pub retry_after_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

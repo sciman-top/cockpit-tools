@@ -542,6 +542,95 @@ export function CodexLocalAccessModal({
     ],
     [health, t],
   );
+  const selectorInsight = health?.selectorInsight ?? null;
+  const blockedInsight = health?.blockedInsight ?? null;
+  const selectorReasonLabel = useMemo(() => {
+    switch (selectorInsight?.selectedReason) {
+      case 'active_stream_affinity_selected':
+        return t(
+          'codex.localAccess.health.selectorReasonActiveStream',
+          '沿用当前活跃任务账号',
+        );
+      case 'previous_response_affinity_selected':
+        return t(
+          'codex.localAccess.health.selectorReasonPreviousResponse',
+          '沿用 previous_response_id 亲和账号',
+        );
+      case 'request_affinity_selected':
+        return t(
+          'codex.localAccess.health.selectorReasonRequestAffinity',
+          '沿用当前请求亲和账号',
+        );
+      case 'sticky_selected':
+        return t('codex.localAccess.health.selectorReasonSticky', '沿用 sticky 账号');
+      case 'fill_first_selected':
+        return t(
+          'codex.localAccess.health.selectorReasonFillFirst',
+          '按 fill-first 选择首个可用账号',
+        );
+      default:
+        return selectorInsight?.selectedReason ?? '--';
+    }
+  }, [selectorInsight?.selectedReason, t]);
+  const selectorSkippedSummary = useMemo(() => {
+    const entries = Object.entries(selectorInsight?.skippedCountsByReason ?? {}).filter(
+      ([, count]) => Number.isFinite(count) && count > 0,
+    );
+    if (!entries.length) return null;
+    return entries
+      .map(([reason, count]) => {
+        let label = reason;
+        switch (reason) {
+          case 'health_skipped':
+            label = t('codex.localAccess.health.skipReasonHealth', '因健康状态跳过');
+            break;
+          case 'cap_truncated':
+            label = t('codex.localAccess.health.skipReasonCap', '因尝试上限截断');
+            break;
+          case 'sticky_cleared':
+            label = t('codex.localAccess.health.skipReasonStickyCleared', '旧 sticky 已清理');
+            break;
+          case 'invalid_candidate':
+            label = t('codex.localAccess.health.skipReasonInvalid', '无效候选');
+            break;
+          default:
+            break;
+        }
+        return `${label} ${formatCompactNumber(count)}`;
+      })
+      .join(' · ');
+  }, [selectorInsight?.skippedCountsByReason, t]);
+  const blockedRecoverActionLabel = useMemo(() => {
+    switch (blockedInsight?.recoverAction) {
+      case 'retry_after_cooldown_or_start_new_task':
+        return t(
+          'codex.localAccess.health.recoverActionRetryCooldown',
+          '等待冷却结束后重试，或开启新的独立任务',
+        );
+      case 'retry_after_cooldown_or_recover_accounts':
+        return t(
+          'codex.localAccess.health.recoverActionRetryOrRecover',
+          '等待冷却结束后重试，或先恢复账号',
+        );
+      case 'refresh_quota_or_recover_accounts':
+        return t(
+          'codex.localAccess.health.recoverActionRefreshQuota',
+          '刷新配额、调整号池或恢复账号后重试',
+        );
+      case 'recover_accounts_then_retry':
+        return t(
+          'codex.localAccess.health.recoverActionManual',
+          '先在 Cockpit 中完成重新登录或人工恢复，再重试',
+        );
+      case 'add_account_or_enable_service':
+        return t(
+          'codex.localAccess.health.recoverActionAddAccount',
+          '先添加账号或启用服务，再继续请求',
+        );
+      default:
+        return blockedInsight?.recoverAction ?? null;
+    }
+  }, [blockedInsight?.recoverAction, t]);
   const concurrencyMetricItems = useMemo(() => {
     if (!concurrencyDiagnostics) return [];
     const auditWindowMinutes = Math.max(
@@ -2875,6 +2964,73 @@ export function CodexLocalAccessModal({
                       </span>
                     )}
                   </div>
+                  {(selectorInsight || blockedInsight) && (
+                    <div className="codex-local-access-health-insights">
+                      {selectorInsight && (
+                        <div className="codex-local-access-health-insight-card">
+                          <span className="codex-local-access-health-insight-label">
+                            {t('codex.localAccess.health.selectorTitle', '最近调度')}
+                          </span>
+                          <strong>{selectorReasonLabel}</strong>
+                          <div className="codex-local-access-health-insight-meta">
+                            <span>
+                              {t('codex.localAccess.health.selectorCandidates', {
+                                count: selectorInsight.candidateCount,
+                                defaultValue: '候选 {{count}}',
+                              })}
+                            </span>
+                            <span>
+                              {t('codex.localAccess.health.selectorEligible', {
+                                count: selectorInsight.eligibleCount,
+                                defaultValue: '可调度 {{count}}',
+                              })}
+                            </span>
+                            {selectorInsight.modelKey && (
+                              <span>
+                                {t('codex.localAccess.health.selectorModel', '模型')}:{' '}
+                                <code>{selectorInsight.modelKey}</code>
+                              </span>
+                            )}
+                            {selectorSkippedSummary && <span>{selectorSkippedSummary}</span>}
+                          </div>
+                        </div>
+                      )}
+                      {blockedInsight && (
+                        <div className="codex-local-access-health-insight-card is-warning">
+                          <span className="codex-local-access-health-insight-label">
+                            {t('codex.localAccess.health.blockedTitle', '当前阻断')}
+                          </span>
+                          <strong>{blockedInsight.reason ?? '--'}</strong>
+                          <div className="codex-local-access-health-insight-meta">
+                            {blockedInsight.status != null && (
+                              <span>
+                                {t('codex.localAccess.health.blockedStatus', '状态')}:{' '}
+                                <code>HTTP {blockedInsight.status}</code>
+                              </span>
+                            )}
+                            {blockedInsight.errorType && (
+                              <span>
+                                {t('codex.localAccess.health.blockedType', '分类')}:{' '}
+                                <code>{blockedInsight.errorType}</code>
+                              </span>
+                            )}
+                            {blockedRecoverActionLabel && (
+                              <span>
+                                {t('codex.localAccess.health.recoverAction', '恢复动作')}:{' '}
+                                {blockedRecoverActionLabel}
+                              </span>
+                            )}
+                            {blockedInsight.retryAfterMs != null && (
+                              <span>
+                                {t('codex.localAccess.health.retryAfter', '建议等待')}:{' '}
+                                {formatLatencyMs(blockedInsight.retryAfterMs)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
               {currentQuotaPoolSummary.visiblePlans.length > 0 && (

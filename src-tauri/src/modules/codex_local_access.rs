@@ -14,6 +14,7 @@ use crate::models::codex_local_access::{
     CodexLocalAccessModelStats, CodexLocalAccessPortCleanupResult,
     CodexLocalAccessProfileAttachment, CodexLocalAccessRequestKind,
     CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessState,
+    CodexLocalAccessSelectorInsight, CodexLocalAccessBlockedInsight,
     CodexLocalAccessStats, CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding,
     CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessTimeoutPreset,
     CodexLocalAccessTimeouts, CodexLocalAccessUsageEvent, CodexLocalAccessUsageEventPage,
@@ -270,6 +271,7 @@ struct GatewayRuntime {
 struct CachedHealthSummary {
     account_ids: Vec<String>,
     file_modified_ms: Option<i64>,
+    audit_file_modified_ms: Option<i64>,
     audit_status: AuditTrailStatus,
     cached_at_ms: i64,
     summary: CodexLocalAccessHealthSummary,
@@ -8307,8 +8309,185 @@ fn build_unavailable_health_summary(now: i64, err: &str) -> CodexLocalAccessHeal
     }
 }
 
+fn parse_detail_usize(detail: &BTreeMap<String, String>, key: &str) -> usize {
+    detail
+        .get(key)
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+fn parse_detail_u64(detail: &BTreeMap<String, String>, key: &str) -> Option<u64> {
+    detail.get(key).and_then(|value| value.parse::<u64>().ok())
+}
+
+fn parse_detail_bool(detail: &BTreeMap<String, String>, key: &str) -> bool {
+    matches!(detail.get(key).map(String::as_str), Some("true"))
+}
+
+fn parse_skipped_counts_by_reason(detail: &BTreeMap<String, String>) -> BTreeMap<String, usize> {
+    detail
+        .get("skipped_counts_by_reason")
+        .and_then(|value| serde_json::from_str::<BTreeMap<String, usize>>(value).ok())
+        .unwrap_or_default()
+}
+
+fn parse_selector_insight_from_audit_event(
+    event: &CodexLocalAccessAuditEvent,
+) -> Option<CodexLocalAccessSelectorInsight> {
+    if event.phase != "selector" || event.outcome.as_deref() != Some("selected") {
+        return None;
+    }
+
+    Some(CodexLocalAccessSelectorInsight {
+        updated_at: event.timestamp,
+        model_key: event.detail.get("model_key").cloned(),
+        selected_reason: event.detail.get("selected_reason").cloned(),
+        candidate_count: parse_detail_usize(&event.detail, "candidate_count"),
+        eligible_count: parse_detail_usize(&event.detail, "eligible_count"),
+        skipped_counts_by_reason: parse_skipped_counts_by_reason(&event.detail),
+        cap_applied: parse_detail_bool(&event.detail, "cap_applied"),
+        cap_limit: parse_detail_usize(&event.detail, "cap_limit"),
+        sticky_cleared: parse_detail_bool(&event.detail, "sticky_cleared"),
+    })
+}
+
+fn parse_blocked_insight_from_audit_event(
+    event: &CodexLocalAccessAuditEvent,
+) -> Option<CodexLocalAccessBlockedInsight> {
+    if event.phase != "final_response" || event.outcome.as_deref() != Some("error") {
+        return None;
+    }
+
+    let error_type = event.error_type.clone();
+    let should_surface = matches!(
+        error_type.as_deref(),
+        Some("pool_unavailable" | "cooldown_unavailable" | "local_backpressure")
+    ) || event.detail.contains_key("recover_action");
+    if !should_surface {
+        return None;
+    }
+
+    Some(CodexLocalAccessBlockedInsight {
+        updated_at: event.timestamp,
+        status: event.status,
+        error_type,
+        reason: event.detail.get("message").cloned(),
+        recover_action: event.detail.get("recover_action").cloned(),
+        retry_after_ms: parse_detail_u64(&event.detail, "retry_after_ms"),
+    })
+}
+
+fn read_recent_health_audit_insights_from_path(
+    path: &Path,
+    selector_insight: &mut Option<CodexLocalAccessSelectorInsight>,
+    blocked_insight: &mut Option<CodexLocalAccessBlockedInsight>,
+) {
+    if selector_insight.is_some() && blocked_insight.is_some() {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
+    };
+
+    for line in content.lines().rev() {
+        if selector_insight.is_some() && blocked_insight.is_some() {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<CodexLocalAccessAuditEvent>(line) else {
+            continue;
+        };
+        if !event.route.starts_with("/v1/") {
+            continue;
+        }
+        if selector_insight.is_none() {
+            *selector_insight = parse_selector_insight_from_audit_event(&event);
+        }
+        if blocked_insight.is_none() {
+            *blocked_insight = parse_blocked_insight_from_audit_event(&event);
+        }
+    }
+}
+
+fn load_recent_health_audit_insights(
+    _now: i64,
+    allow_blocked_only: bool,
+) -> (
+    Option<CodexLocalAccessSelectorInsight>,
+    Option<CodexLocalAccessBlockedInsight>,
+) {
+    let Ok(path) = local_access_audit_file_path() else {
+        return (None, None);
+    };
+    let rotated_path = audit_rotated_path(&path);
+    let mut selector_insight = None;
+    let mut blocked_insight = None;
+
+    read_recent_health_audit_insights_from_path(&path, &mut selector_insight, &mut blocked_insight);
+    read_recent_health_audit_insights_from_path(
+        &rotated_path,
+        &mut selector_insight,
+        &mut blocked_insight,
+    );
+
+    if allow_blocked_only {
+        (None, blocked_insight)
+    } else {
+        (selector_insight, blocked_insight)
+    }
+}
+
+fn derive_blocked_recover_action(summary: &PoolUnavailableSummary) -> &'static str {
+    if summary.total_count == 0 {
+        return "add_account_or_enable_service";
+    }
+    if summary.manual_required_count == summary.total_count {
+        return "recover_accounts_then_retry";
+    }
+    if summary.exhausted_count == summary.total_count {
+        return "refresh_quota_or_recover_accounts";
+    }
+    "retry_after_cooldown_or_recover_accounts"
+}
+
+fn derive_blocked_insight_from_registry(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_ids: &[String],
+    model_key: Option<&str>,
+    now: i64,
+) -> Option<CodexLocalAccessBlockedInsight> {
+    let summary = summarize_pool_unavailability(registry, account_ids, model_key, now);
+    if !should_use_pool_unavailable_summary(&summary) {
+        return None;
+    }
+
+    Some(CodexLocalAccessBlockedInsight {
+        updated_at: now,
+        status: Some(status_for_pool_unavailable(&summary)),
+        error_type: Some("pool_unavailable".to_string()),
+        reason: Some(build_pool_unavailable_message(
+            model_key.unwrap_or_default(),
+            &summary,
+        )),
+        recover_action: Some(derive_blocked_recover_action(&summary).to_string()),
+        retry_after_ms: summary.nearest_wait.map(duration_as_millis_u64),
+    })
+}
+
 fn health_summary_cache_file_modified_ms() -> Option<i64> {
     let path = local_access_health_file_path().ok()?;
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let elapsed = modified
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .ok()?;
+    Some(elapsed.as_millis().min(i64::MAX as u128) as i64)
+}
+
+fn audit_summary_cache_file_modified_ms() -> Option<i64> {
+    let path = local_access_audit_file_path().ok()?;
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     let elapsed = modified
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
@@ -8342,11 +8521,13 @@ fn is_cached_health_summary_valid(
     cached: &CachedHealthSummary,
     account_ids: &[String],
     file_modified_ms: Option<i64>,
+    audit_file_modified_ms: Option<i64>,
     audit_status: &AuditTrailStatus,
     now: i64,
 ) -> bool {
     cached.account_ids == account_ids
         && cached.file_modified_ms == file_modified_ms
+        && cached.audit_file_modified_ms == audit_file_modified_ms
         && &cached.audit_status == audit_status
         && now.saturating_sub(cached.cached_at_ms) <= HEALTH_SUMMARY_CACHE_TTL_MS
         && !health_summary_has_active_deadline(&cached.summary, now)
@@ -8358,6 +8539,7 @@ fn build_health_summary_from_disk_for_accounts(
 ) -> CodexLocalAccessHealthSummary {
     let now = now_ms();
     let file_modified_ms = health_summary_cache_file_modified_ms();
+    let audit_file_modified_ms = audit_summary_cache_file_modified_ms();
     let audit_status = current_audit_trail_status();
     if let Ok(cache) = health_summary_cache().lock() {
         if let Some(cached) = cache.as_ref() {
@@ -8365,6 +8547,7 @@ fn build_health_summary_from_disk_for_accounts(
                 cached,
                 account_ids,
                 file_modified_ms,
+                audit_file_modified_ms,
                 &audit_status,
                 now,
             ) {
@@ -8385,11 +8568,29 @@ fn build_health_summary_from_disk_for_accounts(
         }
         Err(err) => build_unavailable_health_summary(now, &err),
     };
+    let (selector_insight, blocked_insight) =
+        load_recent_health_audit_insights(now, summary.unavailable);
+    summary.selector_insight = selector_insight;
+    summary.blocked_insight = blocked_insight;
+    if summary.blocked_insight.is_none() {
+        if let Ok(registry) = load_health_registry_from_disk() {
+            summary.blocked_insight = derive_blocked_insight_from_registry(
+                &registry,
+                account_ids,
+                summary
+                    .selector_insight
+                    .as_ref()
+                    .and_then(|insight| insight.model_key.as_deref()),
+                now,
+            );
+        }
+    }
     apply_audit_trail_status_to_health_summary(&mut summary, &audit_status);
     if let Ok(mut cache) = health_summary_cache().lock() {
         *cache = Some(CachedHealthSummary {
             account_ids: account_ids.to_vec(),
             file_modified_ms,
+            audit_file_modified_ms,
             audit_status,
             cached_at_ms: now,
             summary: summary.clone(),
@@ -24547,6 +24748,7 @@ mod tests {
         build_effective_local_access_account_ids_from_registry, build_health_summary_from_registry,
         build_health_summary_from_registry_for_accounts, build_images_api_payload,
         build_local_models_response, build_ordered_account_ids, build_pool_unavailable_message,
+        parse_blocked_insight_from_audit_event, parse_selector_insight_from_audit_event,
         build_projection_seed_local_access_account_ids, build_proxy_dispatch_error_body,
         build_request_routing_hint, build_responses_upstream_stream_error_sse,
         build_routing_pool_account_ids, build_runtime_account, build_runtime_mode_state,
@@ -24914,6 +25116,44 @@ mod tests {
 
     async fn lock_local_backpressure_test_async() -> tokio::sync::MutexGuard<'static, ()> {
         LOCAL_BACKPRESSURE_TEST_LOCK.lock().await
+    }
+
+    async fn read_fake_upstream_request_text(
+        socket: &mut TcpStream,
+        read_error_context: &str,
+    ) -> String {
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let mut header_end = None;
+        let mut expected_len = None;
+        loop {
+            let read = socket.read(&mut chunk).await.expect(read_error_context);
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if header_end.is_none() {
+                if let Some(index) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let end = index + 4;
+                    let headers = String::from_utf8_lossy(&request[..index]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    header_end = Some(end);
+                    expected_len = Some(end + content_length);
+                }
+            }
+            if expected_len.is_some_and(|len| request.len() >= len) {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&request).to_string()
     }
 
     fn test_codex_account(id: &str) -> CodexAccount {
@@ -28086,23 +28326,13 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 .accept()
                 .await
                 .expect("fake upstream should accept continuation");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let read = socket
-                    .read(&mut chunk)
-                    .await
-                    .expect("fake upstream should read continuation request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let request = read_fake_upstream_request_text(
+                &mut socket,
+                "fake upstream should read continuation request",
+            )
+            .await;
             assert!(
-                String::from_utf8_lossy(&request).contains("previous_response_id"),
+                request.contains("previous_response_id"),
                 "continuation request should reach upstream"
             );
             let body = concat!(
@@ -29053,22 +29283,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 else {
                     break;
                 };
-                let mut request = Vec::new();
-                let mut chunk = [0u8; 1024];
-                loop {
-                    let read = socket
-                        .read(&mut chunk)
-                        .await
-                        .expect("fake upstream should read request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&chunk[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let request_text = String::from_utf8_lossy(&request).to_string();
+                let request_text =
+                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                        .await;
                 upstream_seen_task.lock().await.push(request_text.clone());
 
                 if request_text.contains("Bearer sk-local-rescue-c") {
@@ -29640,22 +29857,9 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 .accept()
                 .await
                 .expect("fake upstream should accept continuation request");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let read = socket
-                    .read(&mut chunk)
-                    .await
-                    .expect("fake upstream should read request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
-            let request_text = String::from_utf8_lossy(&request).to_string();
+            let request_text =
+                read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                    .await;
             assert!(
                 request_text.contains("Authorization: Bearer sk-local-old")
                     || request_text.contains("authorization: Bearer sk-local-old"),
@@ -30947,22 +31151,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 let old_stream_started_task = std::sync::Arc::clone(&old_stream_started_task);
                 let finish_old_stream_task = std::sync::Arc::clone(&finish_old_stream_task);
                 handlers.push(tokio::spawn(async move {
-                    let mut request = Vec::new();
-                    let mut chunk = [0u8; 1024];
-                    loop {
-                        let read = socket
-                            .read(&mut chunk)
-                            .await
-                            .expect("fake upstream should read request");
-                        if read == 0 {
-                            break;
-                        }
-                        request.extend_from_slice(&chunk[..read]);
-                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                            break;
-                        }
-                    }
-                    let request_text = String::from_utf8_lossy(&request).to_string();
+                    let request_text = read_fake_upstream_request_text(
+                        &mut socket,
+                        "fake upstream should read request",
+                    )
+                    .await;
                     upstream_seen_task.lock().await.push(request_text.clone());
 
                     if request_text.contains("Bearer sk-local-old") {
@@ -31383,23 +31576,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 .accept()
                 .await
                 .expect("fake upstream should accept continuation");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 1024];
-            loop {
-                let read = socket
-                    .read(&mut chunk)
-                    .await
-                    .expect("fake upstream should read request");
-                if read == 0 {
-                    break;
-                }
-                request.extend_from_slice(&chunk[..read]);
-                if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    break;
-                }
-            }
+            let request =
+                read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                    .await;
             assert!(
-                String::from_utf8_lossy(&request).contains("previous_response_id"),
+                request.contains("previous_response_id"),
                 "continuation request should reach upstream"
             );
             let body = concat!(
@@ -35444,6 +35625,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         let cached = CachedHealthSummary {
             account_ids: account_ids.clone(),
             file_modified_ms: Some(11),
+            audit_file_modified_ms: Some(21),
             audit_status: AuditTrailStatus::default(),
             cached_at_ms: now,
             summary: CodexLocalAccessHealthSummary {
@@ -35457,6 +35639,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             &cached,
             &account_ids,
             Some(11),
+            Some(21),
             &AuditTrailStatus::default(),
             now + HEALTH_SUMMARY_CACHE_TTL_MS,
         ));
@@ -35464,6 +35647,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             &cached,
             &["account-a".to_string()],
             Some(11),
+            Some(21),
             &AuditTrailStatus::default(),
             now,
         ));
@@ -35471,6 +35655,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             &cached,
             &account_ids,
             Some(12),
+            Some(21),
             &AuditTrailStatus::default(),
             now,
         ));
@@ -35478,6 +35663,15 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             &cached,
             &account_ids,
             Some(11),
+            Some(22),
+            &AuditTrailStatus::default(),
+            now,
+        ));
+        assert!(!is_cached_health_summary_valid(
+            &cached,
+            &account_ids,
+            Some(11),
+            Some(21),
             &AuditTrailStatus {
                 degraded: true,
                 error: Some("audit error".to_string()),
@@ -35489,6 +35683,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             &cached,
             &account_ids,
             Some(11),
+            Some(21),
             &AuditTrailStatus::default(),
             now + HEALTH_SUMMARY_CACHE_TTL_MS + 1,
         ));
@@ -35504,9 +35699,81 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             &with_deadline,
             &account_ids,
             Some(11),
+            Some(21),
             &AuditTrailStatus::default(),
             now,
         ));
+    }
+
+    #[test]
+    fn parse_health_audit_insights_extracts_selector_and_blocked_summary() {
+        let selector_event = super::CodexLocalAccessAuditEvent {
+            schema_version: super::CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+            timestamp: 1_700_000_000_100,
+            request_id: "req-selector".to_string(),
+            phase: "selector".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:selector".to_string(),
+            status: Some(200),
+            error_type: None,
+            stream_state: None,
+            outcome: Some("selected".to_string()),
+            detail: BTreeMap::from([
+                ("model_key".to_string(), "gpt-5.5".to_string()),
+                ("selected_reason".to_string(), "sticky_selected".to_string()),
+                ("candidate_count".to_string(), "4".to_string()),
+                ("eligible_count".to_string(), "2".to_string()),
+                (
+                    "skipped_counts_by_reason".to_string(),
+                    "{\"health_skipped\":1,\"cap_truncated\":1}".to_string(),
+                ),
+                ("cap_applied".to_string(), "true".to_string()),
+                ("cap_limit".to_string(), "2".to_string()),
+                ("sticky_cleared".to_string(), "false".to_string()),
+            ]),
+        };
+        let blocked_event = super::CodexLocalAccessAuditEvent {
+            schema_version: super::CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+            timestamp: 1_700_000_000_200,
+            request_id: "req-blocked".to_string(),
+            phase: "final_response".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:blocked".to_string(),
+            status: Some(503),
+            error_type: Some("pool_unavailable".to_string()),
+            stream_state: None,
+            outcome: Some("error".to_string()),
+            detail: BTreeMap::from([
+                (
+                    "message".to_string(),
+                    "API 服务号池暂无可调度账号（冷却中 2 个）".to_string(),
+                ),
+                (
+                    "recover_action".to_string(),
+                    "retry_after_cooldown_or_start_new_task".to_string(),
+                ),
+                ("retry_after_ms".to_string(), "3000".to_string()),
+            ]),
+        };
+
+        let selector = parse_selector_insight_from_audit_event(&selector_event)
+            .expect("selector insight should parse");
+        let blocked = parse_blocked_insight_from_audit_event(&blocked_event)
+            .expect("blocked insight should parse");
+
+        assert_eq!(selector.selected_reason.as_deref(), Some("sticky_selected"));
+        assert_eq!(selector.candidate_count, 4);
+        assert_eq!(selector.eligible_count, 2);
+        assert_eq!(selector.skipped_counts_by_reason.get("health_skipped"), Some(&1));
+        assert_eq!(selector.skipped_counts_by_reason.get("cap_truncated"), Some(&1));
+        assert_eq!(blocked.error_type.as_deref(), Some("pool_unavailable"));
+        assert_eq!(
+            blocked.recover_action.as_deref(),
+            Some("retry_after_cooldown_or_start_new_task")
+        );
+        assert_eq!(blocked.retry_after_ms, Some(3000));
     }
 
     #[tokio::test(flavor = "current_thread")]
