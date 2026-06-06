@@ -23,6 +23,7 @@
 
 Hardened API 相关产品合同、总控入口与执行文档见：
 
+- [目标架构蓝图](docs/COCKPIT_LOCAL_TARGET_ARCHITECTURE.md)
 - [产品需求书](docs/HARDENED_API_PRODUCT_REQUIREMENTS.md)
 - [总控计划](docs/HARDENED_API_MASTER_PLAN.md)
 - [Codex 协议附录](docs/LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md)

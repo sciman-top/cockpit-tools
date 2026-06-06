@@ -7,6 +7,7 @@
 当前落点是 Cockpit-Tools-Local 自用版的 Codex API service。目标归宿是在保留现有桌面账号管理、配额展示、Codex App/CLI 投影能力的前提下，把本地 API service 改造成默认保守、可观测、可回滚的 Hardened Local API Mode。
 
 产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；文档总控入口和关键语义合同见 `docs/HARDENED_API_MASTER_PLAN.md`。
+项目级最佳工程终态、技术栈和整体架构边界见 `docs/COCKPIT_LOCAL_TARGET_ARCHITECTURE.md`。
 
 本路线不以公网网关、多用户服务、商业中转或请求级账号扫射为目标。`new-api`、`sub2api`、`CLIProxyAPI`、`LiteLLM` 只作为结构参考，不作为默认架构替代。
 

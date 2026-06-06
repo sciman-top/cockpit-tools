@@ -153,6 +153,7 @@
 
 ## 11. 文档地图
 
+- 项目目标架构：[COCKPIT_LOCAL_TARGET_ARCHITECTURE.md](/D:/CODE/external/Cockpit-Tools-Local/docs/COCKPIT_LOCAL_TARGET_ARCHITECTURE.md)
 - 总控入口：[HARDENED_API_MASTER_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/HARDENED_API_MASTER_PLAN.md)
 - 总体方向：[LOCAL_HARDENED_API_ROADMAP.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_ROADMAP.md)
 - 实施任务：[LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md)
