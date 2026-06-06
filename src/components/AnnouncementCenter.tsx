@@ -23,6 +23,7 @@ const TAB_TARGET_PAGE_MAP: Partial<Record<string, Page>> = {
   windsurf: 'windsurf',
   kiro: 'kiro',
   wakeup: 'wakeup',
+  fingerprints: 'fingerprints',
   instances: 'instances',
   settings: 'settings',
 };

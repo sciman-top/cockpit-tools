@@ -4,7 +4,6 @@ import {
   CodexApiProviderMode,
   CodexAppSpeed,
   CodexAppSpeedConfig,
-  CodexProviderWireApi,
   CodexQuickConfig,
   CodexQuota,
 } from '../types/codex';
@@ -17,6 +16,11 @@ export interface CodexOAuthLoginStartResponse {
 /** 列出所有 Codex 账号 */
 export async function listCodexAccounts(): Promise<CodexAccount[]> {
   return await invoke('list_codex_accounts');
+}
+
+/** 本地同步 Codex quota 观察结果，不触发上游请求 */
+export async function syncCodexLocalQuotaObservations(): Promise<number> {
+  return await invoke('sync_codex_local_quota_observations');
 }
 
 /** 获取当前激活的 Codex 账号 */
@@ -81,8 +85,14 @@ export async function refreshCodexAccountProfile(accountId: string): Promise<Cod
 }
 
 /** 切换 Codex 账号 */
-export async function switchCodexAccount(accountId: string): Promise<CodexAccount> {
-  return await invoke('switch_codex_account', { accountId });
+export async function switchCodexAccount(
+  accountId: string,
+  options?: { force?: boolean },
+): Promise<CodexAccount> {
+  return await invoke('switch_codex_account', {
+    accountId,
+    force: options?.force ?? false,
+  });
 }
 
 /** 删除 Codex 账号 */
@@ -120,14 +130,34 @@ export async function importCodexFromFiles(filePaths: string[]): Promise<CodexFi
   return await invoke('import_codex_from_files', { filePaths });
 }
 
-/** 刷新单个账号配额 */
-export async function refreshCodexQuota(accountId: string): Promise<CodexQuota> {
-  return await invoke('refresh_codex_quota', { accountId });
+export interface CodexQuotaRefreshOptions {
+  force?: boolean;
 }
 
-/** 强制刷新单个账号的订阅信息 */
-export async function refreshCodexSubscriptionInfo(accountId: string): Promise<CodexAccount> {
-  return await invoke('refresh_codex_subscription_info', { accountId });
+/** 刷新单个账号配额 */
+export async function refreshCodexQuota(
+  accountId: string,
+  options?: CodexQuotaRefreshOptions,
+): Promise<CodexQuota> {
+  return await invoke('refresh_codex_quota', {
+    accountId,
+    force: options?.force ?? false,
+  });
+}
+
+/** 刷新单个账号的订阅信息 */
+export interface CodexSubscriptionRefreshOptions {
+  force?: boolean;
+}
+
+export async function refreshCodexSubscriptionInfo(
+  accountId: string,
+  options?: CodexSubscriptionRefreshOptions,
+): Promise<CodexAccount> {
+  return await invoke('refresh_codex_subscription_info', {
+    accountId,
+    force: options?.force ?? false,
+  });
 }
 
 /** 刷新所有账号配额 */
@@ -178,11 +208,6 @@ export async function addCodexAccountWithApiKey(
   apiProviderMode?: CodexApiProviderMode,
   apiProviderId?: string,
   apiProviderName?: string,
-  apiModelCatalog?: string[],
-  apiSupportsVision?: boolean,
-  apiModelVisionSupport?: Record<string, boolean>,
-  accountName?: string,
-  apiWireApi?: CodexProviderWireApi,
 ): Promise<CodexAccount> {
   return await invoke('add_codex_account_with_api_key', {
     apiKey,
@@ -190,11 +215,6 @@ export async function addCodexAccountWithApiKey(
     apiProviderMode: apiProviderMode ?? null,
     apiProviderId: apiProviderId ?? null,
     apiProviderName: apiProviderName ?? null,
-    apiModelCatalog: apiModelCatalog ?? null,
-    apiWireApi: apiWireApi ?? null,
-    apiSupportsVision: apiSupportsVision ?? false,
-    apiModelVisionSupport: apiModelVisionSupport ?? {},
-    accountName: accountName ?? null,
   });
 }
 
@@ -209,10 +229,6 @@ export async function updateCodexApiKeyCredentials(
   apiProviderMode?: CodexApiProviderMode,
   apiProviderId?: string,
   apiProviderName?: string,
-  apiModelCatalog?: string[],
-  apiSupportsVision?: boolean,
-  apiModelVisionSupport?: Record<string, boolean>,
-  apiWireApi?: CodexProviderWireApi,
 ): Promise<CodexAccount> {
   return await invoke('update_codex_api_key_credentials', {
     accountId,
@@ -221,10 +237,6 @@ export async function updateCodexApiKeyCredentials(
     apiProviderMode: apiProviderMode ?? null,
     apiProviderId: apiProviderId ?? null,
     apiProviderName: apiProviderName ?? null,
-    apiModelCatalog: apiModelCatalog ?? null,
-    apiWireApi: apiWireApi ?? null,
-    apiSupportsVision: apiSupportsVision ?? false,
-    apiModelVisionSupport: apiModelVisionSupport ?? {},
   });
 }
 

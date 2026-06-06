@@ -2,17 +2,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::codex::CodexAppSpeed;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum InstanceLaunchMode {
+    #[default]
     App,
     Cli,
-}
-
-impl Default for InstanceLaunchMode {
-    fn default() -> Self {
-        Self::App
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +47,7 @@ impl InstanceStore {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DefaultInstanceSettings {
     #[serde(default)]

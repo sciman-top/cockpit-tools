@@ -39,16 +39,21 @@ import {
 } from '../utils/featureUnlocks';
 import {
   buildDefaultCurrentAccountRefreshMinutesMap,
+  CURRENT_ACCOUNT_REFRESH_PRESET_MINUTES,
   CURRENT_ACCOUNT_REFRESH_PLATFORMS,
+  MAX_CURRENT_ACCOUNT_REFRESH_MINUTES,
+  MIN_CURRENT_ACCOUNT_REFRESH_MINUTES,
   type CurrentAccountRefreshMinutesMap,
   type CurrentAccountRefreshPlatform,
   loadCurrentAccountRefreshMinutesMap,
   saveCurrentAccountRefreshMinutesMap,
+  sanitizeCurrentAccountRefreshMinutes,
   loadAccountRefreshOverrides,
   setAccountRefreshMinutes,
   removeAccountRefreshOverride,
   type AccountRefreshOverrides,
 } from '../utils/currentAccountRefresh';
+import { sortCodexLocalAccessAccountsForScheduling } from '../utils/codexAccountSort';
 import { useGitHubCopilotAccountStore } from '../stores/useGitHubCopilotAccountStore';
 import { useWindsurfAccountStore } from '../stores/useWindsurfAccountStore';
 import { useKiroAccountStore } from '../stores/useKiroAccountStore';
@@ -72,12 +77,11 @@ import { getTraeAccountDisplayEmail } from '../types/trae';
 import { getZedAccountDisplayEmail } from '../types/zed';
 import { ALL_PLATFORM_IDS, PlatformId } from '../types/platform';
 import { SettingsAccountTransferSection } from '../components/SettingsAccountTransferSection';
-import { SettingsWebdavSyncSection } from '../components/SettingsWebdavSyncSection';
 import { useEscClose } from '../hooks/useEscClose';
 import './settings/Settings.css';
 import { 
   Github, User, Rocket, Save, FolderOpen,
-  AlertCircle, RefreshCw, Heart, MessageSquare, FileText, Download, X
+  AlertCircle, RefreshCw, MessageSquare, FileText, Download, X
 } from 'lucide-react';
 
 
@@ -157,7 +161,6 @@ interface GeneralConfig {
   codex_launch_on_switch: boolean;
   codex_restart_specified_app_on_switch: boolean;
   codex_local_access_entry_visible: boolean;
-  top_right_ad_visible?: boolean;
   antigravity_dual_switch_no_restart_enabled: boolean;
   auto_switch_enabled: boolean;
   auto_switch_threshold: number;
@@ -201,7 +204,7 @@ type AppPathTarget =
   | 'workbuddy'
   | 'zed';
 const REFRESH_PRESET_VALUES = ['-1', '2', '5', '10', '15'];
-const CURRENT_ACCOUNT_REFRESH_PRESET_VALUES = ['1', '2', '5', '10', '15'];
+const CURRENT_ACCOUNT_REFRESH_PRESET_VALUES = CURRENT_ACCOUNT_REFRESH_PRESET_MINUTES.map(String);
 const THRESHOLD_PRESET_VALUES = ['0', '20', '40', '60'];
 const CREDITS_THRESHOLD_PRESET_VALUES = ['0', '5', '10', '20'];
 const UI_SCALE_OPTIONS = ['0.9', '1', '1.1', '1.25', '1.5'] as const;
@@ -251,6 +254,23 @@ const generateReportToken = () => {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 };
 
+const formatAppBuildTime = (buildTime: string) => {
+  const date = new Date(buildTime);
+  if (Number.isNaN(date.getTime())) {
+    return buildTime;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(date);
+};
+
 const normalizeAutoSwitchAccountScopeMode = (
   value?: string | null,
 ): AutoSwitchAccountScopeMode =>
@@ -284,7 +304,7 @@ export function SettingsPage() {
   const isLinux = usePlatformRuntimeSupport('linux-only');
   const sideNavLayoutMode = useSideNavLayoutStore((state) => state.mode);
   const setSideNavLayoutMode = useSideNavLayoutStore((state) => state.setMode);
-  const [activeTab, setActiveTab] = useState<'general' | 'network' | 'data' | 'about'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'network' | 'about'>('general');
   const [availableTerminals, setAvailableTerminals] = useState<string[]>(['system']);
 
   useEffect(() => {
@@ -441,7 +461,6 @@ export function SettingsPage() {
   const [codexLaunchOnSwitch, setCodexLaunchOnSwitch] = useState(true);
   const [codexRestartSpecifiedAppOnSwitch, setCodexRestartSpecifiedAppOnSwitch] = useState(false);
   const [codexLocalAccessEntryVisible, setCodexLocalAccessEntryVisible] = useState(true);
-  const [topRightAdVisible, setTopRightAdVisible] = useState(true);
   const [antigravityDualSwitchNoRestartEnabled, setAntigravityDualSwitchNoRestartEnabled] = useState(false);
   const [autoSwitchEnabled, setAutoSwitchEnabled] = useState(false);
   const [autoSwitchThreshold, setAutoSwitchThreshold] = useState('20');
@@ -497,7 +516,7 @@ export function SettingsPage() {
   const suppressGeneralSaveRef = useRef(false);
   const currentAccountRefreshPersistReadyRef = useRef(false);
   
-  const [appVersion, setAppVersion] = useState('');
+  const [appVersion, setAppVersion] = useState(() => `v${__APP_VERSION__}`);
   const [updateChecking, setUpdateChecking] = useState(false);
   const [updateCheckMessage, setUpdateCheckMessage] = useState<{
     text: string;
@@ -510,12 +529,14 @@ export function SettingsPage() {
   const [autoInstall, setAutoInstall] = useState(false);
   const [autoInstallLoaded, setAutoInstallLoaded] = useState(false);
   const autoInstallTouchedRef = useRef(false);
+  const appBuildTimeLabel = useMemo(() => formatAppBuildTime(__APP_BUILD_TIME__), []);
   const [updateRemindersEnabled, setUpdateRemindersEnabled] = useState(true);
   const [updateRemindersLoaded, setUpdateRemindersLoaded] = useState(false);
   const updateRemindersTouchedRef = useRef(false);
   const [antigravityAccounts, setAntigravityAccounts] = useState<Account[]>([]);
   const [antigravityAccountGroups, setAntigravityAccountGroups] = useState<AccountGroup[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
+  const [codexCurrentAccountId, setCodexCurrentAccountId] = useState<string | null>(null);
   const [codexGroups, setCodexGroups] = useState<CodexAccountGroup[]>([]);
 
   const antigravityScopeTypeOptions = useMemo(
@@ -544,30 +565,40 @@ export function SettingsPage() {
   );
   const codexScopeAccounts = useMemo<AutoSwitchScopeAccount[]>(
     () =>
-      codexAccounts.map((account) => ({
-        id: account.id,
-        label: account.email,
-        searchableText: account.email,
-        tags: account.tags || [],
-      })),
-    [codexAccounts],
+      sortCodexLocalAccessAccountsForScheduling(codexAccounts, codexCurrentAccountId).map(
+        (account) => ({
+          id: account.id,
+          label: account.email,
+          searchableText: account.email,
+          tags: account.tags || [],
+        }),
+      ),
+    [codexAccounts, codexCurrentAccountId],
   );
 
   useEffect(() => {
     let mounted = true;
     const loadAutoSwitchScopeData = async () => {
       try {
-        const [nextAntigravityAccounts, nextAntigravityGroups, nextCodexAccounts, nextCodexGroups] =
+        const [
+          nextAntigravityAccounts,
+          nextAntigravityGroups,
+          nextCodexAccounts,
+          nextCodexGroups,
+          nextCodexCurrentAccount,
+        ] =
           await Promise.all([
             accountService.listAccounts(),
             getAccountGroups(),
             codexService.listCodexAccounts(),
             getCodexAccountGroups(),
+            codexService.getCurrentCodexAccount(),
           ]);
         if (!mounted) return;
         setAntigravityAccounts(nextAntigravityAccounts || []);
         setAntigravityAccountGroups(nextAntigravityGroups || []);
         setCodexAccounts(nextCodexAccounts || []);
+        setCodexCurrentAccountId(nextCodexCurrentAccount?.id ?? null);
         setCodexGroups(nextCodexGroups || []);
       } catch (error) {
         console.error('加载自动切号账号范围数据失败:', error);
@@ -575,6 +606,7 @@ export function SettingsPage() {
         setAntigravityAccounts([]);
         setAntigravityAccountGroups([]);
         setCodexAccounts([]);
+        setCodexCurrentAccountId(null);
         setCodexGroups([]);
       }
     };
@@ -589,7 +621,16 @@ export function SettingsPage() {
   }, [activeTab]);
 
   useEffect(() => {
-    getVersion().then(ver => setAppVersion(`v${ver}`));
+    const fallbackVersion = `v${__APP_VERSION__}`;
+    getVersion()
+      .then((ver) => {
+        const normalizedVersion = String(ver || '').trim();
+        setAppVersion(normalizedVersion ? `v${normalizedVersion}` : fallbackVersion);
+      })
+      .catch((err) => {
+        console.warn('读取应用版本失败，使用构建版本:', err);
+        setAppVersion(fallbackVersion);
+      });
     // Load auto_install setting first to avoid overwriting existing value on initial render
     invoke<{
       auto_check: boolean;
@@ -840,7 +881,6 @@ export function SettingsPage() {
           codexLaunchOnSwitch,
           codexRestartSpecifiedAppOnSwitch,
           codexLocalAccessEntryVisible,
-          topRightAdVisible,
           antigravityDualSwitchNoRestartEnabled,
           autoSwitchEnabled,
           autoSwitchThreshold: Number.isNaN(parsedAutoSwitchThreshold) ? 20 : parsedAutoSwitchThreshold,
@@ -960,7 +1000,6 @@ export function SettingsPage() {
     codexLaunchOnSwitch,
     codexRestartSpecifiedAppOnSwitch,
     codexLocalAccessEntryVisible,
-    topRightAdVisible,
     antigravityDualSwitchNoRestartEnabled,
     autoSwitchEnabled,
     autoSwitchThreshold,
@@ -1013,7 +1052,7 @@ export function SettingsPage() {
 
     const payload = CURRENT_ACCOUNT_REFRESH_PLATFORMS.reduce((result, platform) => {
       const raw = Number.parseInt(currentAccountRefreshMinutes[platform], 10);
-      result[platform] = Number.isNaN(raw) ? 1 : raw;
+      result[platform] = sanitizeCurrentAccountRefreshMinutes(raw);
       return result;
     }, {} as Partial<Record<CurrentAccountRefreshPlatform, number>>);
     saveCurrentAccountRefreshMinutesMap(payload);
@@ -1269,7 +1308,6 @@ export function SettingsPage() {
         config.codex_restart_specified_app_on_switch ?? false,
       );
       setCodexLocalAccessEntryVisible(config.codex_local_access_entry_visible ?? true);
-      setTopRightAdVisible(config.top_right_ad_visible ?? true);
       setAntigravityDualSwitchNoRestartEnabled(
         config.antigravity_dual_switch_no_restart_enabled ?? false
       );
@@ -1619,8 +1657,8 @@ export function SettingsPage() {
               <div className="settings-inline-input" style={{ minWidth: '120px', width: 'auto' }}>
                 <input
                   type="number"
-                  min={1}
-                  max={999}
+                  min={MIN_CURRENT_ACCOUNT_REFRESH_MINUTES}
+                  max={MAX_CURRENT_ACCOUNT_REFRESH_MINUTES}
                   className="settings-select settings-select--input-mode settings-select--with-unit"
                   value={value}
                   placeholder={t('quickSettings.inputMinutes', '输入分钟数')}
@@ -1628,14 +1666,22 @@ export function SettingsPage() {
                     setCurrentAccountRefreshValue(platform, sanitizeNumberInput(event.target.value))
                   }
                   onBlur={() => {
-                    const normalized = normalizeNumberInput(value, 1, 999);
+                    const normalized = normalizeNumberInput(
+                      value,
+                      MIN_CURRENT_ACCOUNT_REFRESH_MINUTES,
+                      MAX_CURRENT_ACCOUNT_REFRESH_MINUTES,
+                    );
                     setCurrentAccountRefreshValue(platform, normalized);
                     setCurrentAccountRefreshCustomModeValue(platform, false);
                   }}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
                       event.preventDefault();
-                      const normalized = normalizeNumberInput(value, 1, 999);
+                      const normalized = normalizeNumberInput(
+                        value,
+                        MIN_CURRENT_ACCOUNT_REFRESH_MINUTES,
+                        MAX_CURRENT_ACCOUNT_REFRESH_MINUTES,
+                      );
                       setCurrentAccountRefreshValue(platform, normalized);
                       setCurrentAccountRefreshCustomModeValue(platform, false);
                     }
@@ -1658,7 +1704,7 @@ export function SettingsPage() {
                     setCurrentAccountRefreshCustomModeValue(platform, true);
                     setCurrentAccountRefreshValue(
                       platform,
-                      value || String(CURRENT_ACCOUNT_REFRESH_PRESET_VALUES[0]),
+                      value || String(CURRENT_ACCOUNT_REFRESH_PRESET_MINUTES[0]),
                     );
                     return;
                   }
@@ -1675,11 +1721,11 @@ export function SettingsPage() {
                     {value} {t('settings.general.minutes')}
                   </option>
                 )}
-                <option value="1">1 {t('settings.general.minutes')}</option>
-                <option value="2">2 {t('settings.general.minutes')}</option>
-                <option value="5">5 {t('settings.general.minutes')}</option>
-                <option value="10">10 {t('settings.general.minutes')}</option>
-                <option value="15">15 {t('settings.general.minutes')}</option>
+                {CURRENT_ACCOUNT_REFRESH_PRESET_MINUTES.map((minutes) => (
+                  <option key={minutes} value={String(minutes)}>
+                    {minutes} {t('settings.general.minutes')}
+                  </option>
+                ))}
                 <option value="custom">{t('settings.general.autoRefreshCustom')}</option>
               </select>
             )}
@@ -2044,7 +2090,7 @@ export function SettingsPage() {
 
   return (
     <main className="main-content">
-      <div className="page-tabs-row settings-page-tabs-row">
+      <div className="page-tabs-row">
         <div className="page-tabs-label">{t('settings.title')}</div>
         <div className="page-tabs filter-tabs">
           <button 
@@ -2058,12 +2104,6 @@ export function SettingsPage() {
             onClick={() => setActiveTab('network')}
           >
             {t('settings.tabs.network')}
-          </button>
-          <button 
-            className={`filter-tab ${activeTab === 'data' ? 'active' : ''}`}
-            onClick={() => setActiveTab('data')}
-          >
-            {t('settings.tabs.data', '数据管理')}
           </button>
           <button 
             className={`filter-tab ${activeTab === 'about' ? 'active' : ''}`}
@@ -2368,28 +2408,19 @@ export function SettingsPage() {
 
               <div className="settings-row">
                 <div className="row-label">
-                  <div className="row-title">
-                    {t('settings.general.topRightAdVisible', '显示顶部推广')}
-                  </div>
-                  <div className="row-desc">
-                    {t(
-                      'settings.general.topRightAdVisibleDesc',
-                      '关闭后隐藏应用顶部推广位。'
-                    )}
-                  </div>
+                  <div className="row-title">{t('settings.general.fpDir')}</div>
+                  <div className="row-desc">{t('settings.general.fpDirDesc')}</div>
                 </div>
                 <div className="row-control">
-                  <label className="switch">
-                    <input
-                      type="checkbox"
-                      checked={topRightAdVisible}
-                      onChange={(e) => setTopRightAdVisible(e.target.checked)}
-                    />
-                    <span className="slider"></span>
-                  </label>
+                  <button className="btn btn-secondary" onClick={() => accountService.openDeviceFolder()}>
+                    <FolderOpen size={16} />{t('common.open')}
+                  </button>
                 </div>
               </div>
             </div>
+
+            <SettingsAccountTransferSection />
+
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               <div style={{ order: platformSettingsOrder.antigravity }}>
                 <div className="group-title">{t('settings.general.antigravitySettingsTitle', 'Antigravity IDE 设置')}</div>
@@ -5300,13 +5331,6 @@ export function SettingsPage() {
           </>
         )}
 
-        {activeTab === 'data' && (
-          <>
-            <SettingsAccountTransferSection />
-            <SettingsWebdavSyncSection />
-          </>
-        )}
-
         {/* === Network Tab === */}
         {activeTab === 'network' && (
           <>
@@ -5598,8 +5622,11 @@ export function SettingsPage() {
               </div>
               <div className="app-info">
                 <h2>{t('settings.about.appName')}</h2>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className="version-meta-row">
                   <div className="version-tag">{appVersion}</div>
+                  <div className="build-time-tag" title={__APP_BUILD_TIME__}>
+                    {t('settings.about.buildTime', '构建时间 {{time}}', { time: appBuildTimeLabel })}
+                  </div>
                   <button 
                     className="btn btn-sm btn-ghost"
                     onClick={handleCheckUpdate}
@@ -5659,12 +5686,6 @@ export function SettingsPage() {
                 <div className="credit-icon" style={{ color: '#0f172a' }}><Github size={24} /></div>
                 <h3>{t('settings.about.github')}</h3>
                 <p>cockpit-tools</p>
-              </button>
-
-              <button className="credit-item" onClick={() => openLink('https://github.com/jlcodes99/cockpit-tools/blob/main/docs/DONATE.md')}>
-                <div className="credit-icon" style={{ color: '#ef4444' }}><Heart size={24} /></div>
-                <h3>{t('settings.about.sponsor')}</h3>
-                <p>{t('settings.about.sponsorDesc', 'Donate')}</p>
               </button>
 
               <button className="credit-item" onClick={() => openLink('https://github.com/jlcodes99/cockpit-tools/issues')}>

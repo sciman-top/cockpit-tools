@@ -90,7 +90,6 @@ import {
 } from '../utils/accountSyncEvents';
 import './FloatingCardWindow.css';
 
-const windowInstance = getCurrentWindow();
 const FLOATING_CARD_WINDOW_LABEL = 'floating-card';
 const INSTANCE_FLOATING_CARD_WINDOW_LABEL_PREFIX = 'instance-floating-card-';
 const FLOATING_CARD_PLATFORM_STORAGE_KEY = 'agtools.floating_card.platform';
@@ -99,6 +98,10 @@ const FLOATING_CARD_BASE_HEIGHT = 290;
 const FLOATING_CARD_MAX_HEIGHT = 520;
 const FLOATING_CARD_NO_DRAG_SELECTOR =
   'button, select, input, textarea, a, option, [role="button"], [data-floating-card-no-drag="true"]';
+
+function getFloatingCardWindowInstance() {
+  return getCurrentWindow();
+}
 
 type FloatingCardGeneralConfig = {
   language: string;
@@ -193,7 +196,7 @@ function findInstanceById(instances: InstanceProfile[], instanceId: string): Ins
 
 export function FloatingCardWindow() {
   const { t } = useTranslation();
-  const currentWindowLabel = windowInstance.label;
+  const currentWindowLabel = getFloatingCardWindowInstance().label;
   const isPrimaryFloatingCardWindow = currentWindowLabel === FLOATING_CARD_WINDOW_LABEL;
   const isInstanceFloatingCardWindow = currentWindowLabel.startsWith(
     INSTANCE_FLOATING_CARD_WINDOW_LABEL_PREFIX,
@@ -585,7 +588,7 @@ export function FloatingCardWindow() {
     let unlistenMoved: (() => void) | null = null;
 
     const bindWindowEvents = async () => {
-      unlistenCloseRequested = await windowInstance.onCloseRequested((event) => {
+      unlistenCloseRequested = await getFloatingCardWindowInstance().onCloseRequested((event) => {
         event.preventDefault();
         setErrorText(null);
         if (confirmOnClose) {
@@ -609,7 +612,7 @@ export function FloatingCardWindow() {
         void changeLanguage(normalizeLanguage(event.payload));
       });
 
-      unlistenMoved = await windowInstance.onMoved(({ payload }) => {
+      unlistenMoved = await getFloatingCardWindowInstance().onMoved(({ payload }) => {
         if (!isPrimaryFloatingCardWindow) {
           return;
         }
@@ -1229,7 +1232,7 @@ export function FloatingCardWindow() {
       return;
     }
     event.preventDefault();
-    void windowInstance.startDragging().catch((error) => {
+    void getFloatingCardWindowInstance().startDragging().catch((error) => {
       console.error('Failed to start floating card dragging:', error);
     });
   }, []);
@@ -1254,7 +1257,7 @@ export function FloatingCardWindow() {
         return;
       }
 
-      void windowInstance
+      void getFloatingCardWindowInstance()
         .setSize(new LogicalSize(window.innerWidth, targetHeight))
         .catch((error) => console.error('Failed to resize floating card window:', error));
     });

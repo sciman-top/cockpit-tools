@@ -22,13 +22,6 @@
     "detail": "Details",
     "editable": "Editable",
     "preview": "Preview",
-    "topRightAd": {
-      "ariaLabel": "Global top-right ad slot",
-      "badge": "AD",
-      "title": "Top-right ad slot",
-      "desc": "This area is fixed at the top-right across all pages for campaigns or brand ads.",
-      "action": "View details"
-    },
     "shared": {
       "addAccount": "Add Account",
       "columns": {
@@ -277,6 +270,7 @@
     "overview": "Antigravity IDE",
     "accounts": "Accounts",
     "wakeup": "Wakeup Tasks",
+    "fingerprints": "Fingerprints",
     "settings": "Settings",
     "codex": "Codex",
     "zed": "Zed",
@@ -289,8 +283,6 @@
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
     "logs": "Logs",
-    "sponsors": "Sponsors",
-    "sponsorAppreciation": "Sponsor",
     "instances": "Multi-Instance",
     "manual": "User Manual",
     "quickUpdate": {
@@ -308,23 +300,13 @@
     "switchClassicLayoutConfirm": "Switch now",
     "2faManager": "2FA"
   },
-  "sponsors": {
-    "pageTitle": "Sponsors",
-    "pageDesc": "Thanks to these sponsors for supporting Cockpit Tools.",
-    "loading": "Loading sponsors...",
-    "emptyTitle": "No sponsors yet",
-    "emptyDesc": "The remote sponsor module is currently disabled.",
-    "listAriaLabel": "Sponsor list",
-    "defaultDescription": "Thanks for supporting Cockpit Tools.",
-    "openSponsor": "Open"
-  },
   "platformLayout": {
     "title": "Platform Layout",
     "sidebarSelected": "Sidebar selected {{count}}/{{max}}",
     "sidebarSelectedUnlimited": "Sidebar selected {{count}}",
     "reset": "Reset to default",
     "tip": "Drag to reorder. Up to three platforms can be shown in the sidebar. If only one is selected, only one is shown.",
-    "tipWithGroups": "Drag to reorder. Up to {{max}} entries can appear in the sidebar. Group children do not have sidebar/dashboard toggles and are only used for tray visibility and default-platform switching.",
+    "tipWithGroups": "Drag to reorder. Up to three entries can appear in the sidebar. Group children do not have sidebar/dashboard toggles and are only used for tray visibility and default-platform switching.",
     "tipWithGroupsUnlimited": "Drag to reorder. Any number of entries can appear in the sidebar. Group children do not have sidebar/dashboard toggles and are only used for tray visibility and default-platform switching.",
     "addGroup": "Add group",
     "editGroup": "Edit",
@@ -606,7 +588,6 @@
     "tabs": {
       "general": "General",
       "network": "Network",
-      "data": "Data",
       "about": "About"
     },
     "transfer": {
@@ -707,61 +688,6 @@
         "unsupportedVersion": "This app version does not support that bundle version"
       }
     },
-    "webdav": {
-      "groupTitle": "WebDAV Sync",
-      "enabledTitle": "WebDAV Backup Sync",
-      "enabledDesc": "Defaults to Jianguoyun and can be changed to any WebDAV service.",
-      "urlTitle": "Service URL",
-      "urlDesc": "Jianguoyun default: https://dav.jianguoyun.com/dav/",
-      "usernameTitle": "Account",
-      "usernameDesc": "Jianguoyun uses your account email.",
-      "usernamePlaceholder": "Email or username",
-      "passwordTitle": "App Password",
-      "passwordDesc": "Saved locally; leave blank to keep the saved password.",
-      "passwordPlaceholder": "Jianguoyun third-party app password",
-      "passwordSavedPlaceholder": "Saved; leave blank to keep it",
-      "clearPassword": "Clear",
-      "remoteDirTitle": "Remote Folder",
-      "remoteDirDesc": "Only Cockpit backup files in this folder are managed.",
-      "statusTitle": "Sync Status",
-      "statusDesc": "Remote restore requires a manual selection and never silently overwrites local data.",
-      "lastUpload": "Last upload: {{time}}",
-      "lastDownload": "Last restore: {{time}}",
-      "never": "Not synced yet",
-      "testAction": "Test/Save Config",
-      "uploadAction": "Create & Upload",
-      "syncAction": "Sync Config",
-      "syncLatestConfirm": "Are you sure you want to pull the latest remote backup {{name}} and sync to local? This will overwrite existing local data.",
-      "remoteListTitle": "Remote Backups",
-      "remoteListDesc": "Only JSON and ZIP files matching Cockpit auto/manual backup names are shown.",
-      "emptyTitle": "No remote backups",
-      "emptyDesc": "Save settings, then create and upload a backup.",
-      "unknownTime": "Unknown",
-      "restoreAction": "Restore",
-      "restoreConfirm": "Restore data from remote backup {{name}}?",
-      "deleteConfirm": "Delete remote backup {{name}}?",
-      "feedback": {
-        "testingAndSaving": "Saving and testing WebDAV connection...",
-        "saveAndTestSuccess": "Configuration saved and connection test succeeded!",
-        "saveSuccessTestFailed": "Configuration saved, but connection test failed: {{message}}",
-        "saveAndTestFailed": "Failed to save and test connection: {{error}}",
-        "uploading": "Creating and uploading backup...",
-        "uploadSuccess": "Uploaded {{count}} file(s), cleaned {{deleted}} expired remote backup(s)",
-        "uploadFailed": "WebDAV upload failed: {{error}}",
-        "listFailed": "Failed to load remote backups: {{error}}",
-        "loadSettingsFailed": "Failed to load WebDAV settings: {{error}}",
-        "restoring": "Reading remote backup and importing...",
-        "restoreEmpty": "No data was restored from the remote backup",
-        "deleteSuccess": "Remote backup deleted",
-        "deleteFailed": "Failed to delete remote backup: {{error}}",
-        "syncingLatest": "Syncing latest remote configuration...",
-        "syncFailed": "Failed to sync latest configuration: {{error}}",
-        "noRemoteBackup": "No restorable backup files found on remote"
-      },
-      "errors": {
-        "notEnabled": "Enable WebDAV sync first"
-      }
-    },
     "general": {
       "appearance": "Appearance",
       "language": "Language",
@@ -793,7 +719,7 @@
       "minutes": "min",
       "refreshIntervalLimited": "Quota reset wakeup enabled, minimum refresh interval is 2 minutes",
       "currentAccountRefreshTitle": "Current Account Refresh",
-      "currentAccountRefreshItemDesc": "Refresh current account only. Default is 1 minute.",
+      "currentAccountRefreshItemDesc": "Refresh current account only. Default is 30 minutes, minimum is 30 minutes.",
       "currentAccountRefreshRequiresAutoRefresh": "Enable \"Quota Auto Refresh\" first to configure current account refresh.",
       "closeBehavior": "Close behavior",
       "closeBehaviorDesc": "Choose the default action when closing the window",
@@ -826,8 +752,8 @@
       "floatingCardShowNowAction": "Show floating card",
       "dataDir": "Data Directory",
       "dataDirDesc": "Storage location for accounts and configuration files.",
-      "topRightAdVisible": "Show top promo",
-      "topRightAdVisibleDesc": "Hide the top promo slot in the app. The Sponsors page is not affected.",
+      "fpDir": "Antigravity IDE Storage",
+      "fpDirDesc": "Storage location for Antigravity IDE data files.",
       "opencodeTitle": "OpenCode Integration",
       "opencodeAuthOverwrite": "Overwrite OpenCode login when switching Codex",
       "opencodeAuthOverwriteDesc": "When off, only Codex is switched and OpenCode keeps its current login state",
@@ -898,7 +824,7 @@
       "codexLocalAccessEntryVisibleDesc": "Only controls whether the API service entry is shown in the Codex overview. It does not stop the local API service; you can turn it back on here or in Quick Settings.",
       "codexLocalAccessEnabled": "Enable API Service",
       "codexLocalAccessEnabledDesc": "Control whether the local Codex API service is actually running.",
-      "codexLocalAccessEnabledRequiresCollection": "Add accounts to the API service collection before enabling or disabling the service.",
+      "codexLocalAccessEnabledRequiresCollection": "Add an account to the API service account pool before enabling or disabling the service.",
       "autoSwitchAccountScope": "Auto switch account scope",
       "autoSwitchAccountScopeDesc": "Only monitor and switch accounts within this scope.",
       "autoSwitchAccountScopeAll": "All accounts",
@@ -1019,8 +945,6 @@
       "github": "GitHub",
       "alipay": "Alipay",
       "wechatpay": "WeChat Pay",
-      "sponsor": "Sponsor",
-      "sponsorDesc": "Support development",
       "feedback": "Feedback",
       "feedbackDesc": "Report issues/suggestions",
       "supportDev": "Support Development",
@@ -1072,6 +996,7 @@
       "email": "Email",
       "subscription": "Subscription",
       "quota": "Quota Status",
+      "fingerprint": "Fingerprint",
       "lastUsed": "Last Used",
       "actions": "Actions"
     },
@@ -1157,8 +1082,10 @@
     "actions": {
       "viewDetails": "View details",
       "viewError": "View error",
+      "fingerprint": "Fingerprint",
       "switch": "Switch account",
       "switchTo": "Switch to this account",
+      "selectFingerprint": "Select fingerprint",
       "delete": "Delete",
       "deleteSelected": "Delete Selected",
       "export": "Export",
@@ -1236,9 +1163,9 @@
       "empty": "No groups yet, create one to get started",
       "accountCount": "{{count}} account(s)",
       "rename": "Rename",
-      "addToGroup": "Add to Group",
+      "addToGroup": "Move into Group",
       "moveToGroup": "Move to Another Group",
-      "createAndAdd": "Create group and add...",
+      "createAndAdd": "Create group and move in...",
       "removeFromGroup": "Remove from Group",
       "deleteTitle": "Delete Group",
       "deleteConfirm": "Delete group \"{{name}}\"? Accounts will not be deleted.",
@@ -1253,10 +1180,10 @@
         "createFailed": "Failed to create group: {{error}}",
         "renameFailed": "Failed to rename group: {{error}}",
         "deleteFailed": "Failed to delete group: {{error}}",
-        "addFailed": "Failed to add to group: {{error}}",
-        "createAndAddFailed": "Failed to create group and add: {{error}}"
+        "addFailed": "Failed to move into group: {{error}}",
+        "createAndAddFailed": "Failed to create group and move accounts in: {{error}}"
       },
-      "addAccounts": "Add Accounts",
+      "addAccounts": "Move Accounts In",
       "editTitle": "Edit Group",
       "ungrouped": "Ungrouped",
       "currentGroupLabel": "Current Group",
@@ -1307,8 +1234,106 @@
     "currentAccount": "Currently in use",
     "switchTo": "Switch to this account",
     "switching": "Switching...",
+    "fingerprint": "Fingerprint",
     "bound": "Bound",
     "brandTitle": "Antigravity IDE Account"
+  },
+  "fingerprints": {
+    "title": "Fingerprints",
+    "subtitle": "Manage device fingerprints bound to accounts.",
+    "toolbar": {
+      "generate": "Generate New",
+      "capture": "Capture Current",
+      "import": "Import",
+      "deleteUnbound": "Delete Unbound",
+      "folder": "Folder",
+      "delete": "Delete"
+    },
+    "table": {
+      "name": "Fingerprint Name",
+      "machineId": "Machine ID",
+      "accounts": "Bound Accounts",
+      "actions": "Actions",
+      "accountCount": "{{count}} accounts",
+      "apply": "Apply",
+      "noData": "No fingerprint data",
+      "preview": "Preview",
+      "rename": "Rename"
+    },
+    "modals": {
+      "generate": {
+        "title": "Generate Fingerprint",
+        "btn": "Generate"
+      },
+      "capture": {
+        "title": "Capture Fingerprint",
+        "btn": "Capture"
+      },
+      "rename": {
+        "title": "Rename Fingerprint",
+        "label": "Fingerprint Name"
+      },
+      "import": {
+        "title": "Import Fingerprints",
+        "fromTools": "Import from Antigravity Tools",
+        "desc": "Import from ~/.antigravity_tools/",
+        "fromJsonBtn": "Import from JSON",
+        "jsonExample": "Example format:",
+        "jsonPlaceholder": "Work fingerprint",
+        "orPasteJson": "Or paste JSON"
+      },
+      "bound": {
+        "title": "Bound Accounts",
+        "add": "Add Accounts",
+        "empty": "No accounts bound",
+        "emptyAll": "All accounts are bound",
+        "select": "Select accounts to add",
+        "from": "From: {{name}}",
+        "back": "Back"
+      },
+      "detail": {
+        "title": "Fingerprint Details",
+        "created": "Created at {{time}}"
+      }
+    },
+    "messages": {
+      "deleteConfirm": "Delete this fingerprint? Accounts bound to it will revert to original.",
+      "batchDeleteConfirm": "Delete {{count}} fingerprints? Accounts bound to them will revert to original.",
+      "deleteUnboundConfirm": "Delete {{count}} fingerprints with no bound accounts?",
+      "generated": "New fingerprint generated",
+      "captured": "Current fingerprint captured",
+      "renamed": "Renamed",
+      "deleted": "Fingerprint deleted",
+      "deletedUnbound": "Deleted {{count}} unbound fingerprints",
+      "imported": "Imported {{count}} fingerprints",
+      "noUnboundToDelete": "No unbound fingerprints to delete",
+      "addedAccounts": "Added {{count}} accounts",
+      "enterName": "Enter fingerprint name",
+      "previewNotReady": "Preview not ready, please wait",
+      "duplicate": "Duplicate fingerprint exists: {{name}}",
+      "autoGeneratedSuffix": "(Missing in source, auto-generated)",
+      "readOnly": "Read-only",
+      "current": "Current",
+      "addCount": "Added {{count}} accounts",
+      "addFailed": "Add failed",
+      "adding": "Adding...",
+      "applyFailed": "Apply failed",
+      "boundCount": "Bound {{count}} accounts",
+      "captureFailed": "Capture failed",
+      "count": "{{count}}",
+      "deleteFailed": "Delete failed",
+      "fpLabel": "Fingerprint:",
+      "generateFailed": "Generate failed",
+      "importFailed": "Import failed",
+      "importing": "Importing...",
+      "loadFailed": "Failed to load fingerprint list",
+      "processing": "Processing...",
+      "renameFailed": "Rename failed",
+      "serviceMachineIdEmpty": "Empty",
+      "importPartialFailed": "{{failCount}} failed: {{failList}}",
+      "refreshingQuota": "Refreshing quota {{done}}/{{total}} (you may close this dialog)",
+      "quotaRefreshDone": "Quota refresh complete"
+    }
   },
   "modals": {
     "addAccount": {
@@ -1343,6 +1368,15 @@
       "fromFiles": "Import from Local Files",
       "fromFilesDesc": "Select JSON files to import accounts (multiple formats supported)",
       "importingFiles": "Importing {{count}} file(s)..."
+    },
+    "fingerprint": {
+      "title": "Select Fingerprint",
+      "desc": "Select fingerprint for account <1>{{email}}</1>",
+      "original": "Original Fingerprint",
+      "new": "Add New Fingerprint",
+      "bind": "Confirm Bind",
+      "selectLabel": "Select Fingerprint",
+      "boundCount": "accounts"
     },
     "quota": {
       "title": "Quota Details",
@@ -1530,6 +1564,8 @@
       "historyTitle": "Trigger History",
       "taskTitleEdit": "Edit Wakeup Task",
       "taskTitleNew": "New Wakeup Task",
+      "enableTitle": "Enable Background Wakeup",
+      "enableAction": "Enable Wakeup",
       "riskWarning": "⚠️ Risk warning\nDue to recent Google risk-control tightening, using the wakeup feature may increase the chance of triggering account risk controls (including but not limited to additional verification or temporary limits).\nPlease use it with caution based on your account status and evaluate the risk yourself.\n\nContinue?"
     },
     "form": {
@@ -1862,27 +1898,34 @@
       "testRateLimited": "Service is reachable, but upstream is rate limited or quota is exhausted: {{detail}}.",
       "testHttpFailed": "Service is reachable, but the request returned HTTP {{status}}: {{detail}}.",
       "activateAction": "Start API Service",
+      "switchToApiService": "Switch to API Service",
       "enableBeforeActivateTitle": "Service Not Enabled",
       "enableBeforeActivateMessage": "The API service is currently disabled and must be enabled first. Enable it and switch now?",
       "enableAndActivateAction": "Enable and Switch",
       "activateSuccess": "Switched to API service",
-      "saveSuccess": "API service collection updated",
+      "saveSuccess": "API service account pool updated",
       "noEligibleAccountsSelected": "The selected accounts are not in this environment or cannot be used by the API service. Import a usable Codex account in this environment first.",
       "removeSuccess": "Account removed from API service",
       "rotateSuccess": "API service key reset",
       "enabledSuccess": "API service enabled",
       "disabledSuccess": "API service disabled",
+      "addMember": "Add to API service",
       "removeMember": "Remove from API service",
+      "addSelectedMembers": "Add to API service",
+      "removeSelectedMembers": "Remove from API service",
       "toggleService": "Toggle API service",
       "showKey": "Show API key",
       "hideKey": "Hide API key",
+      "hiddenKeyTitle": "API key hidden",
       "configTitle": "Service Config",
-      "configEmpty": "Save at least one account to the API service collection before the URL, key, and port are generated.",
+      "configEmpty": "Save accounts to the API service account pool before the URL, key, and port are generated.",
       "portLabel": "Service Port",
       "portSave": "Save Port",
       "portSaveSuccess": "API service port updated",
-      "routingLabel": "Routing",
-      "routingSaveSuccess": "API service routing updated",
+      "routingLabel": "Dispatch account",
+      "routingSaveSuccess": "API service dispatch account updated",
+      "safetyPresetSaveSuccess": "API service strategy preset restored",
+      "safetyPresetSaveFailed": "Failed to restore API service strategy preset",
       "routingDescriptionAuto": "Prefer higher-tier accounts with more remaining quota, then rotate within the same tier.",
       "routingDescriptionQuotaHighFirst": "Prefer accounts with more remaining quota.",
       "routingDescriptionQuotaLowFirst": "Prefer accounts with less remaining quota.",
@@ -1894,6 +1937,10 @@
       "clearStats": "Clear Stats",
       "clearStatsConfirm": "Clear all API service stats?",
       "clearStatsSuccess": "API service stats have been cleared",
+      "recoverAccount": "Recover account health",
+      "recoverModel": "Recover current model cooldown: {{model}}",
+      "recoverAccountSuccess": "Account health has been recovered",
+      "recoverModelSuccess": "Current model cooldown has been recovered",
       "killPortAction": "Clear Port",
       "killPortTitle": "Clear API Service Port",
       "killPortConfirmMessage": "This will force-close other processes using local port {{port}}, then restart the API service. Continue?",
@@ -1943,8 +1990,17 @@
         "hourlyShort": "5h",
         "weeklyShort": "Week",
         "viewFull": "View full stats",
-        "modalTitle": "API Service Quota Pool",
+        "modalTitle": "API Service Account Pool Stats",
         "empty": "No quota stats yet"
+      },
+      "poolUnavailable": {
+        "allExhausted": "All API service pool accounts have exhausted quota. Refresh quotas, adjust the pool, or recover accounts before retrying.",
+        "blocked": "The API service pool has no schedulable accounts ({{reasons}}). Refresh quotas, adjust the pool, or recover accounts before retrying.",
+        "exhausted": "{{count}} exhausted",
+        "cooling": "{{count}} cooling",
+        "manualRequired": "{{count}} require manual action",
+        "disabled": "{{count}} disabled",
+        "unknown": "unknown status"
       },
       "accountPoolHealth": {
         "title": "Account Pool",
@@ -1953,7 +2009,7 @@
         "issueSummary": "Bad {{abnormal}} · Cool {{cooldown}}",
         "detail": "OK {{available}}/{{total}}, bad {{abnormal}}, cooldown {{cooldown}}, missing {{missing}}, auth {{authError}}, quota {{quotaLimited}}"
       },
-      "memberTitle": "Collection Members",
+      "memberTitle": "Account Pool Members",
       "routingStrategy": {
         "auto": "Auto (Recommended)",
         "quotaHighFirst": "High Quota First",
@@ -1962,6 +2018,17 @@
         "planLowFirst": "Low Plan First",
         "expirySoonFirst": "Expiry Soon First",
         "custom": "Custom"
+      },
+      "safetyPreset": {
+        "label": "Strategy Preset",
+        "current": "Current",
+        "custom": "Custom",
+        "maximumSafety": "Maximum Safety",
+        "maximumSafetyDesc": "1 concurrent · 60s · 2 accounts",
+        "balancedSelfUse": "Balanced Self-use",
+        "balancedSelfUseDesc": "1 concurrent · 20s · 2 accounts · manual opt-in",
+        "quotaDrainCareful": "Careful Quota Drain",
+        "quotaDrainCarefulDesc": "1 concurrent · 30s · 2 accounts · manual opt-in"
       },
       "requestKind": {
         "text": "Text",
@@ -1987,9 +2054,21 @@
         "accountTokensCompact": "{{value}}",
         "accountResult": "Success {{success}} / Failed {{failed}}"
       },
+      "health": {
+        "title": "Health",
+        "healthy": "Healthy",
+        "cooling": "Cooling",
+        "auth": "Auth",
+        "manual": "Manual",
+        "modelCooldown": "Model cooldown",
+        "sticky": "Sticky",
+        "lastError": "Last error",
+        "cooldownUntil": "Cooldown until",
+        "unavailable": "Unavailable"
+      },
       "modal": {
         "title": "Add to API Service",
-        "desc": "Choose Codex OAuth or API Key accounts to include in the API service collection. Added accounts are hidden from the regular overview and managed only from the API service card.",
+        "desc": "Choose Codex OAuth or API Key accounts to add to the API service account pool. Dispatch is still controlled by health state and request caps; added accounts are managed from the API service card.",
         "restrictFreeToggle": "Limit Free Accounts",
         "freeNoticeRestricted": "Free accounts are limited. Turn this off to select them.",
         "freeNoticeUnstable": "Free-account proxying can be unstable. Use with caution.",
@@ -1998,10 +2077,10 @@
         "freeNotice": "Free accounts are not supported yet. Free accounts cannot be selected.",
         "freeUnsupported": "Free Limited",
         "empty": "No Codex accounts available",
-        "selected": "In API Service",
+        "selected": "API Service Account Pool",
         "available": "Regular Overview",
         "manageMembers": "Manage Members",
-        "save": "Save Collection"
+        "save": "Save Account Pool"
       },
       "oauthBinding": {
         "desc": "Optional. Only OAuth accounts with a refresh_token can be selected. Without a link, the API service keeps the original API-key flow; after linking, sign-in uses the OAuth account and Provider uses the API service config.",
@@ -2200,9 +2279,6 @@
       "emptyTitle": "No model providers yet",
       "emptyDesc": "Click \"Add Provider\" in the top right to start.",
       "baseUrl": "Base URL",
-      "modelCatalog": "Models",
-      "modelCatalogEmpty": "No model catalog",
-      "gatewayHint": "Third-party providers start through the local gateway for instance isolation and protocol conversion. Official OpenAI providers stay direct.",
       "website": "Website",
       "apiKeyPage": "API Key Page",
       "apiKeysCount": "{{count}} API Keys",
@@ -2214,15 +2290,10 @@
       "fields": {
         "name": "Provider Name",
         "baseUrl": "Base URL",
-        "modelCatalog": "Model Catalog",
         "website": "Website (Optional)",
         "apiKeyUrl": "API Key Page (Optional)",
-        "wireApi": "Protocol",
-        "enableMode": "Enable Mode",
         "newApiKeyName": "New Key Name (Optional)",
-        "newApiKey": "New API Key",
-        "visionCapability": "Image Input",
-        "visionModels": "Vision Models"
+        "newApiKey": "New API Key"
       },
       "validation": {
         "nameRequired": "Provider name is required.",
@@ -2237,25 +2308,6 @@
       "confirmDelete": "Delete provider \"{{name}}\"?",
       "deleteFailed": "Failed to delete provider: {{error}}",
       "deleteApiKeyFailed": "Failed to delete API Key: {{error}}",
-      "enableAsBackend": "Use as Codex Backend",
-      "enabling": "Enabling...",
-      "enableSuccess": "{{name}} enabled and {{instance}} started.",
-      "enableFailed": "Failed to enable provider: {{error}}",
-      "status": {
-        "active": "Current Backend",
-        "available": "Ready"
-      },
-      "enableMode": {
-        "label": "Connection Mode",
-        "gatewayMode": "Gateway Mode",
-        "directMode": "Direct Mode"
-      },
-      "wireApi": {
-        "help": "Use Responses for most providers. Switch to Chat Completions only when the provider explicitly supports only that protocol. If unsure, choose Responses first.",
-        "helpAria": "View protocol help",
-        "responses": "Responses Native",
-        "chatCompletions": "Chat Completions"
-      },
       "selectSavedProvider": "Saved Providers",
       "selectSavedApiKey": "Saved API Keys",
       "noSavedProviders": "No saved providers yet. You can fill in fields directly and it will be saved automatically.",
@@ -2313,97 +2365,6 @@
           "contextWindowInvalid": "Context window must be an integer greater than 0.",
           "autoCompactInvalid": "Auto-compact limit must be an integer greater than 0."
         }
-      },
-      "testing": "Testing...",
-      "testSuccess": "Provider connection is healthy: {{protocol}}, {{model}}, {{latency}}.",
-      "testFailed": "Failed to test provider: {{error}}",
-      "testFailure": {
-        "credential": "API Key unavailable",
-        "url": "Invalid Base URL",
-        "network": "Network connection failed",
-        "models": "Models endpoint failed",
-        "parse": "Response parse failed",
-        "httpStatus": "HTTP {{status}}",
-        "message": "{{title}}: {{detail}}. {{suggestion}}"
-      },
-      "testSuggestion": {
-        "addApiKey": "Add an API Key for this provider before testing.",
-        "checkBaseUrl": "Check that the Base URL includes the correct version path, such as /v1.",
-        "checkNetwork": "Check the provider URL, proxy, firewall, or upstream service status.",
-        "checkApiKey": "Check whether the API Key is valid and allowed to access the models endpoint.",
-        "checkProviderStatus": "Check the provider service status, proxy, or API compatibility.",
-        "checkModelsApi": "Confirm this provider returns an OpenAI-compatible models response."
-      },
-      "enableAndStart": "Start",
-      "instance": {
-        "label": "Launch Instance",
-        "default": "Default Instance",
-        "running": "Running",
-        "targetHint": "Target: {{instance}}",
-        "uninitializedHint": "Target instance is not initialized. Start it once from Multi-Instance first.",
-        "shortLabel": "Instance",
-        "saveFailed": "Failed to save instance binding: {{error}}"
-      },
-      "vision": {
-        "providerDefault": "This provider supports image input by default",
-        "providerDefaultHint": "When off, only the models listed below can receive image input; other models are rejected by the local gateway.",
-        "modelsHint": "One model per line. Use this when only some models in the provider support pasted images.",
-        "allModels": "Images",
-        "partialModels": "Some Images",
-        "textOnly": "Text Only"
-      },
-      "sponsorRecommended": "Sponsor Picks",
-      "builtinProviders": "Built-in Providers",
-      "sponsorHint": "The sponsor-recommended compatible service URL has been filled in. After you enter an API Key, the card will query balance and usage automatically.",
-      "integration": {
-        "sub2api": "Sub2API Compatible",
-        "newApi": "New API Compatible"
-      },
-      "usage": {
-        "title": "Quota Overview",
-        "remaining": "Remaining",
-        "today": "Today",
-        "total": "Total",
-        "requests": "Today Requests",
-        "loading": "Querying quota...",
-        "failed": "Quota query failed: {{error}}",
-        "pending": "Waiting to query quota",
-        "noKey": "No queryable quota",
-        "used": "Used",
-        "limit": "Limit",
-        "viewDetail": "Details",
-        "detailTitle": "Service Panel",
-        "rawFields": "Service Data",
-        "fields": {
-          "status": "Status",
-          "planName": "Plan",
-          "remaining": "Remaining",
-          "balance": "Balance",
-          "todayRequests": "Today Requests",
-          "todayTokens": "Today Tokens",
-          "todayCost": "Today Cost",
-          "totalRequests": "Total Requests",
-          "totalTokens": "Total Tokens",
-          "totalCost": "Total Cost",
-          "hardLimitUsd": "Hard Limit",
-          "softLimitUsd": "Soft Limit",
-          "systemHardLimitUsd": "System Limit",
-          "accessUntil": "Access Until",
-          "totalUsage": "Total Usage",
-          "quotaUnlimited": "Unlimited",
-          "expiresAt": "Expires At",
-          "totalGranted": "Granted",
-          "totalAvailable": "Available",
-          "modelLimitsEnabled": "Model Limits"
-        },
-        "accountBalance": "Account Balance",
-        "unlimitedQuota": "Unlimited",
-        "booleanTrue": "Yes",
-        "booleanFalse": "No"
-      },
-      "oauthBinding": {
-        "desc": "Optional. Any OAuth account with a refresh_token can be linked. Without a link, the provider continues to run with its original API-key flow.",
-        "currentProvider": "Provider: {{name}}"
       }
     },
     "quickSwitch": {
@@ -2448,6 +2409,10 @@
     },
     "quotaError": {
       "badge": "Quota error",
+      "limitBadge": "Quota limited",
+      "limitDetail": "Quota is exhausted: {{code}}",
+      "cooldownBadge": "Request cooldown",
+      "cooldownDetail": "Temporary upstream rate limit or model cooldown: {{code}}",
       "refreshFailedBadge": "Refresh failed",
       "generic": "Quota refresh failed, please try again later",
       "deactivatedWorkspace": "Workspace is deactivated, switch account or re-authorize",
@@ -2503,10 +2468,12 @@
       "subscriptionExpiry": "Subscription term",
       "custom": "Custom order",
       "customModalTitle": "Custom account order",
-      "customModalDesc": "Drag accounts or use the up and down buttons to adjust the display order.",
+      "customModalDesc": "Drag accounts or use top, up, down, and bottom buttons to adjust the display order.",
       "customDragHandle": "Drag to sort",
+      "customMoveTop": "Move to top",
       "customMoveUp": "Move up",
       "customMoveDown": "Move down",
+      "customMoveBottom": "Move to bottom",
       "customReset": "Reset custom order"
     },
     "opencodeSwitch": "OpenCode switch toggle",
@@ -2758,7 +2725,9 @@
       }
     },
     "groups": {
-      "addToGroup": "Add to Group"
+      "addToGroup": "Move into Group",
+      "reorder": "Reorder group",
+      "orderSaved": "Group order saved"
     },
     "speed": {
       "title": "Speed",
@@ -2926,10 +2895,6 @@
         "loading": "Loading request logs",
         "gatewayModeUnknown": "Unknown Mode"
       }
-    },
-    "apiKey": {
-      "renameSuccess": "Renamed",
-      "renameFailed": "Rename failed"
     }
   },
   "codebuddy": {
@@ -3681,6 +3646,7 @@
       "goAntigravity": "Go to Antigravity IDE",
       "goCodex": "Go to Codex",
       "goDashboard": "Go to Dashboard",
+      "goFingerprints": "Go to Device Fingerprints",
       "goGitHubCopilot": "Go to GitHub Copilot",
       "goInstances": "Go to Multi-Instance",
       "goKiro": "Go to Kiro",
@@ -3776,6 +3742,28 @@
       "desc": "Try different keywords, for example \"instance\", \"switch\", \"settings\", \"export\".",
       "title": "No matching content"
     },
+    "fingerprints": {
+      "cautions": {
+        "0": "Before deleting a fingerprint, check bound account count first to avoid affecting production accounts by mistake."
+      },
+      "keywords": {
+        "0": "fingerprint",
+        "1": "binding",
+        "2": "import",
+        "3": "capture"
+      },
+      "outcomes": {
+        "0": "Generate/capture new fingerprints and maintain metadata.",
+        "1": "View accounts bound to a fingerprint and add/remove bindings."
+      },
+      "steps": {
+        "0": "Create or import fingerprints first.",
+        "1": "Open details and confirm fingerprint info is correct.",
+        "2": "In binding management, bind accounts to target fingerprints."
+      },
+      "summary": "Manage fingerprint templates and account bindings. Supports generation, capture, import, and binding maintenance.",
+      "title": "Device Fingerprints"
+    },
     "instances": {
       "cautions": {
         "0": "Before copying from source instance, close the source first to avoid data inconsistency.",
@@ -3855,7 +3843,7 @@
     },
     "resultCount": "{{count}} sections total",
     "searchAria": "Search manual",
-    "searchPlaceholder": "Search feature, scenario, or keyword (for example: multi-instance, inject, wakeup)",
+    "searchPlaceholder": "Search feature, scenario, or keyword (for example: multi-instance, inject, wakeup, fingerprint)",
     "settings": {
       "cautions": {
         "0": "When path detection fails, manually selecting executable path is the safest option.",

@@ -99,29 +99,25 @@ fn load_account_index() -> WorkbuddyAccountIndex {
         Err(_) => return WorkbuddyAccountIndex::new(),
     };
     if !path.exists() {
-        return repair_account_index_from_details("索引文件不存在")
-            .unwrap_or_else(WorkbuddyAccountIndex::new);
+        return repair_account_index_from_details("索引文件不存在").unwrap_or_default();
     }
     match fs::read_to_string(&path) {
         Ok(content) if content.trim().is_empty() => {
-            repair_account_index_from_details("索引文件为空")
-                .unwrap_or_else(WorkbuddyAccountIndex::new)
+            repair_account_index_from_details("索引文件为空").unwrap_or_default()
         }
         Ok(content) => match crate::modules::atomic_write::parse_json_with_auto_restore::<
             WorkbuddyAccountIndex,
         >(&path, &content)
         {
             Ok(index) if !index.accounts.is_empty() => index,
-            Ok(_) => repair_account_index_from_details("索引账号列表为空")
-                .unwrap_or_else(WorkbuddyAccountIndex::new),
+            Ok(_) => repair_account_index_from_details("索引账号列表为空").unwrap_or_default(),
             Err(err) => {
                 logger::log_warn(&format!(
                     "[WorkBuddy Account] 账号索引解析失败，尝试按详情文件自动修复: path={}, error={}",
                     path.display(),
                     err
                 ));
-                repair_account_index_from_details("索引文件损坏")
-                    .unwrap_or_else(WorkbuddyAccountIndex::new)
+                repair_account_index_from_details("索引文件损坏").unwrap_or_default()
             }
         },
         Err(_) => WorkbuddyAccountIndex::new(),
@@ -190,7 +186,7 @@ fn repair_account_index_from_details(reason: &str) -> Option<WorkbuddyAccountInd
     let accounts_dir = get_accounts_dir().ok()?;
     let mut accounts = crate::modules::account_index_repair::load_accounts_from_details(
         &accounts_dir,
-        |account_id| load_account(account_id),
+        load_account,
     )
     .ok()?;
 

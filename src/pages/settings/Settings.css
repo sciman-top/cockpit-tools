@@ -113,10 +113,6 @@
   border-bottom: none;
 }
 
-.settings-row--no-border {
-  border-bottom: none;
-}
-
 .settings-row:hover {
   background: var(--bg-hover);
 }
@@ -333,6 +329,25 @@ input:checked + .slider:before {
   font-size: 13px;
   font-weight: 600;
   border: 1px solid var(--border);
+}
+
+.version-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.build-time-tag {
+  color: var(--text-muted);
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--border-light);
+  background: var(--bg-secondary);
+  white-space: nowrap;
 }
 
 .credits-list {
@@ -978,38 +993,5 @@ input:checked + .slider:before {
 
   .settings-transfer-modal-actions .btn {
     flex: 1;
-  }
-}
-
-/* WebDAV 备份专属：让备份列表容器中的卡片背景色保持和外层卡片一致（白色） */
-.settings-webdav-list-wrap .settings-backup-empty,
-.settings-webdav-list-wrap .settings-backup-item {
-  background: var(--bg-secondary);
-}
-
-.settings-webdav-chevron {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: transform 0.2s ease;
-  color: var(--text-secondary);
-}
-
-.settings-webdav-chevron.expanded {
-  transform: rotate(90deg);
-}
-
-.settings-webdav-list-wrap {
-  animation: settingsFadeIn 0.2s ease-out;
-}
-
-@keyframes settingsFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
   }
 }

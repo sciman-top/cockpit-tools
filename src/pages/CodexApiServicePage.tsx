@@ -35,7 +35,6 @@ import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import { useTranslation } from "react-i18next";
 import { CodexIcon } from "../components/icons/CodexIcon";
 import { ManualHelpIconButton } from "../components/ManualHelpIconButton";
-import { TopCenterPromoBanner } from "../components/TopCenterPromoBanner";
 import { PlatformGroupSwitcher } from "../components/platform/PlatformGroupSwitcher";
 import {
   findGroupByPlatform,
@@ -71,6 +70,8 @@ import type {
   CodexLocalAccessTimeouts,
   CodexLocalAccessUsageStats,
   CodexLocalAccessUsageEventPage,
+  CodexRuntimeIntegrationMode,
+  CodexRuntimeModeState,
 } from "../types/codexLocalAccess";
 import { buildCodexAccountPresentation } from "../presentation/platformAccountPresentation";
 import {
@@ -81,6 +82,8 @@ import { filterCodexLocalAccessAccountIds } from "../utils/codexLocalAccessAccou
 import { SingleSelectDropdown } from "../components/SingleSelectDropdown";
 import { CodexLocalAccessModal } from "../components/CodexLocalAccessModal";
 import { PaginationControls } from "../components/PaginationControls";
+import { runSettledWithConcurrency } from "../utils/asyncConcurrency";
+import { isCodexContinuityProtectionError } from "../utils/codexContinuityProtection";
 import "./CodexApiServicePage.css";
 
 type ServiceTab = "overview" | "keys" | "accounts" | "models" | "logs";
@@ -97,6 +100,8 @@ type RequestLogStatusFilter = "all" | "success" | "failed";
 type RequestLogGatewayModeFilter = "all" | CodexLocalAccessGatewayMode;
 type BuiltinTimeoutPresetId = "long_wait" | "short_wait";
 type TimeoutPresetId = BuiltinTimeoutPresetId | string;
+const EMPTY_CODEX_LOCAL_ACCESS_ACCOUNT_IDS: string[] = [];
+const CODEX_API_SERVICE_QUOTA_REFRESH_UI_CONCURRENCY = 5;
 
 interface ApiKeyPolicyDraft {
   modelPrefix: string;
@@ -218,13 +223,28 @@ function formatLatencyMs(value: number): string {
   return `${Math.round(value)}ms`;
 }
 
+let fallbackClientIdCounter = 0;
+
+function createClientId(prefix: string): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = new Uint32Array(2);
+    crypto.getRandomValues(bytes);
+    return `${prefix}-${Date.now()}-${Array.from(bytes, (value) => value.toString(36)).join("")}`;
+  }
+  fallbackClientIdCounter += 1;
+  return `${prefix}-${Date.now()}-${fallbackClientIdCounter.toString(36)}`;
+}
+
 function createTestChatMessage(
   role: TestChatMessage["role"],
   content: string,
   extra: Partial<Omit<TestChatMessage, "id" | "role" | "content">> = {},
 ): TestChatMessage {
   return {
-    id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: createClientId(role),
     role,
     content,
     ...extra,
@@ -514,6 +534,8 @@ export function CodexApiServicePage() {
   const { platformGroups } = usePlatformLayoutStore();
   const { accounts, fetchAccounts } = useCodexAccountStore();
   const [state, setState] = useState<CodexLocalAccessState | null>(null);
+  const [runtimeMode, setRuntimeMode] =
+    useState<CodexRuntimeModeState | null>(null);
   const [groups, setGroups] = useState<CodexAccountGroup[]>([]);
   const [activeTab, setActiveTab] = useState<ServiceTab>("overview");
   const [statsLogTab, setStatsLogTab] = useState<StatsLogTab>("logs");
@@ -636,17 +658,49 @@ export function CodexApiServicePage() {
       return stats[statsRange];
     }, [stats, statsRange]);
   const totals = selectedStatsWindow?.totals;
-  const memberIds = collection?.accountIds ?? [];
+  const memberIds =
+    collection?.accountIds ?? EMPTY_CODEX_LOCAL_ACCESS_ACCOUNT_IDS;
   const localAccessAccounts = useMemo(() => accounts, [accounts]);
+  const localAccessAccountById = useMemo(
+    () =>
+      new Map(
+        localAccessAccounts.map((account) => [account.id, account] as const),
+      ),
+    [localAccessAccounts],
+  );
   const memberAccounts = useMemo(
     () =>
       memberIds
-        .map((accountId) =>
-          localAccessAccounts.find((account) => account.id === accountId),
-        )
+        .map((accountId) => localAccessAccountById.get(accountId))
         .filter((account): account is CodexAccount => Boolean(account)),
-    [memberIds, localAccessAccounts],
+    [localAccessAccountById, memberIds],
   );
+  const memberAccountPresentations = useMemo(() => {
+    const next = new Map<
+      string,
+      ReturnType<typeof buildCodexAccountPresentation>
+    >();
+    memberAccounts.forEach((account) =>
+      next.set(account.id, buildCodexAccountPresentation(account, t)),
+    );
+    return next;
+  }, [memberAccounts, t]);
+  const resolveMemberAccountPresentation = useCallback(
+    (account: CodexAccount) =>
+      memberAccountPresentations.get(account.id) ??
+      buildCodexAccountPresentation(account, t),
+    [memberAccountPresentations, t],
+  );
+  const selectedStatsAccountById = useMemo(() => {
+    const next = new Map<
+      string,
+      CodexLocalAccessStatsWindow["accounts"][number]
+    >();
+    selectedStatsWindow?.accounts.forEach((item) =>
+      next.set(item.accountId, item),
+    );
+    return next;
+  }, [selectedStatsWindow?.accounts]);
   const accountModelRuleCount = collection?.accountModelRules.length ?? 0;
   const accountModelRuleAllSelected =
     memberAccounts.length > 0 &&
@@ -788,9 +842,13 @@ export function CodexApiServicePage() {
   );
 
   const reloadState = useCallback(async () => {
-    const nextState = await codexLocalAccessService.getCodexLocalAccessState();
+    const [nextState, nextRuntimeMode] = await Promise.all([
+      codexLocalAccessService.getCodexLocalAccessState(),
+      codexLocalAccessService.getCodexRuntimeMode(),
+    ]);
     if (!mountedRef.current) return nextState;
     setState(nextState);
+    setRuntimeMode(nextRuntimeMode);
     setPortInput(
       nextState.collection?.port ? String(nextState.collection.port) : "",
     );
@@ -1018,6 +1076,88 @@ export function CodexApiServicePage() {
     }
   };
 
+  const requestCodexContinuityForceSwitch = useCallback(async () => {
+    return await confirmDialog(
+      t(
+        "codex.localAccess.forceRuntimeSwitchConfirmMessage",
+        "刚才的运行模式切换被 Codex 连续性保护挡住。强制切换会立即替换 ~/.codex/config.toml / auth.json 的 Codex 投影，正在运行、恢复或流式输出的 Codex 任务可能失败。请确认没有运行中的任务后再继续。",
+      ),
+      {
+        title: t(
+          "codex.forceProjectionSwitchConfirmTitle",
+          "强制切换 Codex 投影？",
+        ),
+        kind: "warning",
+        okLabel: t("codex.forceProjectionSwitchAction", "强制切换"),
+        cancelLabel: t("common.cancel", "取消"),
+      },
+    );
+  }, [t]);
+
+  const setLocalAccessEnabledWithContinuityRetry = useCallback(
+    async (enabled: boolean, options?: { force?: boolean }) => {
+      try {
+        return enabled
+          ? await codexLocalAccessService.activateCodexLocalAccess(options)
+          : await (async () => {
+              await codexLocalAccessService.setCodexRuntimeMode(
+                "direct_projection",
+                options,
+              );
+              return await codexLocalAccessService.getCodexLocalAccessState();
+            })();
+      } catch (error) {
+        if (options?.force || !isCodexContinuityProtectionError(error)) {
+          throw error;
+        }
+        const confirmed = await requestCodexContinuityForceSwitch();
+        if (!confirmed) {
+          throw error;
+        }
+        return enabled
+          ? await codexLocalAccessService.activateCodexLocalAccess({
+              ...options,
+              force: true,
+            })
+          : await (async () => {
+              await codexLocalAccessService.setCodexRuntimeMode(
+                "direct_projection",
+                {
+                  ...options,
+                  force: true,
+                },
+              );
+              return await codexLocalAccessService.getCodexLocalAccessState();
+            })();
+      }
+    },
+    [requestCodexContinuityForceSwitch],
+  );
+
+  const setCodexRuntimeModeWithContinuityRetry = useCallback(
+    async (
+      mode: CodexRuntimeIntegrationMode,
+      options?: { force?: boolean },
+    ) => {
+      try {
+        return await codexLocalAccessService.setCodexRuntimeMode(mode, options);
+      } catch (error) {
+        if (options?.force || !isCodexContinuityProtectionError(error)) {
+          throw error;
+        }
+        const confirmed = await requestCodexContinuityForceSwitch();
+        if (!confirmed) {
+          throw error;
+        }
+        return await codexLocalAccessService.setCodexRuntimeMode(mode, {
+          ...options,
+          force: true,
+        });
+      }
+    },
+    [requestCodexContinuityForceSwitch],
+  );
+
   const handleCopy = async (field: CopyField, value: string) => {
     try {
       await navigator.clipboard.writeText(value);
@@ -1063,14 +1203,14 @@ export function CodexApiServicePage() {
     }
     await runAction(
       async () => {
-        const next = await codexLocalAccessService.setCodexLocalAccessEnabled(
+        const next = await setLocalAccessEnabledWithContinuityRetry(
           !collection.enabled,
         );
         setState(next);
       },
       collection.enabled
         ? t("codex.localAccess.disabledSuccess", "API 服务已停用")
-        : t("codex.localAccess.enabledSuccess", "API 服务已启用"),
+        : t("codex.localAccess.activateSuccess", "已切换到 API 服务"),
     );
   };
 
@@ -1113,9 +1253,7 @@ export function CodexApiServicePage() {
     setTestChatInput("");
     setTestDialogError("");
     setTestDialogRunning(true);
-    const sessionId = `api-service-test-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
+    const sessionId = createClientId("api-service-test");
     let unlisten: (() => void) | null = null;
     try {
       const apiMessages: CodexLocalAccessChatMessage[] = nextMessages
@@ -2038,7 +2176,7 @@ export function CodexApiServicePage() {
     }
     const now = Date.now();
     const preset: CodexLocalAccessTimeoutPreset = {
-      id: `custom_${crypto.randomUUID?.() ?? `${now}_${Math.random().toString(36).slice(2)}`}`,
+      id: createClientId("custom"),
       name,
       timeouts: payload,
       createdAt: now,
@@ -2398,7 +2536,6 @@ export function CodexApiServicePage() {
           </span>
           <ManualHelpIconButton className="platform-header-help" />
         </div>
-        <TopCenterPromoBanner />
         <div className="page-top-strip-right-placeholder" aria-hidden="true" />
       </div>
 
@@ -3062,14 +3199,10 @@ export function CodexApiServicePage() {
                   </div>
                 ) : (
                   memberAccounts.map((account) => {
-                    const presentation = buildCodexAccountPresentation(
-                      account,
-                      t,
-                    );
+                    const presentation =
+                      resolveMemberAccountPresentation(account);
                     const health = healthByAccountId.get(account.id);
-                    const stat = selectedStatsWindow?.accounts.find(
-                      (item) => item.accountId === account.id,
-                    );
+                    const stat = selectedStatsAccountById.get(account.id);
                     const disabledModelCount =
                       parseModelRuleText(
                         accountModelRuleDrafts[account.id] ?? "",
@@ -3460,14 +3593,10 @@ export function CodexApiServicePage() {
                   </div>
                 ) : (
                   memberAccounts.map((account) => {
-                    const presentation = buildCodexAccountPresentation(
-                      account,
-                      t,
-                    );
+                    const presentation =
+                      resolveMemberAccountPresentation(account);
                     const health = healthByAccountId.get(account.id);
-                    const stat = selectedStatsWindow?.accounts.find(
-                      (item) => item.accountId === account.id,
-                    );
+                    const stat = selectedStatsAccountById.get(account.id);
                     return (
                       <div
                         key={account.id}
@@ -3830,9 +3959,10 @@ export function CodexApiServicePage() {
                     );
                     setRequestLogPage(1);
                   }}
-                  onPreviousPage={() =>
-                    setRequestLogPage((page) => Math.max(1, page - 1))
+                  onPageChange={(page) =>
+                    setRequestLogPage(Math.min(requestLogTotalPages, Math.max(1, page)))
                   }
+                  onPreviousPage={() => setRequestLogPage((page) => Math.max(1, page - 1))}
                   onNextPage={() =>
                     setRequestLogPage((page) =>
                       Math.min(requestLogTotalPages, page + 1),
@@ -4494,10 +4624,8 @@ export function CodexApiServicePage() {
               </div>
               <div className="codex-api-service-pricing-table">
                 {memberAccounts.map((account) => {
-                  const presentation = buildCodexAccountPresentation(
-                    account,
-                    t,
-                  );
+                  const presentation =
+                    resolveMemberAccountPresentation(account);
                   return (
                     <div
                       key={account.id}
@@ -4899,6 +5027,7 @@ export function CodexApiServicePage() {
         isOpen={memberModalOpen}
         mode="members"
         state={state}
+        runtimeMode={runtimeMode}
         addressKind={addressKind}
         addressOptions={[
           {
@@ -4925,19 +5054,41 @@ export function CodexApiServicePage() {
         onSaveAccounts={({ accountIds, restrictFreeAccounts }) =>
           handleSaveMembersFromModal(accountIds, restrictFreeAccounts)
         }
-        onClearStats={() =>
-          codexLocalAccessService.clearCodexLocalAccessStats().then(setState)
-        }
+        onClearStats={() => codexLocalAccessService.clearCodexLocalAccessStats().then(setState)}
+        onRefreshAccounts={async (accountIds) => {
+          const results = await runSettledWithConcurrency(
+            accountIds,
+            CODEX_API_SERVICE_QUOTA_REFRESH_UI_CONCURRENCY,
+            async (accountId) => {
+              await codexService.refreshCodexQuota(accountId);
+            },
+          );
+          await fetchAccounts({ silent: true, hydrateProfiles: false });
+          return {
+            successCount: results.filter((result) => result.status === 'fulfilled').length,
+            total: accountIds.length,
+          };
+        }}
         onRefreshStats={reloadState}
-        onUpdatePort={(port) =>
-          codexLocalAccessService
-            .updateCodexLocalAccessPort(port)
-            .then(setState)
+        onRecoverHealth={(accountId, model) =>
+          codexLocalAccessService.recoverCodexLocalAccessHealth(accountId, model).then(setState)
         }
+        onPauseHealth={(accountId) =>
+          codexLocalAccessService.pauseCodexLocalAccessHealth(accountId).then(setState)
+        }
+        onUpdatePort={(port) => codexLocalAccessService.updateCodexLocalAccessPort(port).then(setState)}
         onUpdateRoutingStrategy={(strategy) =>
           codexLocalAccessService
             .updateCodexLocalAccessRoutingStrategy(strategy)
             .then(setState)
+        }
+        onApplySafetyPreset={(preset) =>
+          codexLocalAccessService.applyCodexLocalAccessSafetyPreset(preset).then(setState)
+        }
+        onSetRuntimeMode={(mode, options) =>
+          setCodexRuntimeModeWithContinuityRetry(mode, options).then(() =>
+            reloadState(),
+          )
         }
         onUpdateCustomRouting={(rules: CodexLocalAccessCustomRoutingRule[]) =>
           codexLocalAccessService
@@ -4971,7 +5122,9 @@ export function CodexApiServicePage() {
             messages,
           )
         }
+        onTest={codexLocalAccessService.testCodexLocalAccess}
         saving={busy}
+        refreshing={false}
         testing={testDialogRunning}
         starting={false}
         portCleanupBusy={portKilling}

@@ -33,9 +33,14 @@ import {
 } from '../utils/featureUnlocks';
 import {
   buildDefaultCurrentAccountRefreshMinutesMap,
+  CURRENT_ACCOUNT_REFRESH_PRESET_MINUTES,
+  DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,
+  MAX_CURRENT_ACCOUNT_REFRESH_MINUTES,
+  MIN_CURRENT_ACCOUNT_REFRESH_MINUTES,
   type CurrentAccountRefreshMinutesMap,
   type CurrentAccountRefreshPlatform,
   loadCurrentAccountRefreshMinutesMap,
+  sanitizeCurrentAccountRefreshMinutes,
   saveCurrentAccountRefreshMinutesMap,
 } from '../utils/currentAccountRefresh';
 import type { Account } from '../types/account';
@@ -47,6 +52,7 @@ import {
   resolveAccountsOverviewScopeFromQuickSettingsType,
   setAccountsOverviewFilterPersistenceEnabled,
 } from '../utils/accountsOverviewFilterPersistence';
+import { sortCodexLocalAccessAccountsForScheduling } from '../utils/codexAccountSort';
 import './QuickSettingsPopover.css';
 
 /** GeneralConfig from backend */
@@ -194,7 +200,7 @@ interface QuickSettingsPopoverProps {
 
 const AUTO_SWITCH_SCOPE_ALL_ACCOUNTS: AutoSwitchAccountScopeMode = 'all_accounts';
 const AUTO_SWITCH_SCOPE_SELECTED_ACCOUNTS: AutoSwitchAccountScopeMode = 'selected_accounts';
-const CURRENT_ACCOUNT_REFRESH_PRESETS = ['1', '2', '5', '10', '15'];
+const CURRENT_ACCOUNT_REFRESH_PRESETS = CURRENT_ACCOUNT_REFRESH_PRESET_MINUTES.map(String);
 const DEFAULT_AUTO_COMPACT_TOKEN_LIMIT = 900000;
 const CONTEXT_WINDOW_516K = 516000;
 const AUTO_COMPACT_TOKEN_LIMIT_516K = 460000;
@@ -340,6 +346,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   const [antigravityAccounts, setAntigravityAccounts] = useState<Account[]>([]);
   const [antigravityAccountGroups, setAntigravityAccountGroups] = useState<AccountGroup[]>([]);
   const [codexAccounts, setCodexAccounts] = useState<CodexAccount[]>([]);
+  const [codexCurrentAccountId, setCodexCurrentAccountId] = useState<string | null>(null);
   const [codexAccountGroups, setCodexAccountGroups] = useState<CodexAccountGroup[]>([]);
   const [codexShowCodeReviewQuota, setCodexShowCodeReviewQuota] = useState(
     isCodexCodeReviewQuotaVisibleByDefault,
@@ -388,13 +395,15 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   );
   const codexScopeAccounts = useMemo<AutoSwitchScopeAccount[]>(
     () =>
-      codexAccounts.map((account) => ({
-        id: account.id,
-        label: account.email,
-        searchableText: account.email,
-        tags: account.tags || [],
-      })),
-    [codexAccounts],
+      sortCodexLocalAccessAccountsForScheduling(codexAccounts, codexCurrentAccountId).map(
+        (account) => ({
+          id: account.id,
+          label: account.email,
+          searchableText: account.email,
+          tags: account.tags || [],
+        }),
+      ),
+    [codexAccounts, codexCurrentAccountId],
   );
   const codexScopeGroups = useMemo(
     () =>
@@ -736,8 +745,22 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
           ? Promise.all([
               codexService.listCodexAccounts(),
               getCodexAccountGroups(),
-            ]).catch(() => [[] as CodexAccount[], [] as CodexAccountGroup[]] as const)
-          : Promise.resolve([[] as CodexAccount[], [] as CodexAccountGroup[]] as const);
+              codexService.getCurrentCodexAccount(),
+            ]).catch(
+              () =>
+                [
+                  [] as CodexAccount[],
+                  [] as CodexAccountGroup[],
+                  null as CodexAccount | null,
+                ] as const,
+            )
+          : Promise.resolve(
+              [
+                [] as CodexAccount[],
+                [] as CodexAccountGroup[],
+                null as CodexAccount | null,
+              ] as const,
+            );
 
       const [cfg, groups, antigravityScopeData, codexScopeData] = await Promise.all([
         invoke<GeneralConfig>('get_general_config'),
@@ -746,12 +769,13 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         codexScopeDataPromise,
       ]);
       const [nextAntigravityAccounts, nextAntigravityGroups] = antigravityScopeData;
-      const [nextCodexAccounts, nextCodexGroups] = codexScopeData;
+      const [nextCodexAccounts, nextCodexGroups, nextCodexCurrentAccount] = codexScopeData;
       setConfig(cfg);
       setAutoSwitchDisplayGroups(groups);
       setAntigravityAccounts(nextAntigravityAccounts || []);
       setAntigravityAccountGroups(nextAntigravityGroups || []);
       setCodexAccounts(nextCodexAccounts || []);
+      setCodexCurrentAccountId(nextCodexCurrentAccount?.id ?? null);
       setCodexAccountGroups(nextCodexGroups || []);
       // 非预设值通过下拉中的动态选项展示，不默认进入输入态
       setRefreshEditing(false);
@@ -1290,7 +1314,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   const isPreset = refreshPresets.includes(String(refreshValue));
   const showRefreshInput = refreshEditing;
   const currentAccountRefreshPlatform = getCurrentAccountRefreshPlatformForType(type);
-  const currentAccountRefreshValue = currentAccountRefreshMap[currentAccountRefreshPlatform] ?? 1;
+  const currentAccountRefreshValue =
+    currentAccountRefreshMap[currentAccountRefreshPlatform] ?? DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES;
   const isCurrentAccountRefreshAllowed = refreshValue > 0;
   const currentAccountRefreshDisplayValue = isCurrentAccountRefreshAllowed
     ? String(currentAccountRefreshValue)
@@ -1384,13 +1409,15 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       return;
     }
     if (value === 'custom') {
-      setCurrentAccountCustomRefresh(String(currentAccountRefreshValue || 1));
+      setCurrentAccountCustomRefresh(
+        String(currentAccountRefreshValue || DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES),
+      );
       setCurrentAccountRefreshEditing(true);
       return;
     }
     const parsed = parseInt(value, 10);
-    if (!isNaN(parsed) && parsed >= 1) {
-      saveCurrentAccountRefresh(parsed);
+    if (!isNaN(parsed)) {
+      saveCurrentAccountRefresh(sanitizeCurrentAccountRefreshMinutes(parsed));
     }
     setCurrentAccountCustomRefresh('');
     setCurrentAccountRefreshEditing(false);
@@ -1403,8 +1430,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       return;
     }
     const parsed = parseInt(currentAccountCustomRefresh, 10);
-    if (!isNaN(parsed) && parsed >= 1) {
-      saveCurrentAccountRefresh(parsed);
+    if (!isNaN(parsed)) {
+      saveCurrentAccountRefresh(sanitizeCurrentAccountRefreshMinutes(parsed));
       setCurrentAccountCustomRefresh('');
       setCurrentAccountRefreshEditing(false);
       return;
@@ -1873,8 +1900,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                   <div className="qs-inline-input">
                     <input
                       type="number"
-                      min={1}
-                      max={999}
+                      min={MIN_CURRENT_ACCOUNT_REFRESH_MINUTES}
+                      max={MAX_CURRENT_ACCOUNT_REFRESH_MINUTES}
                       className="qs-select qs-select--input-mode qs-select--with-unit"
                       value={currentAccountCustomRefresh}
                       placeholder={t('quickSettings.inputMinutes', '输入分钟数')}
@@ -1906,11 +1933,11 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                         {currentAccountRefreshValue} {t('settings.general.minutes')}
                       </option>
                     )}
-                    <option value="1">1 {t('settings.general.minutes')}</option>
-                    <option value="2">2 {t('settings.general.minutes')}</option>
-                    <option value="5">5 {t('settings.general.minutes')}</option>
-                    <option value="10">10 {t('settings.general.minutes')}</option>
-                    <option value="15">15 {t('settings.general.minutes')}</option>
+                    {CURRENT_ACCOUNT_REFRESH_PRESET_MINUTES.map((minutes) => (
+                      <option key={minutes} value={String(minutes)}>
+                        {minutes} {t('settings.general.minutes')}
+                      </option>
+                    ))}
                     <option value="custom">{t('quickSettings.customInput', '自定义')}</option>
                   </select>
                 )}

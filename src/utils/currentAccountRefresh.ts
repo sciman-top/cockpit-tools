@@ -1,7 +1,10 @@
+import { loadJsonFromLocalStorage } from './storageJson';
+
 export const CURRENT_ACCOUNT_REFRESH_STORAGE_KEY = 'agtools.current_account_refresh_minutes.v1';
-export const DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES = 1;
-export const MIN_CURRENT_ACCOUNT_REFRESH_MINUTES = 1;
+export const DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES = 30;
+export const MIN_CURRENT_ACCOUNT_REFRESH_MINUTES = 30;
 export const MAX_CURRENT_ACCOUNT_REFRESH_MINUTES = 999;
+export const CURRENT_ACCOUNT_REFRESH_PRESET_MINUTES = [30, 60, 120] as const;
 
 export type CurrentAccountRefreshPlatform =
   | 'antigravity'
@@ -85,16 +88,13 @@ function normalizeCurrentAccountRefreshMinutesMap(
 }
 
 export function loadCurrentAccountRefreshMinutesMap(): CurrentAccountRefreshMinutesMap {
-  try {
-    const raw = localStorage.getItem(CURRENT_ACCOUNT_REFRESH_STORAGE_KEY);
-    if (!raw) {
-      return buildDefaultCurrentAccountRefreshMinutesMap();
-    }
-    const parsed = JSON.parse(raw) as Partial<Record<CurrentAccountRefreshPlatform, unknown>>;
-    return normalizeCurrentAccountRefreshMinutesMap(parsed);
-  } catch {
+  const parsed = loadJsonFromLocalStorage<Partial<Record<CurrentAccountRefreshPlatform, unknown>>>(
+    CURRENT_ACCOUNT_REFRESH_STORAGE_KEY,
+  );
+  if (!parsed) {
     return buildDefaultCurrentAccountRefreshMinutesMap();
   }
+  return normalizeCurrentAccountRefreshMinutesMap(parsed);
 }
 
 export function saveCurrentAccountRefreshMinutesMap(
@@ -114,15 +114,7 @@ export const ACCOUNT_REFRESH_OVERRIDES_KEY = 'agtools.account_refresh_overrides.
 export type AccountRefreshOverrides = Partial<Record<CurrentAccountRefreshPlatform, Record<string, number>>>;
 
 export function loadAccountRefreshOverrides(): AccountRefreshOverrides {
-  try {
-    const raw = localStorage.getItem(ACCOUNT_REFRESH_OVERRIDES_KEY);
-    if (!raw) {
-      return {};
-    }
-    return JSON.parse(raw) as AccountRefreshOverrides;
-  } catch {
-    return {};
-  }
+  return loadJsonFromLocalStorage<AccountRefreshOverrides>(ACCOUNT_REFRESH_OVERRIDES_KEY) ?? {};
 }
 
 export function saveAccountRefreshOverrides(overrides: AccountRefreshOverrides): void {

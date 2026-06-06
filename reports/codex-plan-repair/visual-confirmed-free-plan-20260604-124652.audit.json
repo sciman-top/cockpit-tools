@@ -1,0 +1,39 @@
+{
+  "generatedAt": "2026-06-04T12:46:53.043Z",
+  "htmlPath": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\codex-plan-repair\\visual-confirmed-free-plan-20260604-124652.html",
+  "accounts": [
+    {
+      "id": "codex_d5918a432f646d7a4f7070307400cc61",
+      "email": "sciman.phys@gmail.com",
+      "rawPlanType": "plus",
+      "rawQuotaPlanType": "free",
+      "expiredSubscription": "2026-05-20T13:10:43+08:00",
+      "planLabel": "FREE",
+      "planClass": "free",
+      "subscriptionValueText": "FREE",
+      "subscriptionTone": "active",
+      "subscriptionRefreshable": false,
+      "quotaText": [
+        "5 Week:95%"
+      ]
+    },
+    {
+      "id": "codex_c641df4d56baceca12b3ffcd597061b3",
+      "email": "ai.sciman.top@gmail.com",
+      "rawPlanType": "plus",
+      "rawQuotaPlanType": "free",
+      "expiredSubscription": "2026-05-11T11:33:11+08:00",
+      "planLabel": "FREE",
+      "planClass": "free",
+      "subscriptionValueText": "FREE",
+      "subscriptionTone": "active",
+      "subscriptionRefreshable": false,
+      "quotaText": [
+        "5 Week:95%"
+      ]
+    }
+  ],
+  "bodyIncludesPlus": false,
+  "bodyIncludesFree": true,
+  "failedPlusMarkers": []
+}

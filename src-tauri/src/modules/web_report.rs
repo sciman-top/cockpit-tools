@@ -4,6 +4,7 @@
 use crate::models::codebuddy::CodebuddyAccount;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -17,7 +18,6 @@ use crate::models::zed::ZedAccount;
 
 const MAX_HTTP_REQUEST_BYTES: usize = 32 * 1024;
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
-const AUTH_REFRESH_STALE_THRESHOLD_SECONDS: i64 = 10 * 60;
 const NEXT_AUTH_REFRESH_TRIGGER_LABEL: &str =
     "Next AuthRefresh trigger time (only trigger if access to this page )";
 
@@ -57,6 +57,7 @@ struct ReportRefreshState {
     data_collected_at: Option<chrono::DateTime<chrono::Utc>>,
     last_auth_trigger_at: Option<chrono::DateTime<chrono::Utc>>,
     last_auth_trigger_note: Option<String>,
+    service_refresh_at: HashMap<&'static str, chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -140,16 +141,58 @@ fn build_service_refresh_policies(cfg: &super::config::UserConfig) -> Vec<Servic
     ]
 }
 
-fn needs_auth_refresh_trigger(now: chrono::DateTime<chrono::Utc>) -> bool {
+fn service_refresh_delay_seconds(
+    policy: ServiceRefreshPolicy,
+    state: &ReportRefreshState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<i64> {
+    if policy.interval_minutes <= 0 {
+        return None;
+    }
+
+    let Some(last_refresh_at) = state
+        .service_refresh_at
+        .get(policy.key)
+        .copied()
+        .or(state.data_collected_at)
+    else {
+        return Some(0);
+    };
+
+    let next_refresh_at =
+        last_refresh_at + chrono::Duration::minutes(i64::from(policy.interval_minutes));
+    Some(
+        next_refresh_at
+            .signed_duration_since(now)
+            .num_seconds()
+            .max(0),
+    )
+}
+
+fn service_refresh_due(
+    policy: ServiceRefreshPolicy,
+    state: &ReportRefreshState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    service_refresh_delay_seconds(policy, state, now) == Some(0)
+}
+
+fn build_due_service_refresh_policies(
+    cfg: &super::config::UserConfig,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<ServiceRefreshPolicy> {
+    let policies = build_service_refresh_policies(cfg);
     let Ok(state) = report_refresh_state().read() else {
-        return true;
+        return policies
+            .into_iter()
+            .filter(|policy| policy.interval_minutes > 0)
+            .collect();
     };
 
-    let Some(collected_at) = state.data_collected_at else {
-        return true;
-    };
-
-    now.signed_duration_since(collected_at).num_seconds() > AUTH_REFRESH_STALE_THRESHOLD_SECONDS
+    policies
+        .into_iter()
+        .filter(|policy| service_refresh_due(*policy, &state, now))
+        .collect()
 }
 
 async fn run_refresh_for_service(policy: ServiceRefreshPolicy) -> Result<(), String> {
@@ -190,27 +233,28 @@ async fn run_refresh_for_service(policy: ServiceRefreshPolicy) -> Result<(), Str
 
 async fn maybe_trigger_auth_refresh_check() {
     let now = chrono::Utc::now();
-    if !needs_auth_refresh_trigger(now) {
+    let cfg = super::config::get_user_config();
+    let due_services = build_due_service_refresh_policies(&cfg, now);
+    if due_services.is_empty() {
         return;
     }
 
     let _lock = report_refresh_lock().lock().await;
     let check_started_at = chrono::Utc::now();
-    if !needs_auth_refresh_trigger(check_started_at) {
+    let due_services = build_due_service_refresh_policies(&cfg, check_started_at);
+    if due_services.is_empty() {
         return;
     }
-
-    let cfg = super::config::get_user_config();
-    let due_services = build_service_refresh_policies(&cfg)
-        .into_iter()
-        .filter(|policy| policy.interval_minutes > 0)
-        .collect::<Vec<_>>();
 
     if let Ok(mut state) = report_refresh_state().write() {
         state.last_auth_trigger_at = Some(check_started_at);
         state.last_auth_trigger_note = None;
     }
 
+    let attempted_services = due_services
+        .iter()
+        .map(|policy| policy.key)
+        .collect::<Vec<_>>();
     let mut failed_services: Vec<&'static str> = Vec::new();
     for policy in due_services {
         match run_refresh_for_service(policy).await {
@@ -240,6 +284,9 @@ async fn maybe_trigger_auth_refresh_check() {
     let finished_at = chrono::Utc::now();
     if let Ok(mut state) = report_refresh_state().write() {
         state.data_collected_at = Some(finished_at);
+        for service in attempted_services {
+            state.service_refresh_at.insert(service, finished_at);
+        }
         state.last_auth_trigger_note = failure_note;
     }
 }
@@ -251,8 +298,21 @@ fn format_elapsed_hours_minutes(seconds: i64) -> String {
     format!("{}h{}m", hours, minutes)
 }
 
-fn format_next_auth_refresh_trigger_time(delayed_seconds: i64) -> String {
-    let remaining = AUTH_REFRESH_STALE_THRESHOLD_SECONDS - delayed_seconds.max(0);
+fn format_next_auth_refresh_trigger_time(generated_at: chrono::DateTime<chrono::Utc>) -> String {
+    let cfg = super::config::get_user_config();
+    let policies = build_service_refresh_policies(&cfg);
+    let Ok(state) = report_refresh_state().read() else {
+        return "0m".to_string();
+    };
+
+    let Some(remaining) = policies
+        .into_iter()
+        .filter_map(|policy| service_refresh_delay_seconds(policy, &state, generated_at))
+        .min()
+    else {
+        return "disabled".to_string();
+    };
+
     if remaining <= 0 {
         return "0m".to_string();
     }
@@ -278,7 +338,7 @@ fn build_report_meta(generated_at: chrono::DateTime<chrono::Utc>) -> ReportMeta 
             .as_ref()
             .and_then(|guard| guard.last_auth_trigger_note.clone()),
         data_delayed: format_elapsed_hours_minutes(delayed_seconds),
-        next_auth_refresh_trigger_time: format_next_auth_refresh_trigger_time(delayed_seconds),
+        next_auth_refresh_trigger_time: format_next_auth_refresh_trigger_time(generated_at),
     }
 }
 
@@ -503,7 +563,7 @@ async fn write_response(
         "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         status,
         content_type,
-        body.as_bytes().len()
+        body.len()
     );
     stream
         .write_all(header.as_bytes())
@@ -809,7 +869,7 @@ fn append_windsurf_rows(rows: &mut Vec<ReportRow>) {
         if let Some(snapshots) = account.copilot_quota_snapshots.as_ref() {
             pushed = append_copilot_snapshot_rows(
                 rows,
-                "Devin",
+                "Windsurf",
                 &account_name,
                 snapshots,
                 &reset,
@@ -831,7 +891,7 @@ fn append_windsurf_rows(rows: &mut Vec<ReportRow>) {
 
         if pushed == 0 {
             rows.push(make_row(
-                "Devin",
+                "Windsurf",
                 &account_name,
                 "Quota",
                 "-",
@@ -954,7 +1014,7 @@ fn append_windsurf_plan_status_candidate_rows(
             status,
         );
         rows.push(make_row(
-            "Devin",
+            "Windsurf",
             account,
             "Extra usage balance",
             "-",
@@ -1081,7 +1141,7 @@ fn push_windsurf_quota_percent_row(
     };
 
     rows.push(make_row(
-        "Devin",
+        "Windsurf",
         account,
         metric,
         &percent_text(used),
@@ -1114,7 +1174,7 @@ fn push_windsurf_credit_row(
         let remaining = (total - used_normalized).max(0.0);
         let used_percent = clamp_percent((used_normalized / total) * 100.0);
         rows.push(make_row(
-            "Devin",
+            "Windsurf",
             account,
             metric,
             &format!(
@@ -1130,7 +1190,7 @@ fn push_windsurf_credit_row(
         ));
     } else {
         rows.push(make_row(
-            "Devin",
+            "Windsurf",
             account,
             metric,
             "-",
@@ -2593,4 +2653,73 @@ fn yaml_quote(value: &str) -> String {
             .replace('"', "\\\"")
             .replace('\n', "\\n")
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn service_refresh_due_respects_disabled_policy() {
+        let now = chrono::Utc::now();
+        let state = ReportRefreshState::default();
+        let policy = ServiceRefreshPolicy {
+            key: "codex",
+            interval_minutes: -1,
+        };
+
+        assert_eq!(service_refresh_delay_seconds(policy, &state, now), None);
+        assert!(!service_refresh_due(policy, &state, now));
+    }
+
+    #[test]
+    fn service_refresh_due_when_service_has_no_prior_refresh() {
+        let now = chrono::Utc::now();
+        let state = ReportRefreshState::default();
+        let policy = ServiceRefreshPolicy {
+            key: "codex",
+            interval_minutes: 30,
+        };
+
+        assert_eq!(service_refresh_delay_seconds(policy, &state, now), Some(0));
+        assert!(service_refresh_due(policy, &state, now));
+    }
+
+    #[test]
+    fn service_refresh_due_uses_per_service_interval() {
+        let now = chrono::Utc::now();
+        let policy = ServiceRefreshPolicy {
+            key: "codex",
+            interval_minutes: 30,
+        };
+        let mut state = ReportRefreshState::default();
+
+        state
+            .service_refresh_at
+            .insert("codex", now - chrono::Duration::minutes(10));
+        assert!(!service_refresh_due(policy, &state, now));
+
+        state
+            .service_refresh_at
+            .insert("codex", now - chrono::Duration::minutes(31));
+        assert!(service_refresh_due(policy, &state, now));
+    }
+
+    #[test]
+    fn service_refresh_due_falls_back_to_global_collected_at() {
+        let now = chrono::Utc::now();
+        let policy = ServiceRefreshPolicy {
+            key: "codex",
+            interval_minutes: 30,
+        };
+        let mut state = ReportRefreshState {
+            data_collected_at: Some(now - chrono::Duration::minutes(5)),
+            ..ReportRefreshState::default()
+        };
+
+        assert!(!service_refresh_due(policy, &state, now));
+
+        state.data_collected_at = Some(now - chrono::Duration::minutes(40));
+        assert!(service_refresh_due(policy, &state, now));
+    }
 }

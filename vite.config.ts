@@ -3,11 +3,17 @@ import react from "@vitejs/plugin-react";
 
 // @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+// @ts-expect-error process is a nodejs global
+const appVersion = process.env.npm_package_version || "0.0.0";
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [react()],
   base: "./",
+  define: {
+    __APP_BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   build: {
     rollupOptions: {
       output: {

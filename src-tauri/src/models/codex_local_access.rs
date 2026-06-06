@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexLocalAccessRoutingStrategy {
+    #[default]
     Auto,
     QuotaHighFirst,
     QuotaLowFirst,
@@ -12,10 +14,44 @@ pub enum CodexLocalAccessRoutingStrategy {
     Custom,
 }
 
-impl Default for CodexLocalAccessRoutingStrategy {
-    fn default() -> Self {
-        Self::Auto
-    }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexLocalApiSafetyPresetId {
+    MaximumSafety,
+    BalancedSelfUse,
+    QuotaDrainCareful,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexRuntimeIntegrationMode {
+    #[default]
+    DirectProjection,
+    #[serde(alias = "gateway_litellm")]
+    CockpitApiService,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexRuntimeAccountKind {
+    #[serde(rename = "oauth", alias = "o_auth")]
+    OAuth,
+    Api,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexRuntimeModeState {
+    #[serde(default)]
+    pub mode: CodexRuntimeIntegrationMode,
+    #[serde(default)]
+    pub account_kind: CodexRuntimeAccountKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_account_id: Option<String>,
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -25,75 +61,50 @@ pub enum CodexLocalAccessScope {
     Lan,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub enum CodexLocalAccessClientBaseUrlHost {
     #[serde(rename = "localhost")]
+    #[default]
     Localhost,
     #[serde(rename = "127.0.0.1")]
     Ipv4Loopback,
 }
 
-impl Default for CodexLocalAccessClientBaseUrlHost {
-    fn default() -> Self {
-        Self::Localhost
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexLocalAccessImageGenerationMode {
+    #[default]
     Enabled,
     ImagesOnly,
     Disabled,
 }
 
-impl Default for CodexLocalAccessImageGenerationMode {
-    fn default() -> Self {
-        Self::Enabled
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexLocalAccessGatewayMode {
+    #[default]
     Legacy,
     Sidecar,
 }
 
-impl Default for CodexLocalAccessGatewayMode {
-    fn default() -> Self {
-        Self::Sidecar
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexLocalAccessRequestKind {
     Text,
     ImageGeneration,
     ImageEdit,
+    #[default]
     Other,
 }
 
-impl Default for CodexLocalAccessRequestKind {
-    fn default() -> Self {
-        Self::Other
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexLocalAccessImageGenerationStatus {
+    #[default]
     Unknown,
     Available,
     Unavailable,
     Disabled,
-}
-
-impl Default for CodexLocalAccessImageGenerationStatus {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 fn default_access_scope_for_existing_config() -> CodexLocalAccessScope {
@@ -101,7 +112,136 @@ fn default_access_scope_for_existing_config() -> CodexLocalAccessScope {
 }
 
 fn default_restrict_free_accounts() -> bool {
+    false
+}
+
+fn default_follow_current_account() -> bool {
+    false
+}
+
+pub const CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION: u32 = 1;
+pub const CODEX_LOCAL_API_DEFAULT_MAX_CONCURRENT_REQUESTS: u32 = 1;
+pub const CODEX_LOCAL_API_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS: u64 = 20;
+pub const CODEX_LOCAL_API_DEFAULT_MAX_QUEUE_WAIT_SECONDS: u64 = 21;
+pub const CODEX_LOCAL_API_DEFAULT_REQUEST_TIMEOUT_SECONDS: u64 = 600;
+pub const CODEX_LOCAL_API_DEFAULT_MAX_REQUEST_BODY_MB: u32 = 64;
+pub const CODEX_LOCAL_API_DEFAULT_MAX_RETRIES: u32 = 1;
+pub const CODEX_LOCAL_API_DEFAULT_MAX_RETRY_ACCOUNTS: u32 = 2;
+pub const CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexLocalApiFallbackMode {
+    #[default]
+    Disabled,
+    NextRequestOnly,
+    #[serde(other)]
+    Unknown,
+}
+
+impl CodexLocalApiFallbackMode {
+    #[cfg(test)]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::NextRequestOnly => "next_request_only",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalApiLoggingConfig {
+    #[serde(default = "default_true")]
+    pub redact_sensitive_values: bool,
+    #[serde(default = "default_true")]
+    pub include_request_id: bool,
+    #[serde(default = "default_true")]
+    pub include_account_hash: bool,
+    #[serde(default = "default_true")]
+    pub include_route: bool,
+    #[serde(default = "default_true")]
+    pub include_model: bool,
+    #[serde(default = "default_true")]
+    pub include_latency: bool,
+    #[serde(default)]
+    pub include_prompt_response: bool,
+    #[serde(default)]
+    pub include_raw_upstream_body: bool,
+}
+
+impl Default for CodexLocalApiLoggingConfig {
+    fn default() -> Self {
+        Self {
+            redact_sensitive_values: true,
+            include_request_id: true,
+            include_account_hash: true,
+            include_route: true,
+            include_model: true,
+            include_latency: true,
+            include_prompt_response: false,
+            include_raw_upstream_body: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalApiSafetyConfig {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default = "default_true")]
+    pub hardened_local_mode: bool,
+    #[serde(default)]
+    pub max_concurrent_requests: u32,
+    #[serde(default)]
+    pub min_request_interval_seconds: u64,
+    #[serde(default)]
+    pub max_queue_wait_seconds: u64,
+    #[serde(default)]
+    pub request_timeout_seconds: u64,
+    #[serde(default)]
+    pub max_request_body_mb: u32,
+    #[serde(default)]
+    pub max_retries: u32,
+    #[serde(default)]
+    pub max_retry_accounts: u32,
+    #[serde(default)]
+    pub fallback_mode: CodexLocalApiFallbackMode,
+    #[serde(default)]
+    pub logging: CodexLocalApiLoggingConfig,
+}
+
+impl CodexLocalApiSafetyConfig {
+    pub fn missing() -> Self {
+        Self {
+            schema_version: 0,
+            ..Self::default()
+        }
+    }
+}
+
+impl Default for CodexLocalApiSafetyConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
+            hardened_local_mode: true,
+            max_concurrent_requests: CODEX_LOCAL_API_DEFAULT_MAX_CONCURRENT_REQUESTS,
+            min_request_interval_seconds: CODEX_LOCAL_API_DEFAULT_MIN_REQUEST_INTERVAL_SECONDS,
+            max_queue_wait_seconds: CODEX_LOCAL_API_DEFAULT_MAX_QUEUE_WAIT_SECONDS,
+            request_timeout_seconds: CODEX_LOCAL_API_DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            max_request_body_mb: CODEX_LOCAL_API_DEFAULT_MAX_REQUEST_BODY_MB,
+            max_retries: CODEX_LOCAL_API_DEFAULT_MAX_RETRIES,
+            max_retry_accounts: CODEX_LOCAL_API_DEFAULT_MAX_RETRY_ACCOUNTS,
+            fallback_mode: CodexLocalApiFallbackMode::default(),
+            logging: CodexLocalApiLoggingConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -340,38 +480,10 @@ pub struct CodexLocalAccessTimeoutPreset {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CodexLocalAccessProviderGatewayModelCapability {
-    #[serde(default)]
-    pub supports_vision: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexLocalAccessProviderGateway {
-    pub base_url: String,
-    pub api_key: String,
-    pub upstream_model: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub upstream_models: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wire_api: Option<String>,
-    #[serde(default)]
-    pub supports_vision: bool,
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub model_capabilities:
-        std::collections::HashMap<String, CodexLocalAccessProviderGatewayModelCapability>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct CodexLocalAccessApiKey {
     pub id: String,
     pub label: String,
     pub key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_gateway: Option<CodexLocalAccessProviderGateway>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub account_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_prefix: Option<String>,
     #[serde(default)]
@@ -388,16 +500,14 @@ pub struct CodexLocalAccessApiKey {
     pub last_used_at: Option<i64>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexLocalAccessCollection {
     pub enabled: bool,
     pub port: u16,
     pub api_key: String,
+    #[serde(default = "CodexLocalApiSafetyConfig::missing")]
+    pub safety_config: CodexLocalApiSafetyConfig,
     #[serde(default)]
     pub api_keys: Vec<CodexLocalAccessApiKey>,
     #[serde(default = "default_access_scope_for_existing_config")]
@@ -440,6 +550,8 @@ pub struct CodexLocalAccessCollection {
     pub disable_cooling: bool,
     #[serde(default = "default_restrict_free_accounts")]
     pub restrict_free_accounts: bool,
+    #[serde(default = "default_follow_current_account")]
+    pub follow_current_account: bool,
     #[serde(default = "default_true")]
     pub debug_logs: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -447,6 +559,135 @@ pub struct CodexLocalAccessCollection {
     pub account_ids: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexLocalAccessAccountHealthStatus {
+    #[default]
+    Healthy,
+    EstimatedAvailable,
+    CoolingDown,
+    Exhausted,
+    AuthSuspect,
+    ManualRequired,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessAccountHealth {
+    #[serde(default)]
+    pub status: CodexLocalAccessAccountHealthStatus,
+    #[serde(default)]
+    pub cooldown_until_ms: Option<i64>,
+    #[serde(default)]
+    pub exhausted_at_ms: Option<i64>,
+    #[serde(default)]
+    pub estimated_reset_at_ms: Option<i64>,
+    #[serde(default)]
+    pub estimated_remaining_percentage: Option<i32>,
+    #[serde(default)]
+    pub last_observed_remaining_percentage: Option<i32>,
+    #[serde(default)]
+    pub reset_source: Option<String>,
+    #[serde(default)]
+    pub confidence: Option<String>,
+    #[serde(default)]
+    pub manual_required: bool,
+    #[serde(default)]
+    pub last_status: Option<u16>,
+    #[serde(default)]
+    pub last_error_type: Option<String>,
+    #[serde(default)]
+    pub last_provider_code: Option<String>,
+    #[serde(default)]
+    pub last_error_scope: Option<String>,
+    #[serde(default)]
+    pub last_request_id: Option<String>,
+    #[serde(default)]
+    pub last_selected_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_success_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_quota_exhausted_at_ms: Option<i64>,
+    #[serde(default)]
+    pub api_service_success_count: u64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessModelCooldown {
+    pub account_id: String,
+    pub model: String,
+    #[serde(default)]
+    pub cooldown_until_ms: i64,
+    #[serde(default)]
+    pub last_error_type: Option<String>,
+    #[serde(default)]
+    pub last_request_id: Option<String>,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessStickyBinding {
+    pub binding_key: String,
+    pub account_id: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub expires_at_ms: i64,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessGlobalError {
+    pub error_type: String,
+    #[serde(default)]
+    pub status: Option<u16>,
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessHealthRegistry {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub accounts: BTreeMap<String, CodexLocalAccessAccountHealth>,
+    #[serde(default)]
+    pub model_cooldowns: BTreeMap<String, CodexLocalAccessModelCooldown>,
+    #[serde(default)]
+    pub sticky_bindings: BTreeMap<String, CodexLocalAccessStickyBinding>,
+    #[serde(default)]
+    pub request_affinity: BTreeMap<String, CodexLocalAccessStickyBinding>,
+    #[serde(default)]
+    pub last_global_error: Option<CodexLocalAccessGlobalError>,
+}
+
+impl Default for CodexLocalAccessHealthRegistry {
+    fn default() -> Self {
+        Self {
+            schema_version: CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
+            updated_at: 0,
+            accounts: BTreeMap::new(),
+            model_cooldowns: BTreeMap::new(),
+            sticky_bindings: BTreeMap::new(),
+            request_affinity: BTreeMap::new(),
+            last_global_error: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -616,6 +857,86 @@ pub struct CodexLocalAccessStats {
     pub events: Vec<CodexLocalAccessUsageEvent>,
 }
 
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessHealthSummary {
+    pub schema_version: u32,
+    pub updated_at: i64,
+    pub unavailable: bool,
+    pub load_error: Option<String>,
+    #[serde(default)]
+    pub accounts: Vec<CodexLocalAccessAccountHealthView>,
+    pub healthy_count: usize,
+    pub estimated_available_count: usize,
+    pub cooling_count: usize,
+    pub exhausted_count: usize,
+    pub auth_suspect_count: usize,
+    pub manual_required_count: usize,
+    pub disabled_count: usize,
+    pub active_model_cooldown_count: usize,
+    pub sticky_account_hash: Option<String>,
+    pub sticky_reason: Option<String>,
+    pub sticky_expires_at_ms: Option<i64>,
+    pub nearest_cooldown_until_ms: Option<i64>,
+    pub last_error_type: Option<String>,
+    pub last_status: Option<u16>,
+    pub last_request_id: Option<String>,
+    pub audit_degraded: bool,
+    pub audit_error: Option<String>,
+    pub audit_degraded_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessConcurrencyDiagnostics {
+    pub updated_at: i64,
+    pub max_concurrent_requests: u32,
+    pub active_request_count: u32,
+    pub active_stream_count: usize,
+    pub request_capacity: u32,
+    pub min_request_interval_seconds: u64,
+    pub max_queue_wait_seconds: u64,
+    pub start_interval_remaining_ms: u64,
+    pub audit_window_ms: i64,
+    pub recent_audit_event_count: usize,
+    pub recent_request_count: usize,
+    pub recent_local_backpressure_count: usize,
+    pub recent_pool_wait_count: usize,
+    pub recent_upstream_limit_count: usize,
+    pub recent_stream_error_count: usize,
+    pub last_problem_at_ms: Option<i64>,
+    pub last_problem_kind: Option<String>,
+    pub audit_load_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessAccountHealthView {
+    pub account_id: String,
+    #[serde(default)]
+    pub status: CodexLocalAccessAccountHealthStatus,
+    #[serde(default)]
+    pub manual_required: bool,
+    #[serde(default)]
+    pub cooldown_until_ms: Option<i64>,
+    #[serde(default)]
+    pub exhausted_at_ms: Option<i64>,
+    #[serde(default)]
+    pub estimated_reset_at_ms: Option<i64>,
+    #[serde(default)]
+    pub last_status: Option<u16>,
+    #[serde(default)]
+    pub last_error_type: Option<String>,
+    #[serde(default)]
+    pub last_provider_code: Option<String>,
+    #[serde(default)]
+    pub updated_at: i64,
+    #[serde(default)]
+    pub active_model_cooldown_count: usize,
+    #[serde(default)]
+    pub nearest_model_cooldown_until_ms: Option<i64>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexLocalAccessUsageEventPage {
@@ -637,7 +958,7 @@ pub struct CodexLocalAccessAccountCooldown {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CodexLocalAccessAccountHealth {
+pub struct CodexLocalAccessAccountServiceHealth {
     pub account_id: String,
     pub email: String,
     pub available: bool,
@@ -678,8 +999,39 @@ pub struct CodexLocalAccessState {
     pub model_pricing_presets: Vec<CodexLocalAccessModelPricing>,
     pub last_error: Option<String>,
     pub member_count: usize,
+    pub effective_account_ids: Vec<String>,
     pub stats: CodexLocalAccessStats,
-    pub account_health: Vec<CodexLocalAccessAccountHealth>,
+    pub health: CodexLocalAccessHealthSummary,
+    pub concurrency_diagnostics: CodexLocalAccessConcurrencyDiagnostics,
+    pub account_health: Vec<CodexLocalAccessAccountServiceHealth>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessLightConcurrencyDiagnostics {
+    pub updated_at: i64,
+    pub max_concurrent_requests: u32,
+    pub active_request_count: u32,
+    pub active_stream_count: usize,
+    pub request_capacity: u32,
+    pub min_request_interval_seconds: u64,
+    pub max_queue_wait_seconds: u64,
+    pub start_interval_remaining_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessLightState {
+    pub running: bool,
+    pub api_port_url: Option<String>,
+    pub base_url: Option<String>,
+    pub lan_base_url: Option<String>,
+    pub last_error: Option<String>,
+    pub member_count: usize,
+    pub effective_account_ids: Vec<String>,
+    pub health: CodexLocalAccessHealthSummary,
+    pub concurrency_diagnostics: CodexLocalAccessLightConcurrencyDiagnostics,
+    pub account_health: Vec<CodexLocalAccessAccountServiceHealth>,
 }
 
 #[derive(Debug, Clone, Serialize)]

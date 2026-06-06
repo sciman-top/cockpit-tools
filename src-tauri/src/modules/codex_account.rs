@@ -1,6 +1,11 @@
 use crate::models::codex::{
     CodexAccount, CodexAccountIndex, CodexAccountSummary, CodexApiProviderMode, CodexAppSpeed,
-    CodexAuthFile, CodexAuthMode, CodexAuthTokens, CodexJwtPayload, CodexQuickConfig, CodexTokens,
+    CodexAuthFile, CodexAuthMode, CodexAuthTokens, CodexJwtPayload, CodexQuickConfig, CodexQuota,
+    CodexQuotaErrorInfo, CodexTokens,
+};
+use crate::models::codex_local_access::{
+    CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
+    CodexLocalAccessHealthRegistry, CodexLocalAccessModelCooldown,
 };
 use crate::modules::{account, codex_oauth, logger};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -21,6 +26,16 @@ static CODEX_TOKEN_REFRESH_LOCKS: std::sync::LazyLock<
     Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 static CODEX_AUTO_SWITCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static CODEX_STARTUP_QUOTA_SCAN_SCHEDULED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CODEX_HOME_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 const CODEX_QUOTA_ALERT_COOLDOWN_SECONDS: i64 = 300;
 const ACCOUNT_CHECK_URL: &str = "https://chatgpt.com/backend-api/wham/accounts/check";
 const API_KEY_LOGIN_PLAN_TYPE: &str = "API_KEY";
@@ -30,17 +45,23 @@ const API_KEY_EMAIL_PREFIX: &str = "api-key";
 const API_KEY_AUTH_MODE: &str = "apikey";
 const CODEX_CONFIG_FILE_NAME: &str = "config.toml";
 const CODEX_CONFIG_OPENAI_BASE_URL_KEY: &str = "openai_base_url";
+const CODEX_CONFIG_FORCED_LOGIN_METHOD_KEY: &str = "forced_login_method";
+const CODEX_CONFIG_MODEL_KEY: &str = "model";
 const CODEX_CONFIG_MODEL_PROVIDER_KEY: &str = "model_provider";
 const CODEX_CONFIG_MODEL_PROVIDERS_KEY: &str = "model_providers";
-const CODEX_CONFIG_MODEL_CATALOG_JSON_KEY: &str = "model_catalog_json";
+const CODEX_CONFIG_PROFILES_KEY: &str = "profiles";
 const CODEX_CONFIG_EXPERIMENTAL_BEARER_TOKEN_KEY: &str = "experimental_bearer_token";
 const CODEX_CONFIG_MODEL_CONTEXT_WINDOW_KEY: &str = "model_context_window";
 const CODEX_CONFIG_MODEL_AUTO_COMPACT_TOKEN_LIMIT_KEY: &str = "model_auto_compact_token_limit";
+const CODEX_PROFILE_SHARED_CURRENT_PROVIDER: &str = "shared-current-provider";
+const CODEX_PROFILE_SHARED_COCKPIT_API: &str = "shared-cockpit-api";
+const CODEX_PROFILE_SHARED_COCKPIT_AUTH: &str = "shared-cockpit-auth";
 const CODEX_DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
 const CODEX_COCKPIT_API_BASE_URL: &str = "https://chongcodex.cn/v1";
 const CODEX_COCKPIT_API_PROVIDER_ID: &str = "cockpit_api";
 const CODEX_OPENAI_PROVIDER_ID: &str = "openai";
 const CODEX_RUNTIME_MODEL_PROVIDER_ID: &str = "codex_local_access";
+const CODEX_LEGACY_COCKPIT_API_SERVICE_PROVIDER_ID: &str = "cockpit_api_service";
 const CODEX_LEGACY_API_KEY_OPENAI_PROVIDER_ID: &str = "openai_api_key";
 const CODEX_DEFAULT_RUNTIME_PROVIDER_NAME: &str = "OpenAI Official";
 const CODEX_PROVIDER_WIRE_API: &str = "responses";
@@ -53,9 +74,20 @@ const CODEX_AUTO_SWITCH_ACCOUNT_SCOPE_ALL: &str = "all_accounts";
 const CODEX_AUTO_SWITCH_ACCOUNT_SCOPE_SELECTED: &str = "selected_accounts";
 const DISK_FULL_ERROR_CODE: &str = "DISK_FULL";
 const CODEX_TOKEN_SOURCE_MANAGED: &str = "managed";
+const CODEX_LOCAL_ACCESS_HEALTH_FILE: &str = "codex_local_access_health.json";
+const CODEX_STARTUP_QUOTA_SCAN_STATE_FILE: &str = "codex_startup_quota_scan.json";
+const CODEX_DIRECT_QUOTA_LOG_SYNC_STATE_FILE: &str = "codex_direct_quota_log_sync.json";
+const CODEX_MODEL_PROVIDERS_FILE_NAME: &str = "codex_model_providers.json";
+const CODEX_LOCAL_ACCESS_FILE_NAME: &str = "codex_local_access.json";
+const CODEX_STARTUP_QUOTA_SCAN_DELAY_SECONDS: u64 = 5;
+const CODEX_STARTUP_QUOTA_SCAN_MIN_INTERVAL_MS: i64 = 10 * 60 * 1000;
+const CODEX_WEEK_WINDOW_MINUTES: i64 = 7 * 24 * 60;
+const WEEKLY_WINDOW_MINUTES_THRESHOLD: i64 = 6 * 24 * 60;
 const CODEX_PROACTIVE_REFRESH_INTERVAL_SECONDS: i64 = 8 * 24 * 60 * 60;
 const CODEX_AUTH_PROJECTION_FILE_NAME: &str = ".cockpit_codex_auth.json";
 const CODEX_AUTH_PROJECTION_WRITER: &str = "cockpit";
+const CODEX_LITELLM_GATEWAY_PROVIDER_ID: &str = "litellm_gateway";
+const CODEX_LITELLM_GATEWAY_MODEL_ID: &str = "cockpit-current";
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -122,6 +154,20 @@ struct ApiProviderConfig {
     base_url: Option<String>,
     provider_id: Option<String>,
     provider_name: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct StoredCodexModelProvider {
+    id: Option<String>,
+    name: Option<String>,
+    #[serde(rename = "baseUrl", alias = "base_url")]
+    base_url: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredLocalAccessConfig {
+    port: Option<u16>,
 }
 
 fn is_default_openai_base_url(raw: &str) -> bool {
@@ -309,33 +355,10 @@ fn build_api_key_account_id(api_key: &str) -> String {
     format!("codex_apikey_{:x}", md5::compute(api_key.as_bytes()))
 }
 
-fn normalize_api_model_catalog(models: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut values = Vec::new();
-    for model in models {
-        let model = model.trim();
-        if model.is_empty() || !seen.insert(model.to_ascii_lowercase()) {
-            continue;
-        }
-        values.push(model.to_string());
-    }
-    values
-}
-
-fn normalize_api_wire_api(value: Option<String>) -> Option<String> {
-    value
-        .map(|item| item.trim().to_ascii_lowercase())
-        .filter(|item| item == "responses" || item == "chat_completions")
-}
-
 fn apply_api_key_fields(
     account: &mut CodexAccount,
     api_key: &str,
     provider_config: ApiProviderConfig,
-    api_model_catalog: Vec<String>,
-    api_wire_api: Option<String>,
-    api_supports_vision: bool,
-    api_model_vision_support: std::collections::HashMap<String, bool>,
 ) {
     let is_cockpit_api = provider_config
         .provider_id
@@ -355,10 +378,6 @@ fn apply_api_key_fields(
     account.api_provider_mode = provider_config.mode;
     account.api_provider_id = provider_config.provider_id;
     account.api_provider_name = provider_config.provider_name;
-    account.api_model_catalog = normalize_api_model_catalog(api_model_catalog);
-    account.api_wire_api = normalize_api_wire_api(api_wire_api);
-    account.api_supports_vision = api_supports_vision;
-    account.api_model_vision_support = normalize_api_model_vision_support(api_model_vision_support);
     account.email = build_api_key_email(api_key);
     if is_cockpit_api && normalize_optional_ref(account.account_name.as_deref()).is_none() {
         account.account_name = Some(COCKPIT_API_DEFAULT_ACCOUNT_NAME.to_string());
@@ -378,28 +397,12 @@ fn apply_api_key_fields(
     account.quota_error = None;
 }
 
-fn normalize_api_model_vision_support(
-    values: std::collections::HashMap<String, bool>,
-) -> std::collections::HashMap<String, bool> {
-    values
-        .into_iter()
-        .filter_map(|(model, supports)| {
-            let model = model.trim().to_lowercase();
-            if model.is_empty() {
-                None
-            } else {
-                Some((model, supports))
-            }
-        })
-        .collect()
-}
-
 fn extract_api_key_from_auth_file(auth_file: &CodexAuthFile) -> Option<String> {
     auth_file
         .openai_api_key
         .as_ref()
         .and_then(|value| value.as_str())
-        .and_then(|value| normalize_api_key(value))
+        .and_then(normalize_api_key)
 }
 
 fn extract_api_base_url_from_auth_file(auth_file: &CodexAuthFile) -> Option<String> {
@@ -644,6 +647,11 @@ async fn fetch_remote_account_profile(
 
 /// 获取 Codex 数据目录
 pub fn get_codex_home() -> PathBuf {
+    #[cfg(test)]
+    if let Some(from_test) = TEST_CODEX_HOME_OVERRIDE.with(|value| value.borrow().clone()) {
+        return from_test;
+    }
+
     if let Some(from_env) = resolve_codex_home_from_env() {
         return from_env;
     }
@@ -757,8 +765,9 @@ fn write_quick_config_to_config_toml(
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建 config.toml 目录失败: {}", e))?;
     }
-    let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
-    crate::modules::atomic_write::write_string_atomic(&config_path, &content)
+    let content =
+        crate::modules::codex_config_format::normalize_config_toml_spacing(&doc.to_string());
+    write_string_atomic_if_changed(&config_path, &content)
         .map_err(|e| format!("写入 config.toml 失败: {}", e))?;
 
     read_quick_config_from_config_toml(base_dir)
@@ -819,14 +828,15 @@ fn read_api_provider_from_config_toml(base_dir: &Path) -> ApiProviderConfig {
     );
 
     if let Some(provider_id) = model_provider {
-        if provider_id == CODEX_OPENAI_PROVIDER_ID {
+        if provider_id == "openai" {
             return infer_api_provider_config(
                 openai_base_url.as_deref(),
                 Some(CodexApiProviderMode::OpenaiBuiltin),
-                None,
+                Some(provider_id.as_str()),
                 None,
             );
         }
+
         let provider_base_url = doc
             .get(CODEX_CONFIG_MODEL_PROVIDERS_KEY)
             .and_then(|item| item.get(provider_id.as_str()))
@@ -863,10 +873,6 @@ fn write_api_provider_to_config_toml(
     let config_path = get_config_toml_path(base_dir);
     let normalized = provider_config.base_url.clone();
 
-    if !config_path.exists() && normalized.is_none() {
-        return Ok(());
-    }
-
     let existing = fs::read_to_string(&config_path).unwrap_or_default();
     let mut doc = if existing.trim().is_empty() {
         Document::new()
@@ -878,26 +884,51 @@ fn write_api_provider_to_config_toml(
 
     match provider_config.mode {
         CodexApiProviderMode::OpenaiBuiltin => {
-            let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
-            let _ = doc.remove(CODEX_CONFIG_MODEL_PROVIDER_KEY);
-            remove_managed_api_key_model_providers_from_doc(&mut doc);
-            #[cfg(target_os = "windows")]
+            if doc
+                .get(CODEX_CONFIG_MODEL_KEY)
+                .and_then(|item| item.as_str())
+                == Some(CODEX_LITELLM_GATEWAY_MODEL_ID)
             {
-                write_windows_builtin_openai_provider_to_doc(&mut doc, normalized.as_deref())?;
+                let _ = doc.remove(CODEX_CONFIG_MODEL_KEY);
             }
-            #[cfg(not(target_os = "windows"))]
+            doc[CODEX_CONFIG_MODEL_PROVIDER_KEY] = value(CODEX_OPENAI_PROVIDER_ID);
+            remove_managed_api_key_model_providers_from_doc(&mut doc);
             match normalized.as_deref() {
                 Some(base_url) => {
                     doc[CODEX_CONFIG_OPENAI_BASE_URL_KEY] = value(base_url);
+                    doc[CODEX_CONFIG_FORCED_LOGIN_METHOD_KEY] = value("api");
+                    write_profile_provider_projection(
+                        &mut doc,
+                        CODEX_PROFILE_SHARED_CURRENT_PROVIDER,
+                        "api",
+                        CODEX_OPENAI_PROVIDER_ID,
+                        Some(base_url),
+                    )?;
                 }
                 None => {
                     let _ = doc.remove(CODEX_CONFIG_OPENAI_BASE_URL_KEY);
+                    doc[CODEX_CONFIG_FORCED_LOGIN_METHOD_KEY] = value("chatgpt");
+                    write_profile_provider_projection(
+                        &mut doc,
+                        CODEX_PROFILE_SHARED_CURRENT_PROVIDER,
+                        "chatgpt",
+                        CODEX_OPENAI_PROVIDER_ID,
+                        None,
+                    )?;
                 }
             }
+            write_profile_provider_projection(
+                &mut doc,
+                CODEX_PROFILE_SHARED_COCKPIT_AUTH,
+                "chatgpt",
+                CODEX_OPENAI_PROVIDER_ID,
+                None,
+            )?;
+            remove_profile_projection(&mut doc, CODEX_PROFILE_SHARED_COCKPIT_API);
         }
         CodexApiProviderMode::Custom => {
-            let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
             let _ = doc.remove(CODEX_CONFIG_OPENAI_BASE_URL_KEY);
+            doc[CODEX_CONFIG_FORCED_LOGIN_METHOD_KEY] = value("api");
             let provider_id = provider_config
                 .provider_id
                 .as_deref()
@@ -910,37 +941,230 @@ fn write_api_provider_to_config_toml(
             let base_url = normalized.as_deref().ok_or("自定义供应商缺少 Base URL")?;
 
             doc[CODEX_CONFIG_MODEL_PROVIDER_KEY] = value(provider_id);
-            if doc.get(CODEX_CONFIG_MODEL_PROVIDERS_KEY).is_none() {
-                doc[CODEX_CONFIG_MODEL_PROVIDERS_KEY] = toml_edit::table();
+            if provider_id == CODEX_LITELLM_GATEWAY_PROVIDER_ID {
+                doc[CODEX_CONFIG_MODEL_KEY] = value(CODEX_LITELLM_GATEWAY_MODEL_ID);
             }
-            let model_providers = doc[CODEX_CONFIG_MODEL_PROVIDERS_KEY]
-                .as_table_mut()
-                .ok_or("config.toml 中 model_providers 不是合法表结构")?;
-            if !model_providers.contains_key(provider_id) {
-                model_providers[provider_id] = toml_edit::table();
-            }
-            let provider_table = model_providers[provider_id]
-                .as_table_mut()
-                .ok_or("config.toml 中目标 provider 不是合法表结构")?;
-            provider_table["name"] = value(provider_name);
-            provider_table["base_url"] = value(base_url);
-            provider_table["wire_api"] = value(CODEX_PROVIDER_WIRE_API);
-            provider_table["requires_openai_auth"] = value(false);
-            provider_table["supports_websockets"] = value(false);
+            write_profile_provider_projection(
+                &mut doc,
+                CODEX_PROFILE_SHARED_CURRENT_PROVIDER,
+                "api",
+                provider_id,
+                None,
+            )?;
+            write_profile_provider_projection(
+                &mut doc,
+                CODEX_PROFILE_SHARED_COCKPIT_API,
+                "api",
+                provider_id,
+                None,
+            )?;
+            write_profile_provider_projection(
+                &mut doc,
+                CODEX_PROFILE_SHARED_COCKPIT_AUTH,
+                "chatgpt",
+                CODEX_OPENAI_PROVIDER_ID,
+                None,
+            )?;
+            write_model_provider_section(
+                &mut doc,
+                &ApiProviderConfig {
+                    mode: CodexApiProviderMode::Custom,
+                    base_url: Some(base_url.to_string()),
+                    provider_id: Some(provider_id.to_string()),
+                    provider_name: Some(provider_name.to_string()),
+                },
+            )?;
         }
     }
+
+    preserve_projectable_model_provider_sections(
+        &mut doc,
+        (provider_config.mode == CodexApiProviderMode::Custom)
+            .then(|| provider_config.provider_id.as_deref())
+            .flatten(),
+    )?;
 
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建 config.toml 目录失败: {}", e))?;
     }
-    let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
-    crate::modules::atomic_write::write_string_atomic(&config_path, &content)
+    let content =
+        crate::modules::codex_config_format::normalize_config_toml_spacing(&doc.to_string());
+    write_string_atomic_if_changed(&config_path, &content)
         .map_err(|e| format!("写入 config.toml 失败: {}", e))
 }
 
+fn ensure_nested_table<'a>(
+    doc: &'a mut Document,
+    parent_key: &str,
+    child_key: &str,
+) -> Result<&'a mut toml_edit::Table, String> {
+    if doc.get(parent_key).is_none() {
+        doc[parent_key] = toml_edit::table();
+    }
+    let parent = doc[parent_key]
+        .as_table_mut()
+        .ok_or_else(|| format!("config.toml 中 {} 不是合法表结构", parent_key))?;
+    if !parent.contains_key(child_key) {
+        parent[child_key] = toml_edit::table();
+    }
+    parent[child_key]
+        .as_table_mut()
+        .ok_or_else(|| format!("config.toml 中 {}.{} 不是合法表结构", parent_key, child_key))
+}
+
+fn write_profile_provider_projection(
+    doc: &mut Document,
+    profile_id: &str,
+    forced_login_method: &str,
+    model_provider: &str,
+    openai_base_url: Option<&str>,
+) -> Result<(), String> {
+    let profile = ensure_nested_table(doc, CODEX_CONFIG_PROFILES_KEY, profile_id)?;
+    profile[CODEX_CONFIG_FORCED_LOGIN_METHOD_KEY] = value(forced_login_method);
+    profile[CODEX_CONFIG_MODEL_PROVIDER_KEY] = value(model_provider);
+    match openai_base_url {
+        Some(base_url) => {
+            profile[CODEX_CONFIG_OPENAI_BASE_URL_KEY] = value(base_url);
+        }
+        None => {
+            let _ = profile.remove(CODEX_CONFIG_OPENAI_BASE_URL_KEY);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn has_test_accounts_data_dir_override() -> bool {
+    TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE.with(|value| value.borrow().is_some())
+        || std::env::var("COCKPIT_TOOLS_TEST_DATA_DIR").is_ok()
+}
+
+fn stored_provider_config_from_model_provider(
+    provider: StoredCodexModelProvider,
+) -> Option<ApiProviderConfig> {
+    let provider_id = provider.id?.trim().to_string();
+    if provider_id.is_empty() || provider_id == CODEX_OPENAI_PROVIDER_ID {
+        return None;
+    }
+    let base_url = normalize_api_base_url(provider.base_url.as_deref())?;
+    let provider_name = normalize_api_provider_name(provider.name.as_deref())
+        .or_else(|| derive_provider_name_from_base_url(&base_url))
+        .unwrap_or_else(|| provider_id.clone());
+
+    Some(ApiProviderConfig {
+        mode: CodexApiProviderMode::Custom,
+        base_url: Some(base_url),
+        provider_id: Some(provider_id),
+        provider_name: Some(provider_name),
+    })
+}
+
+fn load_saved_model_provider_configs() -> Vec<ApiProviderConfig> {
+    #[cfg(test)]
+    if !has_test_accounts_data_dir_override() {
+        return Vec::new();
+    }
+
+    let path = get_codex_accounts_data_dir().join(CODEX_MODEL_PROVIDERS_FILE_NAME);
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(providers) = serde_json::from_str::<Vec<StoredCodexModelProvider>>(&content) else {
+        return Vec::new();
+    };
+
+    providers
+        .into_iter()
+        .filter_map(stored_provider_config_from_model_provider)
+        .collect()
+}
+
+fn load_local_access_provider_config() -> Option<ApiProviderConfig> {
+    #[cfg(test)]
+    if !has_test_accounts_data_dir_override() {
+        return None;
+    }
+
+    let path = get_codex_accounts_data_dir().join(CODEX_LOCAL_ACCESS_FILE_NAME);
+    let content = fs::read_to_string(path).ok()?;
+    let collection = serde_json::from_str::<StoredLocalAccessConfig>(&content).ok()?;
+    let port = collection.port.filter(|port| *port > 0)?;
+
+    Some(ApiProviderConfig {
+        mode: CodexApiProviderMode::Custom,
+        base_url: Some(format!("http://127.0.0.1:{}/v1", port)),
+        provider_id: Some(CODEX_RUNTIME_MODEL_PROVIDER_ID.to_string()),
+        provider_name: Some("Cockpit API Service".to_string()),
+    })
+}
+
+fn preserve_projectable_model_provider_sections(
+    doc: &mut Document,
+    protected_provider_id: Option<&str>,
+) -> Result<(), String> {
+    let mut seen = HashSet::new();
+    for provider_config in load_saved_model_provider_configs()
+        .into_iter()
+        .chain(load_local_access_provider_config())
+    {
+        let Some(provider_id) = provider_config.provider_id.as_deref() else {
+            continue;
+        };
+        if Some(provider_id) == protected_provider_id || !seen.insert(provider_id.to_string()) {
+            continue;
+        }
+        write_model_provider_section(doc, &provider_config)?;
+    }
+    Ok(())
+}
+
+fn remove_profile_projection(doc: &mut Document, profile_id: &str) {
+    let should_remove_profiles = doc
+        .get_mut(CODEX_CONFIG_PROFILES_KEY)
+        .and_then(|item| item.as_table_mut())
+        .map(|profiles| {
+            let _ = profiles.remove(profile_id);
+            profiles.is_empty()
+        })
+        .unwrap_or(false);
+
+    if should_remove_profiles {
+        let _ = doc.remove(CODEX_CONFIG_PROFILES_KEY);
+    }
+}
+
+fn write_model_provider_section(
+    doc: &mut Document,
+    provider_config: &ApiProviderConfig,
+) -> Result<(), String> {
+    let provider_id = provider_config
+        .provider_id
+        .as_deref()
+        .ok_or("自定义供应商缺少 provider_id")?;
+    let provider_name = provider_config
+        .provider_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(provider_id);
+    let base_url = provider_config
+        .base_url
+        .as_deref()
+        .ok_or("自定义供应商缺少 Base URL")?;
+    let provider_table = ensure_nested_table(doc, CODEX_CONFIG_MODEL_PROVIDERS_KEY, provider_id)?;
+    provider_table["name"] = value(provider_name);
+    provider_table["base_url"] = value(base_url);
+    provider_table["wire_api"] = value(CODEX_PROVIDER_WIRE_API);
+    provider_table["requires_openai_auth"] = value(false);
+    provider_table["supports_websockets"] = value(false);
+    Ok(())
+}
+
 fn collect_managed_api_key_provider_ids() -> HashSet<String> {
+    // 自用版会清理可重建的 managed API Key provider，再由 preserve_projectable_model_provider_sections
+    // 只回填当前仍有配置依据的 provider，避免旧 bearer token 长期滞留。
     let mut ids = HashSet::from([
         CODEX_RUNTIME_MODEL_PROVIDER_ID.to_string(),
+        CODEX_LEGACY_COCKPIT_API_SERVICE_PROVIDER_ID.to_string(),
         CODEX_COCKPIT_API_PROVIDER_ID.to_string(),
         CODEX_LEGACY_API_KEY_OPENAI_PROVIDER_ID.to_string(),
     ]);
@@ -975,34 +1199,6 @@ fn remove_managed_api_key_model_providers_from_doc(doc: &mut Document) {
     }
 }
 
-#[cfg(target_os = "windows")]
-fn write_windows_builtin_openai_provider_to_doc(
-    doc: &mut Document,
-    base_url: Option<&str>,
-) -> Result<(), String> {
-    doc[CODEX_CONFIG_MODEL_PROVIDER_KEY] = value(CODEX_OPENAI_PROVIDER_ID);
-    match base_url {
-        Some(base_url) if base_url != CODEX_DEFAULT_OPENAI_BASE_URL => {
-            doc[CODEX_CONFIG_OPENAI_BASE_URL_KEY] = value(base_url);
-        }
-        _ => {
-            let _ = doc.remove(CODEX_CONFIG_OPENAI_BASE_URL_KEY);
-        }
-    }
-    let should_remove_model_providers = doc
-        .get_mut(CODEX_CONFIG_MODEL_PROVIDERS_KEY)
-        .and_then(|item| item.as_table_mut())
-        .map(|model_providers| {
-            let _ = model_providers.remove(CODEX_OPENAI_PROVIDER_ID);
-            model_providers.is_empty()
-        })
-        .unwrap_or(false);
-    if should_remove_model_providers {
-        let _ = doc.remove(CODEX_CONFIG_MODEL_PROVIDERS_KEY);
-    }
-    Ok(())
-}
-
 fn write_api_key_provider_to_config_toml(
     base_dir: &Path,
     provider_config: &ApiProviderConfig,
@@ -1020,7 +1216,6 @@ fn write_api_key_provider_to_config_toml(
         .as_deref()
         .filter(|name| !name.trim().is_empty())
         .unwrap_or(CODEX_DEFAULT_RUNTIME_PROVIDER_NAME);
-
     let existing = fs::read_to_string(&config_path).unwrap_or_default();
     let mut doc = if existing.trim().is_empty() {
         Document::new()
@@ -1031,31 +1226,35 @@ fn write_api_key_provider_to_config_toml(
     };
 
     let _ = doc.remove(CODEX_CONFIG_OPENAI_BASE_URL_KEY);
-    let _ = doc.remove(CODEX_CONFIG_MODEL_CATALOG_JSON_KEY);
-    doc[CODEX_CONFIG_MODEL_PROVIDER_KEY] = value(CODEX_RUNTIME_MODEL_PROVIDER_ID);
-    remove_managed_api_key_model_providers_from_doc(&mut doc);
-    if doc.get(CODEX_CONFIG_MODEL_PROVIDERS_KEY).is_none() {
-        doc[CODEX_CONFIG_MODEL_PROVIDERS_KEY] = toml_edit::table();
+    if doc
+        .get(CODEX_CONFIG_MODEL_KEY)
+        .and_then(|item| item.as_str())
+        == Some(CODEX_LITELLM_GATEWAY_MODEL_ID)
+    {
+        let _ = doc.remove(CODEX_CONFIG_MODEL_KEY);
     }
-    let model_providers = doc[CODEX_CONFIG_MODEL_PROVIDERS_KEY]
-        .as_table_mut()
-        .ok_or("config.toml 中 model_providers 不是合法表结构")?;
-    model_providers[CODEX_RUNTIME_MODEL_PROVIDER_ID] = toml_edit::table();
-    let provider_table = model_providers[CODEX_RUNTIME_MODEL_PROVIDER_ID]
-        .as_table_mut()
-        .ok_or("config.toml 中目标 provider 不是合法表结构")?;
+    doc[CODEX_CONFIG_MODEL_PROVIDER_KEY] = value(CODEX_RUNTIME_MODEL_PROVIDER_ID);
+    doc[CODEX_CONFIG_FORCED_LOGIN_METHOD_KEY] = value("api");
+    remove_managed_api_key_model_providers_from_doc(&mut doc);
+    let provider_table = ensure_nested_table(
+        &mut doc,
+        CODEX_CONFIG_MODEL_PROVIDERS_KEY,
+        CODEX_RUNTIME_MODEL_PROVIDER_ID,
+    )?;
     provider_table["name"] = value(provider_name);
     provider_table["base_url"] = value(base_url);
     provider_table["wire_api"] = value(CODEX_PROVIDER_WIRE_API);
     provider_table["requires_openai_auth"] = value(true);
     provider_table[CODEX_CONFIG_EXPERIMENTAL_BEARER_TOKEN_KEY] = value(bearer_token);
     provider_table["supports_websockets"] = value(false);
+    preserve_projectable_model_provider_sections(&mut doc, Some(CODEX_RUNTIME_MODEL_PROVIDER_ID))?;
 
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建 config.toml 目录失败: {}", e))?;
     }
-    let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
-    crate::modules::atomic_write::write_string_atomic(&config_path, &content)
+    let content =
+        crate::modules::codex_config_format::normalize_config_toml_spacing(&doc.to_string());
+    write_string_atomic_if_changed(&config_path, &content)
         .map_err(|e| format!("写入 config.toml 失败: {}", e))
 }
 
@@ -1137,11 +1336,7 @@ fn migrate_codex_data_if_needed(new_data_dir: &PathBuf) {
 
 /// 获取我们的多账号存储路径（统一使用 ~/.antigravity_cockpit/）
 fn get_accounts_storage_path() -> PathBuf {
-    let data_dir = account::get_data_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .expect("无法获取用户目录")
-            .join(".antigravity_cockpit")
-    });
+    let data_dir = get_codex_accounts_data_dir();
     fs::create_dir_all(&data_dir).ok();
     migrate_codex_data_if_needed(&data_dir);
     data_dir.join("codex_accounts.json")
@@ -1149,14 +1344,30 @@ fn get_accounts_storage_path() -> PathBuf {
 
 /// 获取账号详情存储目录（统一使用 ~/.antigravity_cockpit/codex_accounts/）
 fn get_accounts_dir() -> PathBuf {
-    let data_dir = account::get_data_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .expect("无法获取用户目录")
-            .join(".antigravity_cockpit")
-    });
+    let data_dir = get_codex_accounts_data_dir();
     let accounts_dir = data_dir.join("codex_accounts");
     fs::create_dir_all(&accounts_dir).ok();
     accounts_dir
+}
+
+fn get_codex_accounts_data_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(from_test) =
+        TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE.with(|value| value.borrow().clone())
+    {
+        return from_test;
+    }
+
+    #[cfg(test)]
+    if let Ok(path) = std::env::var("COCKPIT_TOOLS_TEST_DATA_DIR") {
+        return PathBuf::from(path);
+    }
+
+    account::get_data_dir().unwrap_or_else(|_| {
+        dirs::home_dir()
+            .expect("无法获取用户目录")
+            .join(".antigravity_cockpit")
+    })
 }
 
 /// 解析 JWT Token 的 payload
@@ -1222,6 +1433,173 @@ fn first_json_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<Str
     })
 }
 
+fn normalize_codex_plan_type(value: Option<&str>) -> Option<String> {
+    normalize_optional_ref(value)
+}
+
+fn merge_subscription_active_until(target: &mut Option<String>, observed: Option<String>) -> bool {
+    let Some(next_expiry) = normalize_optional_value(observed) else {
+        return false;
+    };
+
+    if normalize_optional_ref(target.as_deref()).as_deref() == Some(next_expiry.as_str()) {
+        return false;
+    }
+
+    *target = Some(next_expiry);
+    true
+}
+
+fn parse_subscription_active_until_timestamp(value: Option<&str>) -> Option<i64> {
+    let raw = value?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    if let Ok(parsed) = raw.parse::<i64>() {
+        return Some(if parsed > 1_000_000_000_000 {
+            parsed / 1000
+        } else {
+            parsed
+        });
+    }
+
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|parsed| parsed.timestamp())
+}
+
+fn subscription_active_until_is_future(value: Option<&str>) -> bool {
+    parse_subscription_active_until_timestamp(value)
+        .is_some_and(|timestamp| timestamp > now_timestamp())
+}
+
+pub(crate) fn is_paid_codex_plan_type(plan_type: Option<&str>) -> bool {
+    let Some(plan_type) = normalize_codex_plan_type(plan_type) else {
+        return false;
+    };
+    matches!(
+        plan_type
+            .replace(['-', ' '], "_")
+            .to_ascii_lowercase()
+            .as_str(),
+        "plus"
+            | "pro"
+            | "prolite"
+            | "pro_lite"
+            | "team"
+            | "self_serve_business_usage_based"
+            | "business"
+            | "enterprise_cbp_usage_based"
+            | "enterprise"
+            | "hc"
+            | "education"
+            | "edu"
+    )
+}
+
+fn raw_quota_plan_type(account: &CodexAccount) -> Option<String> {
+    account
+        .quota
+        .as_ref()
+        .and_then(|quota| quota.raw_data.as_ref())
+        .and_then(|raw_data| raw_data.get("plan_type"))
+        .and_then(|value| value.as_str())
+        .and_then(|value| normalize_codex_plan_type(Some(value)))
+}
+
+fn is_free_codex_plan_type(plan_type: Option<&str>) -> bool {
+    normalize_codex_plan_type(plan_type)
+        .is_some_and(|plan_type| plan_type.eq_ignore_ascii_case("free"))
+}
+
+fn has_current_paid_subscription_evidence(account: &CodexAccount) -> bool {
+    is_paid_codex_plan_type(account.plan_type.as_deref())
+        && subscription_active_until_is_future(account.subscription_active_until.as_deref())
+}
+
+fn backup_paid_plan_type(account: &CodexAccount) -> Option<String> {
+    let path = get_accounts_dir().join(format!("{}.json.bak", account.id));
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+
+    if let Some(backup_email) = read_json_string(&value, &["email", "account_email"]) {
+        if !account.email.trim().is_empty() && !account.email.eq_ignore_ascii_case(&backup_email) {
+            return None;
+        }
+    }
+    if let Some(backup_account_id) = read_json_string(&value, &["account_id", "accountId"]) {
+        if normalize_optional_ref(account.account_id.as_deref()).as_deref()
+            != Some(backup_account_id.as_str())
+        {
+            return None;
+        }
+    }
+
+    read_json_string(&value, &["plan_type", "planType"])
+        .filter(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+}
+
+pub(crate) fn resolve_observed_plan_type(
+    account: &CodexAccount,
+    observed_plan_type: Option<String>,
+) -> Option<String> {
+    let observed_plan_type = normalize_optional_value(observed_plan_type);
+    let quota_plan_type = raw_quota_plan_type(account);
+    let existing_plan_type = normalize_optional_ref(account.plan_type.as_deref());
+
+    if observed_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+    {
+        return observed_plan_type;
+    }
+
+    if quota_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+    {
+        return quota_plan_type;
+    }
+
+    if observed_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_free_codex_plan_type(Some(plan_type)))
+    {
+        if quota_plan_type
+            .as_deref()
+            .is_some_and(|plan_type| is_free_codex_plan_type(Some(plan_type)))
+            && !has_current_paid_subscription_evidence(account)
+        {
+            return observed_plan_type;
+        }
+        if existing_plan_type
+            .as_deref()
+            .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+        {
+            return existing_plan_type;
+        }
+        if let Some(backup_plan_type) = backup_paid_plan_type(account) {
+            return Some(backup_plan_type);
+        }
+        return observed_plan_type;
+    }
+
+    if existing_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+    {
+        return existing_plan_type;
+    }
+    if let Some(backup_plan_type) = backup_paid_plan_type(account) {
+        return Some(backup_plan_type);
+    }
+
+    quota_plan_type
+        .or(existing_plan_type)
+        .or(observed_plan_type)
+}
+
 fn now_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -1244,7 +1622,15 @@ fn mark_token_chain_updated(account: &mut CodexAccount) {
     account.reauth_reason = None;
 }
 
-fn sync_identity_from_tokens(account: &mut CodexAccount) {
+fn sync_identity_from_tokens(account: &mut CodexAccount) -> bool {
+    let before = (
+        account.email.clone(),
+        account.user_id.clone(),
+        account.plan_type.clone(),
+        account.subscription_active_until.clone(),
+        account.account_id.clone(),
+        account.organization_id.clone(),
+    );
     if let Ok((
         email,
         user_id,
@@ -1258,8 +1644,11 @@ fn sync_identity_from_tokens(account: &mut CodexAccount) {
             account.email = email;
         }
         account.user_id = user_id;
-        account.plan_type = plan_type;
-        account.subscription_active_until = subscription_active_until;
+        account.plan_type = resolve_observed_plan_type(account, plan_type);
+        merge_subscription_active_until(
+            &mut account.subscription_active_until,
+            subscription_active_until,
+        );
         account.account_id = normalize_optional_value(
             extract_chatgpt_account_id_from_access_token(&account.tokens.access_token)
                 .or(id_token_account_id)
@@ -1271,6 +1660,16 @@ fn sync_identity_from_tokens(account: &mut CodexAccount) {
                 .or_else(|| account.organization_id.clone()),
         );
     }
+
+    before
+        != (
+            account.email.clone(),
+            account.user_id.clone(),
+            account.plan_type.clone(),
+            account.subscription_active_until.clone(),
+            account.account_id.clone(),
+            account.organization_id.clone(),
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1598,26 +1997,25 @@ pub fn extract_user_info(
 pub fn load_account_index() -> CodexAccountIndex {
     let path = get_accounts_storage_path();
     if !path.exists() {
-        return repair_account_index_from_details("索引文件不存在")
-            .unwrap_or_else(CodexAccountIndex::new);
+        return repair_account_index_from_details("索引文件不存在").unwrap_or_default();
     }
 
     match fs::read_to_string(&path) {
         Ok(content) if content.trim().is_empty() => {
-            repair_account_index_from_details("索引文件为空").unwrap_or_else(CodexAccountIndex::new)
+            repair_account_index_from_details("索引文件为空").unwrap_or_default()
         }
         Ok(content) => match serde_json::from_str::<CodexAccountIndex>(&content) {
-            Ok(index) if !index.accounts.is_empty() => index,
-            Ok(_) => repair_account_index_from_details("索引账号列表为空")
-                .unwrap_or_else(CodexAccountIndex::new),
+            Ok(index) if !index.accounts.is_empty() => {
+                reconcile_account_index_with_details_if_needed(index, "索引账号列表少于详情文件")
+            }
+            Ok(_) => repair_account_index_from_details("索引账号列表为空").unwrap_or_default(),
             Err(err) => {
                 logger::log_warn(&format!(
                     "[Codex Account] 账号索引解析失败，尝试按详情文件自动修复: path={}, error={}",
                     path.display(),
                     err
                 ));
-                repair_account_index_from_details("索引文件损坏")
-                    .unwrap_or_else(CodexAccountIndex::new)
+                repair_account_index_from_details("索引文件损坏").unwrap_or_default()
             }
         },
         Err(_) => CodexAccountIndex::new(),
@@ -1682,7 +2080,9 @@ fn load_account_index_checked() -> Result<CodexAccountIndex, String> {
     }
 
     match serde_json::from_str::<CodexAccountIndex>(&content) {
-        Ok(index) if !index.accounts.is_empty() => Ok(index),
+        Ok(index) if !index.accounts.is_empty() => Ok(
+            reconcile_account_index_with_details_if_needed(index, "索引账号列表少于详情文件"),
+        ),
         Ok(index) => {
             logger::log_warn(&format!(
                 "[Codex Account][Repair] 账号索引可解析但列表为空，准备尝试自动修复: path={}",
@@ -1728,6 +2128,48 @@ pub fn save_account_index(index: &CodexAccountIndex) -> Result<(), String> {
 }
 
 fn repair_account_index_from_details(reason: &str) -> Option<CodexAccountIndex> {
+    repair_account_index_from_details_preserving_current(reason, None)
+}
+
+fn reconcile_account_index_with_details_if_needed(
+    index: CodexAccountIndex,
+    reason: &str,
+) -> CodexAccountIndex {
+    let accounts_dir = get_accounts_dir();
+    let detail_count = match crate::modules::account_index_repair::count_account_detail_files(
+        &accounts_dir,
+    ) {
+        Ok(count) => count,
+        Err(err) => {
+            logger::log_warn(&format!(
+                    "[Codex Account][Repair] 统计账号详情文件失败，跳过部分索引修复: accounts_dir={}, error={}",
+                    accounts_dir.display(),
+                    err
+                ));
+            return index;
+        }
+    };
+
+    if detail_count <= index.accounts.len() {
+        return index;
+    }
+
+    logger::log_warn(&format!(
+        "[Codex Account][Repair] 账号索引可解析但缺少详情目录中的账号，准备自动重建: reason={}, index_accounts={}, detail_accounts={}",
+        reason,
+        index.accounts.len(),
+        detail_count
+    ));
+
+    let current_account_id = index.current_account_id.clone();
+    repair_account_index_from_details_preserving_current(reason, current_account_id.as_deref())
+        .unwrap_or(index)
+}
+
+fn repair_account_index_from_details_preserving_current(
+    reason: &str,
+    preferred_current_account_id: Option<&str>,
+) -> Option<CodexAccountIndex> {
     let index_path = get_accounts_storage_path();
     let accounts_dir = get_accounts_dir();
     let previous_current_account_id = fs::read_to_string(&index_path)
@@ -1743,7 +2185,7 @@ fn repair_account_index_from_details(reason: &str) -> Option<CodexAccountIndex> 
 
     let mut accounts = match crate::modules::account_index_repair::load_accounts_from_details(
         &accounts_dir,
-        |account_id| load_account(account_id),
+        load_account,
     ) {
         Ok(accounts) => accounts,
         Err(err) => {
@@ -1790,11 +2232,14 @@ fn repair_account_index_from_details(reason: &str) -> Option<CodexAccountIndex> 
             last_used: account.last_used,
         })
         .collect();
-    index.current_account_id = previous_current_account_id.filter(|current_id| {
-        accounts
-            .iter()
-            .any(|account| account.id.as_str() == current_id.as_str())
-    });
+    index.current_account_id = preferred_current_account_id
+        .map(str::to_string)
+        .or(previous_current_account_id)
+        .filter(|current_id| {
+            accounts
+                .iter()
+                .any(|account| account.id.as_str() == current_id.as_str())
+        });
 
     logger::log_info(&format!(
         "[Codex Account][Repair] 索引重建完成，准备写回本地文件: recovered_accounts={}, current_account_id={}",
@@ -1989,7 +2434,6 @@ fn parse_codex_account_compat(
             provider_config.base_url,
             provider_config.provider_id,
             provider_config.provider_name,
-            Vec::new(),
         );
         apply_compat_account_metadata(&mut account, &value, summary);
         account.plan_type = Some(API_KEY_LOGIN_PLAN_TYPE.to_string());
@@ -2017,6 +2461,7 @@ fn parse_codex_account_compat(
     ));
     sync_identity_from_tokens(&mut account);
     apply_compat_account_metadata(&mut account, &value, summary);
+    sync_identity_from_tokens(&mut account);
     Ok(Some(account))
 }
 
@@ -2050,6 +2495,819 @@ fn load_account_after_index_repair(account_id: &str) -> Option<CodexAccount> {
     load_account(account_id)
 }
 
+fn normalize_account_for_runtime(account: &mut CodexAccount) -> bool {
+    let mut changed = false;
+    if let Some(quota) = account.quota.as_mut() {
+        changed |= quota.normalize_window_slots();
+    }
+    changed |= crate::modules::codex_quota::repair_account_quota_from_embedded_rate_limit(account);
+    if is_free_codex_plan_type(account.plan_type.as_deref())
+        && account.subscription_active_until.is_some()
+        && !subscription_active_until_is_future(account.subscription_active_until.as_deref())
+    {
+        account.subscription_active_until = None;
+        changed = true;
+    }
+    changed
+}
+
+fn sync_loaded_account_summaries(index: &mut CodexAccountIndex, accounts: &[CodexAccount]) -> bool {
+    let mut changed = false;
+    for account in accounts {
+        let Some(summary) = index.accounts.iter_mut().find(|item| item.id == account.id) else {
+            continue;
+        };
+        if summary.email != account.email {
+            summary.email = account.email.clone();
+            changed = true;
+        }
+        if summary.plan_type != account.plan_type {
+            summary.plan_type = account.plan_type.clone();
+            changed = true;
+        }
+        if summary.subscription_active_until != account.subscription_active_until {
+            summary.subscription_active_until = account.subscription_active_until.clone();
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn local_access_health_registry_path() -> Result<PathBuf, String> {
+    Ok(get_codex_accounts_data_dir().join(CODEX_LOCAL_ACCESS_HEALTH_FILE))
+}
+
+fn load_local_access_health_registry() -> Option<CodexLocalAccessHealthRegistry> {
+    let path = local_access_health_registry_path().ok()?;
+    if !path.exists() {
+        return None;
+    }
+
+    let content = fs::read_to_string(&path).ok()?;
+    serde_json::from_str::<CodexLocalAccessHealthRegistry>(&content).ok()
+}
+
+fn codex_local_access_quota_error_code(health: &CodexLocalAccessAccountHealth) -> Option<String> {
+    [
+        health.last_error_type.as_deref(),
+        health.last_provider_code.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|code| is_codex_quota_exhaustion_code(code))
+    .map(str::to_string)
+}
+
+fn is_codex_quota_exhaustion_code(code: &str) -> bool {
+    matches!(
+        code.trim().to_ascii_lowercase().as_str(),
+        "usage_limit_reached"
+            | "workspace_owner_usage_limit_reached"
+            | "workspace_member_usage_limit_reached"
+            | "workspace_owner_credits_depleted"
+            | "workspace_member_credits_depleted"
+            | "rate_limit_reached"
+            | "insufficient_quota"
+            | "credits_depleted"
+            | "quota_exhausted"
+    )
+}
+
+fn is_codex_account_level_quota_exhaustion_code(code: &str) -> bool {
+    matches!(
+        code.trim().to_ascii_lowercase().as_str(),
+        "workspace_owner_usage_limit_reached"
+            | "workspace_member_usage_limit_reached"
+            | "workspace_owner_credits_depleted"
+            | "workspace_member_credits_depleted"
+            | "insufficient_quota"
+            | "credits_depleted"
+            | "quota_exhausted"
+    )
+}
+
+fn codex_local_access_error_scope_is_account(scope: Option<&str>) -> bool {
+    scope
+        .map(|value| value.trim().eq_ignore_ascii_case("account"))
+        .unwrap_or(false)
+}
+
+fn codex_local_access_error_scope_is_non_account(scope: Option<&str>) -> bool {
+    scope
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "model" | "request" | "provider"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn local_access_health_has_account_level_exhaustion_evidence(
+    health: &CodexLocalAccessAccountHealth,
+    error_code: &str,
+) -> bool {
+    if codex_local_access_error_scope_is_non_account(health.last_error_scope.as_deref()) {
+        return false;
+    }
+    codex_local_access_error_scope_is_account(health.last_error_scope.as_deref())
+        || is_codex_account_level_quota_exhaustion_code(error_code)
+        || health
+            .confidence
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("confirmed"))
+        || health.exhausted_at_ms.is_some()
+        || health.last_quota_exhausted_at_ms.is_some()
+}
+
+fn effective_codex_quota_remaining(quota: &CodexQuota) -> Option<i32> {
+    let mut quota = quota.clone();
+    quota.normalize_window_slots();
+
+    let mut percentages = Vec::new();
+    if quota.hourly_window_present.unwrap_or(true) {
+        percentages.push(quota.hourly_percentage.clamp(0, 100));
+    }
+    if quota.weekly_window_present.unwrap_or(true) {
+        percentages.push(quota.weekly_percentage.clamp(0, 100));
+    }
+    percentages.into_iter().min()
+}
+
+fn is_explicit_free_codex_plan(plan_type: Option<&str>) -> bool {
+    plan_type
+        .map(|value| value.trim().eq_ignore_ascii_case("free"))
+        .unwrap_or(false)
+}
+
+fn future_quota_reset_from_account(account: &CodexAccount, now_seconds: i64) -> Option<i64> {
+    let mut quota = account.quota.clone()?;
+    quota.normalize_window_slots();
+
+    let weekly_reset = quota.weekly_reset_time.filter(|reset| *reset > now_seconds);
+    let weekly_window_is_present = quota.weekly_window_present.unwrap_or(true);
+    let weekly_window_looks_weekly = quota
+        .weekly_window_minutes
+        .map(|minutes| minutes >= WEEKLY_WINDOW_MINUTES_THRESHOLD)
+        .unwrap_or(weekly_window_is_present);
+    if weekly_window_is_present && weekly_window_looks_weekly {
+        return weekly_reset;
+    }
+
+    quota.hourly_reset_time.filter(|reset| *reset > now_seconds)
+}
+
+fn quota_exhaustion_error_from_account(account: &CodexAccount) -> Option<String> {
+    [
+        account
+            .quota_error
+            .as_ref()
+            .and_then(|error| error.code.as_deref()),
+        account
+            .quota_error
+            .as_ref()
+            .map(|error| error.message.as_str()),
+        account
+            .quota
+            .as_ref()
+            .and_then(|quota| quota.raw_data.as_ref())
+            .and_then(|raw_data| raw_data.get("error_type"))
+            .and_then(|value| value.as_str()),
+        account
+            .quota
+            .as_ref()
+            .and_then(|quota| quota.raw_data.as_ref())
+            .and_then(|raw_data| raw_data.get("rate_limit_reached_type"))
+            .and_then(read_quota_exhaustion_type_marker),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|value| is_codex_quota_exhaustion_code(value))
+    .map(str::to_string)
+    .or_else(|| {
+        account
+            .quota
+            .as_ref()
+            .and_then(|quota| quota.raw_data.as_ref())
+            .and_then(read_quota_exhaustion_bool_marker)
+    })
+}
+
+fn read_quota_exhaustion_type_marker(value: &serde_json::Value) -> Option<&str> {
+    value
+        .as_str()
+        .or_else(|| value.get("type").and_then(|kind| kind.as_str()))
+}
+
+fn read_quota_exhaustion_bool_marker(raw_data: &serde_json::Value) -> Option<String> {
+    if raw_data
+        .get("quota_exhausted")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        return Some("quota_exhausted".to_string());
+    }
+    if raw_data
+        .get("rate_limit")
+        .and_then(|value| value.get("limit_reached"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        || raw_data
+            .get("rate_limit")
+            .and_then(|value| value.get("allowed"))
+            .and_then(|value| value.as_bool())
+            .is_some_and(|allowed| !allowed)
+    {
+        return Some("usage_limit_reached".to_string());
+    }
+    None
+}
+
+fn elapsed_blocking_quota_reset_from_account(
+    account: &CodexAccount,
+    now_seconds: i64,
+) -> Option<i64> {
+    let mut quota = account.quota.clone()?;
+    quota.normalize_window_slots();
+
+    let mut reset_times = Vec::new();
+    if quota.hourly_window_present.unwrap_or(true) && quota.hourly_percentage.clamp(0, 100) == 0 {
+        reset_times.push(quota.hourly_reset_time?);
+    }
+    if quota.weekly_window_present.unwrap_or(true) && quota.weekly_percentage.clamp(0, 100) == 0 {
+        reset_times.push(quota.weekly_reset_time?);
+    }
+    if reset_times.is_empty() || reset_times.iter().any(|reset| *reset > now_seconds) {
+        return None;
+    }
+    reset_times.into_iter().max()
+}
+
+fn local_access_health_allows_elapsed_reset_recovery(
+    health: Option<&CodexLocalAccessAccountHealth>,
+    now_seconds: i64,
+) -> bool {
+    let Some(health) = health else {
+        // 没有 health 条目时，已过 reset_at 的配额快照不能继续把账号钉死为 0。
+        return true;
+    };
+    if matches!(
+        health.status,
+        CodexLocalAccessAccountHealthStatus::AuthSuspect
+            | CodexLocalAccessAccountHealthStatus::ManualRequired
+            | CodexLocalAccessAccountHealthStatus::Disabled
+    ) || health.manual_required
+    {
+        return false;
+    }
+    if matches!(
+        health.status,
+        CodexLocalAccessAccountHealthStatus::Healthy
+            | CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+    ) {
+        return true;
+    }
+    health
+        .estimated_reset_at_ms
+        .or(health.cooldown_until_ms)
+        .is_some_and(|reset_at_ms| reset_at_ms <= now_seconds.saturating_mul(1000))
+}
+
+fn account_has_local_access_quota_exhaustion_snapshot(account: &CodexAccount) -> bool {
+    let source_matches = account
+        .quota
+        .as_ref()
+        .and_then(|quota| quota.raw_data.as_ref())
+        .and_then(|raw_data| raw_data.get("source"))
+        .and_then(|value| value.as_str())
+        .map(|source| {
+            matches!(
+                source,
+                "codex_local_access_health_registry" | "codex_local_access_upstream_error"
+            )
+        })
+        .unwrap_or(false);
+    if !source_matches {
+        return false;
+    }
+
+    quota_exhaustion_error_from_account(account).is_some()
+        || account
+            .quota
+            .as_ref()
+            .and_then(effective_codex_quota_remaining)
+            == Some(0)
+}
+
+fn account_quota_error_is_local_access_exhaustion(account: &CodexAccount) -> bool {
+    account.quota_error.as_ref().is_some_and(|error| {
+        is_codex_quota_exhaustion_code(error.code.as_deref().unwrap_or_default())
+            || is_codex_quota_exhaustion_code(&error.message)
+            || error
+                .message
+                .contains("local access quota exhaustion replayed")
+            || error
+                .message
+                .contains("Cockpit API service upstream quota exhausted")
+    })
+}
+
+fn repair_stale_local_access_quota_exhaustion_snapshot(
+    account: &mut CodexAccount,
+    registry: &CodexLocalAccessHealthRegistry,
+    now_seconds: i64,
+) -> bool {
+    if account.is_api_key_auth() || !account_has_local_access_quota_exhaustion_snapshot(account) {
+        return false;
+    }
+
+    let active_account_quota_evidence = registry
+        .accounts
+        .get(&account.id)
+        .and_then(|health| {
+            local_access_health_quota_exhaustion_evidence(account, registry, health, now_seconds)
+        })
+        .is_some();
+    if active_account_quota_evidence {
+        return false;
+    }
+    let health_allows_clear = registry.accounts.get(&account.id).is_some_and(|health| {
+        matches!(
+            health.status,
+            CodexLocalAccessAccountHealthStatus::Healthy
+                | CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+        )
+    });
+    if !health_allows_clear {
+        return false;
+    }
+
+    account.quota = None;
+    if account_quota_error_is_local_access_exhaustion(account) {
+        account.quota_error = None;
+    }
+    true
+}
+
+fn repair_account_quota_elapsed_reset_recovery(
+    account: &mut CodexAccount,
+    registry: &CodexLocalAccessHealthRegistry,
+    now_seconds: i64,
+) -> bool {
+    if account.is_api_key_auth() {
+        return false;
+    }
+    if account
+        .quota
+        .as_ref()
+        .and_then(effective_codex_quota_remaining)
+        != Some(0)
+    {
+        return false;
+    }
+    let Some(error_code) = quota_exhaustion_error_from_account(account) else {
+        return false;
+    };
+    let Some(reset_at) = elapsed_blocking_quota_reset_from_account(account, now_seconds) else {
+        return false;
+    };
+    let health = registry.accounts.get(&account.id);
+    if !local_access_health_allows_elapsed_reset_recovery(health, now_seconds) {
+        return false;
+    }
+
+    let previous = account.quota.clone();
+    account.quota = previous.map(|mut quota| {
+        quota.normalize_window_slots();
+        let recover_hourly = quota.hourly_window_present.unwrap_or(true)
+            && quota.hourly_percentage.clamp(0, 100) == 0
+            && quota
+                .hourly_reset_time
+                .is_some_and(|reset| reset <= now_seconds);
+        let recover_weekly = quota.weekly_window_present.unwrap_or(true)
+            && quota.weekly_percentage.clamp(0, 100) == 0
+            && quota
+                .weekly_reset_time
+                .is_some_and(|reset| reset <= now_seconds);
+        if recover_hourly {
+            quota.hourly_percentage = 100;
+            quota.hourly_reset_time = None;
+        }
+        if recover_weekly {
+            quota.weekly_percentage = 100;
+            quota.weekly_reset_time = None;
+        }
+        let estimated_remaining_percentage = effective_codex_quota_remaining(&quota).unwrap_or(100);
+        quota.raw_data = Some(serde_json::json!({
+            "source": "codex_local_access_reset_elapsed_recovery",
+            "error_type": error_code,
+            "previous_reset_at": reset_at,
+            "recovered_hourly": recover_hourly,
+            "recovered_weekly": recover_weekly,
+            "health_updated_at_ms": health.map(|health| health.updated_at),
+            "estimated_remaining_percentage": estimated_remaining_percentage,
+        }));
+        quota
+    });
+    account.quota_error = None;
+    account.usage_updated_at = Some(now_seconds);
+    true
+}
+
+fn model_cooldown_matches_quota_error(
+    cooldown: &CodexLocalAccessModelCooldown,
+    account_id: &str,
+    error_code: &str,
+    now_seconds: i64,
+) -> bool {
+    if cooldown.account_id.trim() != account_id.trim() {
+        return false;
+    }
+    if cooldown.cooldown_until_ms <= now_seconds.saturating_mul(1000) {
+        return false;
+    }
+
+    cooldown
+        .last_error_type
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case(error_code))
+}
+
+fn active_model_scoped_quota_cooldown_exists(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    error_code: &str,
+    now_seconds: i64,
+) -> bool {
+    registry.model_cooldowns.values().any(|cooldown| {
+        model_cooldown_matches_quota_error(cooldown, account_id, error_code, now_seconds)
+    })
+}
+
+fn local_access_health_quota_exhaustion_evidence(
+    account: &CodexAccount,
+    registry: &CodexLocalAccessHealthRegistry,
+    health: &CodexLocalAccessAccountHealth,
+    now_seconds: i64,
+) -> Option<(String, Option<i64>)> {
+    let error_code = codex_local_access_quota_error_code(health)?;
+    if !local_access_health_has_account_level_exhaustion_evidence(health, &error_code) {
+        return None;
+    }
+    if active_model_scoped_quota_cooldown_exists(registry, &account.id, &error_code, now_seconds) {
+        return None;
+    }
+
+    let status_confirms_zero = matches!(
+        health.status,
+        CodexLocalAccessAccountHealthStatus::Exhausted
+            | CodexLocalAccessAccountHealthStatus::CoolingDown
+    );
+    let stale_or_recovered_status = matches!(
+        health.status,
+        CodexLocalAccessAccountHealthStatus::Healthy
+            | CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+    );
+    let health_reports_available = health
+        .estimated_remaining_percentage
+        .or(health.last_observed_remaining_percentage)
+        .is_some_and(|remaining| remaining > 0);
+    let reset_at = if stale_or_recovered_status {
+        if account_has_local_access_quota_exhaustion_snapshot(account) || health_reports_available {
+            None
+        } else {
+            health
+                .estimated_reset_at_ms
+                .map(|value| value.div_euclid(1000))
+                .filter(|value| *value > now_seconds)
+                .or_else(|| future_quota_reset_from_account(account, now_seconds))
+        }
+    } else {
+        health
+            .estimated_reset_at_ms
+            .map(|value| value.div_euclid(1000))
+            .filter(|value| *value > now_seconds)
+            .or_else(|| future_quota_reset_from_account(account, now_seconds))
+    };
+    let remaining_fields_confirm_zero = !stale_or_recovered_status
+        && (health.estimated_remaining_percentage == Some(0)
+            || health.last_observed_remaining_percentage == Some(0));
+    let confirmed_zero_without_reset =
+        reset_at.is_none() && (status_confirms_zero || remaining_fields_confirm_zero);
+    if reset_at.is_none() && !confirmed_zero_without_reset {
+        return None;
+    }
+
+    Some((error_code, reset_at))
+}
+
+fn repair_account_quota_from_local_access_health(
+    account: &mut CodexAccount,
+    registry: &CodexLocalAccessHealthRegistry,
+    now_seconds: i64,
+) -> bool {
+    if account.is_api_key_auth() {
+        return false;
+    }
+
+    let Some(health) = registry.accounts.get(&account.id) else {
+        return false;
+    };
+    let Some((error_code, reset_at)) =
+        local_access_health_quota_exhaustion_evidence(account, registry, health, now_seconds)
+    else {
+        return false;
+    };
+
+    let current_remaining = account
+        .quota
+        .as_ref()
+        .and_then(effective_codex_quota_remaining);
+    if current_remaining == Some(0) {
+        return false;
+    }
+
+    let observed_at = health
+        .last_quota_exhausted_at_ms
+        .or(Some(health.updated_at))
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| chrono::Utc::now().timestamp_millis())
+        .div_euclid(1000);
+
+    let is_free_plan = is_explicit_free_codex_plan(account.plan_type.as_deref());
+    account.quota = Some(if let Some(reset_at) = reset_at {
+        CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 0,
+            weekly_reset_time: Some(reset_at),
+            weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({
+                "source": "codex_local_access_health_registry",
+                "error_type": error_code,
+                "plan_type": account.plan_type,
+                "health_updated_at_ms": health.updated_at,
+                "previous_remaining_percentage": current_remaining,
+            })),
+        }
+    } else {
+        let previous = account.quota.as_ref();
+        CodexQuota {
+            hourly_percentage: if is_free_plan { 100 } else { 0 },
+            hourly_reset_time: None,
+            hourly_window_minutes: if is_free_plan {
+                None
+            } else {
+                previous.and_then(|quota| quota.hourly_window_minutes)
+            },
+            hourly_window_present: Some(!is_free_plan),
+            weekly_percentage: 0,
+            weekly_reset_time: None,
+            weekly_window_minutes: if is_free_plan {
+                Some(CODEX_WEEK_WINDOW_MINUTES)
+            } else {
+                previous.and_then(|quota| quota.weekly_window_minutes)
+            },
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({
+                "source": "codex_local_access_health_registry",
+                "error_type": error_code,
+                "plan_type": account.plan_type,
+                "health_updated_at_ms": health.updated_at,
+                "previous_remaining_percentage": current_remaining,
+                "reset_unknown": true,
+            })),
+        }
+    });
+    account.quota_error = Some(CodexQuotaErrorInfo {
+        code: Some(error_code.clone()),
+        message: format!(
+            "Codex local access quota exhaustion replayed from health registry: error_type={}, reset_at={}",
+            error_code,
+            reset_at.map_or_else(|| "unknown".to_string(), |value| value.to_string())
+        ),
+        timestamp: observed_at,
+    });
+    account.usage_updated_at = Some(observed_at);
+    true
+}
+
+pub(crate) fn repair_account_quota_from_local_access_health_for_refresh(
+    account: &mut CodexAccount,
+) -> Result<bool, String> {
+    let registry = load_local_access_health_registry().unwrap_or_default();
+    let now_seconds = chrono::Utc::now().timestamp();
+    if repair_account_quota_elapsed_reset_recovery(account, &registry, now_seconds) {
+        save_account(account)?;
+        return Ok(true);
+    }
+    if repair_stale_local_access_quota_exhaustion_snapshot(account, &registry, now_seconds) {
+        save_account(account)?;
+        return Ok(true);
+    }
+    if repair_account_quota_from_local_access_health(account, &registry, now_seconds) {
+        save_account(account)?;
+        return Ok(true);
+    }
+    if !account.is_api_key_auth()
+        && account
+            .quota
+            .as_ref()
+            .and_then(effective_codex_quota_remaining)
+            == Some(0)
+        && registry.accounts.get(&account.id).is_some_and(|health| {
+            local_access_health_quota_exhaustion_evidence(account, &registry, health, now_seconds)
+                .is_some()
+        })
+    {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn repair_accounts_quota_from_local_access_health(accounts: &mut [CodexAccount]) -> usize {
+    let registry = load_local_access_health_registry().unwrap_or_default();
+    let now_seconds = chrono::Utc::now().timestamp();
+    let mut repaired = 0usize;
+    for account in accounts {
+        if repair_account_quota_elapsed_reset_recovery(account, &registry, now_seconds)
+            || repair_stale_local_access_quota_exhaustion_snapshot(account, &registry, now_seconds)
+            || repair_account_quota_from_local_access_health(account, &registry, now_seconds)
+        {
+            match save_account(account) {
+                Ok(()) => repaired += 1,
+                Err(error) => logger::log_warn(&format!(
+                    "[Codex Account][QuotaRepair] 历史 quota 状态写回失败: account_id={}, error={}",
+                    account.id, error
+                )),
+            }
+        }
+    }
+    if repaired > 0 {
+        logger::log_warn(&format!(
+            "[Codex Account][QuotaRepair] 已根据 local access health registry 修复历史 quota 缓存: repaired_accounts={}",
+            repaired
+        ));
+    }
+    repaired
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct CodexStartupQuotaConsistencyScanReport {
+    #[serde(default)]
+    pub started_at_ms: i64,
+    #[serde(default)]
+    pub finished_at_ms: i64,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub scanned_accounts: usize,
+    #[serde(default)]
+    pub repaired_accounts: usize,
+    #[serde(default)]
+    pub skipped_recent: bool,
+}
+
+fn startup_quota_scan_state_path() -> PathBuf {
+    get_codex_accounts_data_dir().join(CODEX_STARTUP_QUOTA_SCAN_STATE_FILE)
+}
+
+fn load_startup_quota_scan_state() -> Option<CodexStartupQuotaConsistencyScanReport> {
+    let path = startup_quota_scan_state_path();
+    if !path.exists() {
+        return None;
+    }
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<CodexStartupQuotaConsistencyScanReport>(&content).ok()
+}
+
+fn save_startup_quota_scan_state(
+    report: &CodexStartupQuotaConsistencyScanReport,
+) -> Result<(), String> {
+    let path = startup_quota_scan_state_path();
+    let content = serde_json::to_string_pretty(report)
+        .map_err(|error| format!("序列化启动 quota 扫描状态失败: {}", error))?;
+    write_string_atomic(&path, &content)
+        .map_err(|error| format!("写入启动 quota 扫描状态失败: {}", error))
+}
+
+fn startup_quota_scan_recent(now_ms: i64) -> bool {
+    let Some(previous) = load_startup_quota_scan_state() else {
+        return false;
+    };
+    let finished_at_ms = previous.finished_at_ms;
+    if finished_at_ms <= 0 {
+        return false;
+    }
+    let age_ms = now_ms.saturating_sub(finished_at_ms);
+    age_ms >= 0 && age_ms < CODEX_STARTUP_QUOTA_SCAN_MIN_INTERVAL_MS
+}
+
+fn load_accounts_for_startup_quota_scan() -> (Vec<CodexAccount>, usize) {
+    let index = load_account_index();
+    let mut failed = 0usize;
+    let accounts = index
+        .accounts
+        .iter()
+        .filter_map(
+            |summary| match load_account_with_summary(&summary.id, Some(summary)) {
+                Ok(account) => account,
+                Err(error) => {
+                    failed += 1;
+                    logger::log_warn(&format!(
+                        "[Codex Account][QuotaStartupScan] 跳过无法读取的账号详情: account_id={}, error={}",
+                        summary.id, error
+                    ));
+                    None
+                }
+            },
+        )
+        .collect();
+    (accounts, failed)
+}
+
+fn run_startup_quota_consistency_scan_inner(
+    force: bool,
+) -> Result<CodexStartupQuotaConsistencyScanReport, String> {
+    let started_at_ms = chrono::Utc::now().timestamp_millis();
+    let started = std::time::Instant::now();
+    if !force && startup_quota_scan_recent(started_at_ms) {
+        return Ok(CodexStartupQuotaConsistencyScanReport {
+            started_at_ms,
+            finished_at_ms: chrono::Utc::now().timestamp_millis(),
+            duration_ms: started.elapsed().as_millis() as u64,
+            skipped_recent: true,
+            ..Default::default()
+        });
+    }
+
+    let (mut accounts, failed_accounts) = load_accounts_for_startup_quota_scan();
+    let scanned_accounts = accounts.len();
+    let repaired_accounts = repair_accounts_quota_from_local_access_health(&mut accounts);
+    let report = CodexStartupQuotaConsistencyScanReport {
+        started_at_ms,
+        finished_at_ms: chrono::Utc::now().timestamp_millis(),
+        duration_ms: started.elapsed().as_millis() as u64,
+        scanned_accounts,
+        repaired_accounts,
+        skipped_recent: false,
+    };
+
+    if let Err(error) = save_startup_quota_scan_state(&report) {
+        logger::log_warn(&format!(
+            "[Codex Account][QuotaStartupScan] 保存扫描状态失败: {}",
+            error
+        ));
+    }
+    logger::log_info(&format!(
+        "[Codex Account][QuotaStartupScan] 本机 quota 一致性扫描完成: scanned_accounts={}, repaired_accounts={}, failed_accounts={}, duration_ms={}",
+        report.scanned_accounts, report.repaired_accounts, failed_accounts, report.duration_ms
+    ));
+    Ok(report)
+}
+
+#[cfg(test)]
+fn run_startup_quota_consistency_scan_for_tests(
+    force: bool,
+) -> Result<CodexStartupQuotaConsistencyScanReport, String> {
+    run_startup_quota_consistency_scan_inner(force)
+}
+
+pub fn schedule_startup_quota_consistency_scan() {
+    if CODEX_STARTUP_QUOTA_SCAN_SCHEDULED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawn_result = std::thread::Builder::new()
+        .name("codex-quota-startup-scan".to_string())
+        .spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(
+                CODEX_STARTUP_QUOTA_SCAN_DELAY_SECONDS,
+            ));
+            match run_startup_quota_consistency_scan_inner(false) {
+                Ok(report) if report.skipped_recent => {
+                    logger::log_info(
+                        "[Codex Account][QuotaStartupScan] 距离上次扫描不足 10 分钟，已跳过",
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => logger::log_warn(&format!(
+                    "[Codex Account][QuotaStartupScan] 后台扫描失败: {}",
+                    error
+                )),
+            }
+        });
+    if let Err(error) = spawn_result {
+        CODEX_STARTUP_QUOTA_SCAN_SCHEDULED.store(false, Ordering::SeqCst);
+        logger::log_warn(&format!(
+            "[Codex Account][QuotaStartupScan] 启动后台扫描线程失败: {}",
+            error
+        ));
+    }
+}
+
 fn load_account_with_summary(
     account_id: &str,
     summary: Option<&CodexAccountSummary>,
@@ -2061,14 +3319,30 @@ fn load_account_with_summary(
 
     let content = fs::read_to_string(&path)
         .map_err(|error| format!("读取账号详情失败 ({}): {}", path.display(), error))?;
-    if let Ok(account) = serde_json::from_str::<CodexAccount>(&content) {
+    if let Ok(mut account) = serde_json::from_str::<CodexAccount>(&content) {
+        let mut changed = false;
+        if !account.is_api_key_auth() && sync_identity_from_tokens(&mut account) {
+            changed = true;
+        }
+        if normalize_account_for_runtime(&mut account) {
+            changed = true;
+        }
+        if changed {
+            if let Err(error) = save_account(&account) {
+                logger::log_warn(&format!(
+                    "[Codex Account][Compat] 账号身份/quota 标准化写回失败: account_id={}, error={}",
+                    account.id, error
+                ));
+            }
+        }
         return Ok(Some(account));
     }
 
     let value = serde_json::from_str::<serde_json::Value>(&content)
         .map_err(|error| format!("账号详情不是有效 JSON ({}): {}", path.display(), error))?;
-    let account = parse_codex_account_compat(value, account_id, summary)?
+    let mut account = parse_codex_account_compat(value, account_id, summary)?
         .ok_or_else(|| format!("账号详情缺少可识别凭据 ({})", path.display()))?;
+    normalize_account_for_runtime(&mut account);
 
     if let Err(error) = save_account(&account) {
         logger::log_warn(&format!(
@@ -2083,8 +3357,10 @@ fn load_account_with_summary(
 /// 保存单个账号详情
 pub fn save_account(account: &CodexAccount) -> Result<(), String> {
     let path = get_accounts_dir().join(format!("{}.json", &account.id));
+    let mut account = account.clone();
+    normalize_account_for_runtime(&mut account);
     let content =
-        serde_json::to_string_pretty(account).map_err(|e| format!("序列化失败: {}", e))?;
+        serde_json::to_string_pretty(&account).map_err(|e| format!("序列化失败: {}", e))?;
     write_string_atomic(&path, &content).map_err(|e| format!("写入账号详情失败: {}", e))?;
     Ok(())
 }
@@ -2100,8 +3376,8 @@ pub fn delete_account_file(account_id: &str) -> Result<(), String> {
 
 /// 列出所有账号
 pub fn list_accounts() -> Vec<CodexAccount> {
-    let index = load_account_index();
-    index
+    let mut index = load_account_index();
+    let mut accounts: Vec<CodexAccount> = index
         .accounts
         .iter()
         .filter_map(
@@ -2116,11 +3392,21 @@ pub fn list_accounts() -> Vec<CodexAccount> {
                 }
             },
         )
-        .collect()
+        .collect();
+    repair_accounts_quota_from_local_access_health(&mut accounts);
+    if sync_loaded_account_summaries(&mut index, &accounts) {
+        if let Err(error) = save_account_index(&index) {
+            logger::log_warn(&format!(
+                "[Codex Account][Compat] 账号索引身份摘要写回失败: error={}",
+                error
+            ));
+        }
+    }
+    accounts
 }
 
 pub fn list_accounts_checked() -> Result<Vec<CodexAccount>, String> {
-    let index = load_account_index_checked()?;
+    let mut index = load_account_index_checked()?;
     let mut accounts = Vec::new();
     let mut failed = Vec::new();
 
@@ -2148,7 +3434,48 @@ pub fn list_accounts_checked() -> Result<Vec<CodexAccount>, String> {
         ));
     }
 
+    repair_accounts_quota_from_local_access_health(&mut accounts);
+    if sync_loaded_account_summaries(&mut index, &accounts) {
+        save_account_index(&index)?;
+    }
+
     Ok(accounts)
+}
+
+pub fn sync_local_quota_observations() -> Result<usize, String> {
+    let index = load_account_index_checked()?;
+    let mut accounts = Vec::new();
+    let mut failed = Vec::new();
+
+    for summary in &index.accounts {
+        match load_account_with_summary(&summary.id, Some(summary)) {
+            Ok(Some(account)) => accounts.push(account),
+            Ok(None) => failed.push(format!("{}: 详情文件不存在", summary.id)),
+            Err(error) => failed.push(format!("{}: {}", summary.id, error)),
+        }
+    }
+
+    if !failed.is_empty() {
+        logger::log_warn(&format!(
+            "[Codex Account][QuotaSync] 部分账号详情无法读取，已跳过: loaded={}, failed={}",
+            accounts.len(),
+            failed.join("; ")
+        ));
+    }
+
+    if accounts.is_empty() {
+        return Ok(0);
+    }
+
+    let direct_log_sync_state_path =
+        get_codex_accounts_data_dir().join(CODEX_DIRECT_QUOTA_LOG_SYNC_STATE_FILE);
+
+    let direct_repairs =
+        crate::modules::codex_quota::repair_direct_oauth_observations_for_accounts_incremental(
+            &mut accounts,
+            &direct_log_sync_state_path,
+        );
+    Ok(direct_repairs + repair_accounts_quota_from_local_access_health(&mut accounts))
 }
 
 /// 刷新账号资料（团队名/结构）
@@ -2207,11 +3534,6 @@ pub fn upsert_api_key_account(
     api_provider_mode: Option<CodexApiProviderMode>,
     api_provider_id: Option<String>,
     api_provider_name: Option<String>,
-    api_model_catalog: Vec<String>,
-    api_wire_api: Option<String>,
-    api_supports_vision: bool,
-    api_model_vision_support: std::collections::HashMap<String, bool>,
-    account_name: Option<String>,
 ) -> Result<CodexAccount, String> {
     let (api_key, api_base_url) = validate_api_key_credentials(&api_key, api_base_url.as_deref())?;
     let provider_config = resolve_api_provider_config(
@@ -2221,7 +3543,6 @@ pub fn upsert_api_key_account(
         api_provider_name.as_deref(),
     )?;
     let account_id = build_api_key_account_id(&api_key);
-    let account_name = normalize_optional_value(account_name);
     let mut index = load_account_index();
     let existing = index.accounts.iter().position(|item| item.id == account_id);
 
@@ -2236,25 +3557,11 @@ pub fn upsert_api_key_account(
                 provider_config.base_url.clone(),
                 provider_config.provider_id.clone(),
                 provider_config.provider_name.clone(),
-                normalize_api_model_catalog(api_model_catalog.clone()),
             )
         });
-        apply_api_key_fields(
-            &mut acc,
-            &api_key,
-            provider_config.clone(),
-            api_model_catalog.clone(),
-            api_wire_api.clone(),
-            api_supports_vision,
-            api_model_vision_support.clone(),
-        );
+        apply_api_key_fields(&mut acc, &api_key, provider_config.clone());
         if acc.email.trim().is_empty() {
             acc.email = build_api_key_email(&api_key);
-        }
-        if let Some(name) = account_name.clone() {
-            if normalize_optional_ref(acc.account_name.as_deref()).is_none() {
-                acc.account_name = Some(name);
-            }
         }
         acc.update_last_used();
         acc
@@ -2267,13 +3574,8 @@ pub fn upsert_api_key_account(
             provider_config.base_url.clone(),
             provider_config.provider_id.clone(),
             provider_config.provider_name.clone(),
-            normalize_api_model_catalog(api_model_catalog.clone()),
         );
         acc.plan_type = Some(API_KEY_LOGIN_PLAN_TYPE.to_string());
-        acc.account_name = account_name;
-        acc.api_wire_api = normalize_api_wire_api(api_wire_api.clone());
-        acc.api_supports_vision = api_supports_vision;
-        acc.api_model_vision_support = normalize_api_model_vision_support(api_model_vision_support);
         index.accounts.push(CodexAccountSummary {
             id: account_id.clone(),
             email: acc.email.clone(),
@@ -2369,8 +3671,11 @@ fn upsert_account_with_hints(
         acc.api_provider_name = None;
         acc.bound_oauth_account_id = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
-        acc.subscription_active_until = subscription_active_until.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
+        merge_subscription_active_until(
+            &mut acc.subscription_active_until,
+            subscription_active_until.clone(),
+        );
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
         acc.update_last_used();
@@ -2388,8 +3693,11 @@ fn upsert_account_with_hints(
         acc.api_provider_name = None;
         acc.bound_oauth_account_id = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
-        acc.subscription_active_until = subscription_active_until.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
+        merge_subscription_active_until(
+            &mut acc.subscription_active_until,
+            subscription_active_until.clone(),
+        );
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
 
@@ -2397,8 +3705,8 @@ fn upsert_account_with_hints(
         index.accounts.push(CodexAccountSummary {
             id: existing_id.clone(),
             email: email.clone(),
-            plan_type: plan_type.clone(),
-            subscription_active_until: subscription_active_until.clone(),
+            plan_type: acc.plan_type.clone(),
+            subscription_active_until: acc.subscription_active_until.clone(),
             created_at: acc.created_at,
             last_used: acc.last_used,
         });
@@ -2686,6 +3994,31 @@ fn load_local_oauth_snapshot_from_official_store(
     auth_json.and_then(load_local_oauth_snapshot_from_auth_file)
 }
 
+fn local_oauth_snapshot_from_token_value(
+    value: &serde_json::Value,
+) -> Option<LocalCodexOAuthSnapshot> {
+    let (tokens, account_id_hint) = extract_codex_tokens_from_value(value)?;
+    let (email, _, _, subscription_active_until, id_token_account_id, id_token_org_id) =
+        extract_user_info(&tokens.id_token).ok()?;
+    let account_id = normalize_optional_value(
+        account_id_hint
+            .or_else(|| extract_chatgpt_account_id_from_access_token(&tokens.access_token))
+            .or(id_token_account_id),
+    );
+    let organization_id = normalize_optional_value(
+        extract_chatgpt_organization_id_from_access_token(&tokens.access_token).or(id_token_org_id),
+    );
+
+    Some(LocalCodexOAuthSnapshot {
+        tokens,
+        email,
+        subscription_active_until,
+        account_id,
+        organization_id,
+        last_refresh_at: parse_auth_file_last_refresh(value.get("last_refresh")),
+    })
+}
+
 fn local_oauth_snapshot_matches_account(
     snapshot: &LocalCodexOAuthSnapshot,
     account: &CodexAccount,
@@ -2757,10 +4090,10 @@ fn apply_local_oauth_snapshot(
         changed = true;
     }
 
-    if normalize_optional_ref(account.subscription_active_until.as_deref())
-        != snapshot.subscription_active_until
-    {
-        account.subscription_active_until = snapshot.subscription_active_until.clone();
+    if merge_subscription_active_until(
+        &mut account.subscription_active_until,
+        snapshot.subscription_active_until.clone(),
+    ) {
         changed = true;
     }
 
@@ -2920,6 +4253,56 @@ pub fn sync_account_from_auth_dir(
     Ok(account)
 }
 
+pub fn sync_account_tokens_from_sidecar_auth_file(
+    account_id: &str,
+    auth_path: &Path,
+) -> Result<CodexAccount, String> {
+    if account_id.trim().is_empty() {
+        return Err("sidecar auth_updated 事件缺少 account_id".to_string());
+    }
+    let mut account =
+        load_account(account_id).ok_or_else(|| format!("账号不存在: {}", account_id))?;
+    if account.is_api_key_auth() {
+        return Ok(account);
+    }
+    let content = fs::read_to_string(auth_path).map_err(|e| {
+        format!(
+            "读取 sidecar OAuth 凭证失败: path={}, error={}",
+            auth_path.display(),
+            e
+        )
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+        format!(
+            "解析 sidecar OAuth 凭证失败: path={}, error={}",
+            auth_path.display(),
+            e
+        )
+    })?;
+    let snapshot = local_oauth_snapshot_from_token_value(&value)
+        .ok_or_else(|| "sidecar OAuth 凭证缺少可同步的 Token".to_string())?;
+    if !local_oauth_snapshot_matches_account(&snapshot, &account) {
+        return Err(format!(
+            "sidecar OAuth Token 与账号不匹配，已拒绝反向同步: account_id={}, path={}",
+            account_id,
+            auth_path.display()
+        ));
+    }
+
+    if apply_local_oauth_snapshot(&mut account, &snapshot) {
+        save_account(&account)?;
+        write_managed_account_projections(&account);
+        logger::log_info(&format!(
+            "Codex sidecar OAuth Token 已同步回账号库: account_id={}, generation={}, source_file={}",
+            account.id,
+            account.token_generation,
+            auth_path.display()
+        ));
+    }
+
+    Ok(account)
+}
+
 pub fn sync_managed_projection_from_auth_dir(
     account_id: &str,
     base_dir: &Path,
@@ -3042,11 +4425,7 @@ fn sync_api_key_account_from_local_state(account: &mut CodexAccount, base_dir: &
 /// 获取当前激活的账号（基于 Tools 显式 current_account_id）
 pub fn get_current_account() -> Option<CodexAccount> {
     let base_dir = get_codex_home();
-    get_current_account_from_loaded(
-        load_account_index(),
-        |account_id| load_account(account_id),
-        &base_dir,
-    )
+    get_current_account_from_loaded(load_account_index(), load_account, &base_dir)
 }
 
 fn get_current_account_from_loaded(
@@ -3063,14 +4442,50 @@ fn get_current_account_from_loaded(
     Some(account)
 }
 
+pub fn get_current_or_fallback_oauth_account() -> Option<CodexAccount> {
+    if let Some(account) = get_current_account() {
+        return Some(account);
+    }
+
+    let mut accounts = list_accounts_checked().ok()?;
+    accounts.sort_by(|left, right| {
+        right
+            .last_used
+            .cmp(&left.last_used)
+            .then_with(|| right.created_at.cmp(&left.created_at))
+            .then_with(|| left.email.cmp(&right.email))
+    });
+    let account = accounts.into_iter().find(|item| !item.is_api_key_auth())?;
+
+    let mut index = load_account_index();
+    index.current_account_id = Some(account.id.clone());
+    if let Err(err) = save_account_index(&index) {
+        logger::log_warn(&format!(
+            "[Codex Account] Direct Projection fallback 写回 current_account_id 失败: account_id={}, error={}",
+            account.id, err
+        ));
+    } else {
+        logger::log_info(&format!(
+            "[Codex Account] Direct Projection fallback 已恢复 current_account_id: account_id={}, email={}",
+            account.id, account.email
+        ));
+    }
+
+    Some(account)
+}
+
 fn build_auth_file_value(account: &CodexAccount) -> Result<serde_json::Value, String> {
     if account.is_api_key_auth() {
         let api_key = normalize_optional_ref(account.openai_api_key.as_deref())
             .ok_or("API Key 账号缺少 OPENAI_API_KEY")?;
-        return Ok(serde_json::json!({
+        let mut auth_file = serde_json::json!({
             "auth_mode": API_KEY_AUTH_MODE,
             "OPENAI_API_KEY": api_key,
-        }));
+        });
+        if let Some(base_url) = normalize_optional_ref(account.api_base_url.as_deref()) {
+            auth_file["base_url"] = serde_json::Value::String(base_url.to_string());
+        }
+        return Ok(auth_file);
     }
 
     if account.tokens.access_token.trim().is_empty() {
@@ -3214,6 +4629,16 @@ fn write_string_atomic(path: &Path, content: &str) -> Result<(), String> {
     crate::modules::atomic_write::write_string_atomic(path, content)
 }
 
+fn write_string_atomic_if_changed(path: &Path, content: &str) -> Result<(), String> {
+    if fs::read_to_string(path)
+        .map(|existing| existing == content)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    write_string_atomic(path, content)
+}
+
 fn build_managed_projection(account: &CodexAccount) -> CodexManagedAuthProjection {
     CodexManagedAuthProjection {
         version: 1,
@@ -3225,12 +4650,30 @@ fn build_managed_projection(account: &CodexAccount) -> CodexManagedAuthProjectio
     }
 }
 
+fn managed_projection_semantically_matches(
+    existing: &CodexManagedAuthProjection,
+    next: &CodexManagedAuthProjection,
+) -> bool {
+    existing.version == next.version
+        && existing.writer == next.writer
+        && existing.account_id == next.account_id
+        && existing.email == next.email
+        && existing.token_generation == next.token_generation
+}
+
 fn projection_path_for_dir(base_dir: &Path) -> PathBuf {
     base_dir.join(CODEX_AUTH_PROJECTION_FILE_NAME)
 }
 
 fn write_managed_projection_to_dir(base_dir: &Path, account: &CodexAccount) -> Result<(), String> {
     let projection = build_managed_projection(account);
+    if read_managed_projection_from_dir(base_dir)
+        .as_ref()
+        .map(|existing| managed_projection_semantically_matches(existing, &projection))
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
     let content = serde_json::to_string_pretty(&projection)
         .map_err(|e| format!("受管投影序列化失败: {}", e))?;
     write_string_atomic(&projection_path_for_dir(base_dir), &content)
@@ -3285,12 +4728,10 @@ pub fn write_auth_file_to_dir(base_dir: &Path, account: &CodexAccount) -> Result
         auth_path.display()
     ));
 
-    crate::modules::codex_local_access::cleanup_provider_gateway_profile_model_overrides(base_dir)?;
-
     let auth_file = build_auth_file_value(account)?;
     let content =
         serde_json::to_string_pretty(&auth_file).map_err(|e| format!("序列化失败: {}", e))?;
-    write_string_atomic(&auth_path, &content).map_err(|e| {
+    write_string_atomic_if_changed(&auth_path, &content).map_err(|e| {
         format!(
             "写入 auth.json 失败: path={}, error={}",
             auth_path.display(),
@@ -3447,6 +4888,156 @@ fn write_api_key_account_bundle_with_oauth_to_dir(
         provider_config.base_url.is_some()
     ));
     Ok(())
+}
+
+fn auth_file_semantically_matches(base_dir: &Path, account: &CodexAccount) -> bool {
+    let Some(existing) = read_codex_auth_file_from_dir(base_dir) else {
+        return false;
+    };
+    auth_file_matches_account(&existing, account)
+}
+
+fn auth_file_matches_account(existing: &CodexAuthFile, account: &CodexAccount) -> bool {
+    if account.is_api_key_auth() {
+        let expected_api_key =
+            match normalize_api_key(account.openai_api_key.as_deref().unwrap_or_default()) {
+                Some(value) => value,
+                None => return false,
+            };
+        return existing.auth_mode.as_deref() == Some(API_KEY_AUTH_MODE)
+            && existing
+                .openai_api_key
+                .as_ref()
+                .and_then(|value| match value {
+                    serde_json::Value::String(raw) => normalize_optional_ref(Some(raw)),
+                    _ => None,
+                })
+                == Some(expected_api_key)
+            && normalize_optional_ref(existing.base_url.as_deref())
+                == normalize_optional_ref(account.api_base_url.as_deref());
+    }
+
+    let Some(tokens) = existing.tokens.as_ref() else {
+        return false;
+    };
+
+    existing.auth_mode.is_none()
+        && matches!(
+            existing.openai_api_key.as_ref(),
+            None | Some(serde_json::Value::Null)
+        )
+        && existing.base_url.is_none()
+        && tokens.access_token == account.tokens.access_token
+        && normalize_optional_ref(tokens.refresh_token.as_deref())
+            == normalize_optional_ref(account.tokens.refresh_token.as_deref())
+        && normalize_optional_ref(Some(tokens.id_token.as_str()))
+            == normalize_optional_ref(Some(account.tokens.id_token.as_str()))
+        && normalize_optional_ref(tokens.account_id.as_deref())
+            == normalize_optional_ref(account.account_id.as_deref())
+}
+
+fn api_provider_config_matches(base_dir: &Path, account: &CodexAccount) -> bool {
+    let config_path = get_config_toml_path(base_dir);
+    let existing = match fs::read_to_string(&config_path) {
+        Ok(content) => content,
+        Err(_) => return false,
+    };
+    let doc = match existing.parse::<Document>() {
+        Ok(doc) => doc,
+        Err(_) => return false,
+    };
+
+    let model_provider = doc
+        .get(CODEX_CONFIG_MODEL_PROVIDER_KEY)
+        .and_then(|item| item.as_str())
+        .unwrap_or_default();
+    let forced_login_method = doc
+        .get(CODEX_CONFIG_FORCED_LOGIN_METHOD_KEY)
+        .and_then(|item| item.as_str())
+        .unwrap_or_default();
+
+    if account.is_api_key_auth() {
+        if model_provider != CODEX_RUNTIME_MODEL_PROVIDER_ID || forced_login_method != "api" {
+            return false;
+        }
+        let provider_table = match doc
+            .get(CODEX_CONFIG_MODEL_PROVIDERS_KEY)
+            .and_then(|item| item.as_table())
+            .and_then(|table| table.get(CODEX_RUNTIME_MODEL_PROVIDER_ID))
+            .and_then(|item| item.as_table())
+        {
+            Some(table) => table,
+            None => return false,
+        };
+        let expected_config = infer_api_provider_config(
+            account.api_base_url.as_deref(),
+            Some(account.api_provider_mode.clone()),
+            account.api_provider_id.as_deref(),
+            account.api_provider_name.as_deref(),
+        );
+        let expected_base_url = expected_config
+            .base_url
+            .as_deref()
+            .unwrap_or(CODEX_DEFAULT_OPENAI_BASE_URL);
+        let expected_name = expected_config
+            .provider_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(CODEX_DEFAULT_RUNTIME_PROVIDER_NAME);
+        let expected_api_key =
+            match normalize_api_key(account.openai_api_key.as_deref().unwrap_or_default()) {
+                Some(value) => value,
+                None => return false,
+            };
+
+        return provider_table.get("name").and_then(|item| item.as_str()) == Some(expected_name)
+            && provider_table
+                .get("base_url")
+                .and_then(|item| item.as_str())
+                == Some(expected_base_url)
+            && provider_table
+                .get(CODEX_CONFIG_EXPERIMENTAL_BEARER_TOKEN_KEY)
+                .and_then(|item| item.as_str())
+                == Some(expected_api_key.as_str())
+            && provider_table
+                .get("wire_api")
+                .and_then(|item| item.as_str())
+                == Some(CODEX_PROVIDER_WIRE_API);
+    }
+
+    model_provider == CODEX_OPENAI_PROVIDER_ID && forced_login_method == "chatgpt"
+}
+
+fn runtime_bundle_semantically_matches(base_dir: &Path, account: &CodexAccount) -> bool {
+    auth_file_semantically_matches(base_dir, account)
+        && api_provider_config_matches(base_dir, account)
+        && read_managed_projection_from_dir(base_dir)
+            .as_ref()
+            .map(|existing| {
+                managed_projection_semantically_matches(
+                    existing,
+                    &build_managed_projection(account),
+                )
+            })
+            .unwrap_or(false)
+}
+
+fn api_key_bundle_with_oauth_semantically_matches(
+    base_dir: &Path,
+    api_key_account: &CodexAccount,
+    oauth_account: &CodexAccount,
+) -> bool {
+    auth_file_semantically_matches(base_dir, oauth_account)
+        && api_provider_config_matches(base_dir, api_key_account)
+        && read_managed_projection_from_dir(base_dir)
+            .as_ref()
+            .map(|existing| {
+                managed_projection_semantically_matches(
+                    existing,
+                    &build_managed_projection(oauth_account),
+                )
+            })
+            .unwrap_or(false)
 }
 
 pub fn write_account_bundle_to_dir(base_dir: &Path, account: &CodexAccount) -> Result<(), String> {
@@ -3908,26 +5499,42 @@ fn switch_account_with_prepared(
         account_for_write.email,
         codex_home.display()
     ));
-    write_prepared_account_bundle_to_dir(&codex_home, &account_for_write)?;
+    if runtime_bundle_semantically_matches(&codex_home, &account_for_write) {
+        logger::log_info(&format!(
+            "[Codex切号] 目标投影与当前运行目录一致，跳过重复写入: account_id={}, target_dir={}",
+            account_for_write.id,
+            codex_home.display()
+        ));
+    } else {
+        write_prepared_account_bundle_to_dir(&codex_home, &account_for_write)?;
+    }
     logger::log_info(&format!(
         "[Codex切号] 已替换目录登录信息: target_dir={}, target_file={}",
         codex_home.display(),
         auth_path.display()
     ));
 
-    // 更新索引中的 current_account_id
+    finish_account_switch_index(account_id, account_for_write, "direct_projection")
+}
+
+fn finish_account_switch_index(
+    account_id: &str,
+    mut account: CodexAccount,
+    reason: &str,
+) -> Result<CodexAccount, String> {
     let mut index = load_account_index();
     index.current_account_id = Some(account_id.to_string());
     save_account_index(&index)?;
 
-    // 更新账号的 last_used
-    let mut updated_account = account_for_write.clone();
-    updated_account.update_last_used();
-    save_account(&updated_account)?;
+    account.update_last_used();
+    save_account(&account)?;
 
-    logger::log_info(&format!("已切换到 Codex 账号: {}", updated_account.email));
+    logger::log_info(&format!(
+        "[Codex切号] 已更新当前账号索引: account_id={}, email={}, reason={}",
+        account.id, account.email, reason
+    ));
 
-    Ok(updated_account)
+    Ok(account)
 }
 
 pub async fn switch_account_managed(account_id: &str) -> Result<CodexAccount, String> {
@@ -3946,20 +5553,24 @@ pub async fn switch_account_managed(account_id: &str) -> Result<CodexAccount, St
             oauth_account.id,
             codex_home.display()
         ));
-        write_api_key_account_bundle_with_oauth_to_dir(&codex_home, &account, &oauth_account)?;
+        if api_key_bundle_with_oauth_semantically_matches(&codex_home, &account, &oauth_account) {
+            logger::log_info(&format!(
+                "[Codex切号] API Key 组合投影与当前运行目录一致，跳过重复写入: api_account_id={}, oauth_account_id={}, target_dir={}",
+                account.id,
+                oauth_account.id,
+                codex_home.display()
+            ));
+        } else {
+            write_api_key_account_bundle_with_oauth_to_dir(&codex_home, &account, &oauth_account)?;
+        }
         logger::log_info(&format!(
             "[Codex切号] 已替换目录登录信息: target_dir={}, target_file={}",
             codex_home.display(),
             auth_path.display()
         ));
 
-        let mut index = load_account_index();
-        index.current_account_id = Some(account_id.to_string());
-        save_account_index(&index)?;
-
-        let mut updated_account = account.clone();
-        updated_account.update_last_used();
-        save_account(&updated_account)?;
+        let updated_account =
+            finish_account_switch_index(account_id, account.clone(), "api_key_oauth_projection")?;
 
         logger::log_info(&format!(
             "已切换到 Codex API Key 账号: {}，登录态绑定 OAuth: {}",
@@ -3973,6 +5584,12 @@ pub async fn switch_account_managed(account_id: &str) -> Result<CodexAccount, St
     let _guard = lock.lock().await;
     let account = refresh_managed_account_locked(account_id, false, "switch").await?;
     switch_account_with_prepared(account_id, account)
+}
+
+pub fn switch_account_index_only(account_id: &str) -> Result<CodexAccount, String> {
+    let account = load_account_after_index_repair(account_id)
+        .ok_or_else(|| format!("账号不存在: {}", account_id))?;
+    finish_account_switch_index(account_id, account, "runtime_projection_index_only")
 }
 
 /// 从本地 auth.json 导入账号
@@ -4006,11 +5623,6 @@ pub fn import_from_local() -> Result<CodexAccount, String> {
             Some(fallback_provider.mode),
             fallback_provider.provider_id.clone(),
             fallback_provider.provider_name.clone(),
-            Vec::new(),
-            None,
-            false,
-            std::collections::HashMap::new(),
-            None,
         );
     }
 
@@ -4025,11 +5637,6 @@ pub fn import_from_local() -> Result<CodexAccount, String> {
             Some(fallback_provider.mode),
             fallback_provider.provider_id.clone(),
             fallback_provider.provider_name.clone(),
-            Vec::new(),
-            None,
-            false,
-            std::collections::HashMap::new(),
-            None,
         );
     }
 
@@ -4046,11 +5653,6 @@ fn import_account_struct(account: CodexAccount) -> Result<CodexAccount, String> 
             Some(account.api_provider_mode),
             account.api_provider_id.clone(),
             account.api_provider_name.clone(),
-            account.api_model_catalog.clone(),
-            account.api_wire_api.clone(),
-            account.api_supports_vision,
-            account.api_model_vision_support.clone(),
-            account.account_name.clone(),
         );
     }
 
@@ -4335,8 +5937,11 @@ fn upsert_account_from_access_token(
         acc.api_provider_name = None;
         acc.bound_oauth_account_id = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
-        acc.subscription_active_until = subscription_active_until.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
+        merge_subscription_active_until(
+            &mut acc.subscription_active_until,
+            subscription_active_until.clone(),
+        );
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
         if account_note.is_some() {
@@ -4356,8 +5961,11 @@ fn upsert_account_from_access_token(
         acc.api_provider_name = None;
         acc.bound_oauth_account_id = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
-        acc.subscription_active_until = subscription_active_until.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
+        merge_subscription_active_until(
+            &mut acc.subscription_active_until,
+            subscription_active_until.clone(),
+        );
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
         acc.account_note = account_note;
@@ -4366,8 +5974,8 @@ fn upsert_account_from_access_token(
         index.accounts.push(CodexAccountSummary {
             id: existing_id.clone(),
             email: email.clone(),
-            plan_type: plan_type.clone(),
-            subscription_active_until: subscription_active_until.clone(),
+            plan_type: acc.plan_type.clone(),
+            subscription_active_until: acc.subscription_active_until.clone(),
             created_at: acc.created_at,
             last_used: acc.last_used,
         });
@@ -4541,11 +6149,6 @@ async fn import_account_from_json_value(
                     .get("api_provider_name")
                     .and_then(|value| value.as_str())
                     .map(|value| value.to_string()),
-                Vec::new(),
-                None,
-                false,
-                std::collections::HashMap::new(),
-                None,
             )?;
             apply_api_key_import_metadata(&mut account, &value);
             save_account(&account)?;
@@ -4641,11 +6244,6 @@ pub async fn import_from_json(json_content: &str) -> Result<Vec<CodexAccount>, S
                 Some(fallback_provider.mode),
                 fallback_provider.provider_id.clone(),
                 fallback_provider.provider_name.clone(),
-                Vec::new(),
-                None,
-                false,
-                std::collections::HashMap::new(),
-                None,
             )?;
             if let Some(value) = raw_value.as_ref() {
                 apply_api_key_import_metadata(&mut account, value);
@@ -4671,11 +6269,6 @@ pub async fn import_from_json(json_content: &str) -> Result<Vec<CodexAccount>, S
                 Some(fallback_provider.mode),
                 fallback_provider.provider_id.clone(),
                 fallback_provider.provider_name.clone(),
-                Vec::new(),
-                None,
-                false,
-                std::collections::HashMap::new(),
-                None,
             )?;
             if let Some(value) = raw_value.as_ref() {
                 apply_api_key_import_metadata(&mut account, value);
@@ -4888,32 +6481,1920 @@ fn extract_codex_tokens_from_value(
 #[cfg(test)]
 mod tests {
     use super::{
+        api_key_bundle_with_oauth_semantically_matches, apply_local_oauth_snapshot,
         build_account_storage_id, build_auth_file_value, decode_jwt_payload_value,
         detect_auth_file_plan_type_from_path, ensure_managed_account_fresh,
         extract_codex_import_candidate_from_value, extract_codex_tokens_from_value,
         extract_user_info, format_refresh_error_for_user, get_accounts_dir,
-        get_accounts_storage_path, get_current_account_from_loaded, is_managed_auth_refresh_due,
-        list_accounts_checked, load_account, load_account_index, looks_like_sub2api_export,
-        parse_auth_file_last_refresh, parse_codex_account_compat, parse_line_delimited_json_values,
-        read_api_provider_from_config_toml, read_quick_config_from_config_toml,
-        resolve_api_provider_config, save_account, save_account_index,
-        should_accept_authority_snapshot, sync_account_from_auth_dir,
+        get_accounts_storage_path, get_current_account_from_loaded,
+        get_current_or_fallback_oauth_account, is_managed_auth_refresh_due,
+        is_paid_codex_plan_type, list_accounts_checked, load_account, load_account_index,
+        looks_like_sub2api_export, parse_auth_file_last_refresh, parse_codex_account_compat,
+        parse_line_delimited_json_values, read_api_provider_from_config_toml,
+        read_quick_config_from_config_toml, repair_account_quota_from_local_access_health,
+        resolve_api_provider_config, resolve_observed_plan_type,
+        run_startup_quota_consistency_scan_for_tests, save_account, save_account_index,
+        should_accept_authority_snapshot, switch_account_index_only, sync_account_from_auth_dir,
+        sync_identity_from_tokens, sync_local_quota_observations,
         sync_managed_projection_from_auth_dir, upsert_account, upsert_account_from_access_token,
-        upsert_account_from_auth_tokens, validate_api_key_credentials, write_account_bundle_to_dir,
+        upsert_account_from_auth_tokens, upsert_account_with_hints, validate_api_key_credentials,
+        write_account_bundle_to_dir, write_api_key_account_bundle_with_oauth_to_dir,
         write_api_key_provider_to_config_toml, write_api_provider_to_config_toml,
-        write_managed_projection_to_dir, write_quick_config_to_config_toml, ApiProviderConfig,
-        CodexAccountIndex, CodexAccountSummary, CodexAuthFile, CodexAuthTokens,
-        CodexJsonImportCandidate, LocalCodexOAuthSnapshot, CODEX_AUTO_COMPACT_DEFAULT_LIMIT,
-        CODEX_CONTEXT_WINDOW_1M_VALUE,
+        write_auth_file_to_dir, write_managed_projection_to_dir, write_quick_config_to_config_toml,
+        ApiProviderConfig, CodexAccountIndex, CodexAccountSummary, CodexAuthFile, CodexAuthTokens,
+        CodexJsonImportCandidate, LocalCodexOAuthSnapshot, CODEX_AUTH_PROJECTION_FILE_NAME,
+        CODEX_AUTO_COMPACT_DEFAULT_LIMIT, CODEX_CONTEXT_WINDOW_1M_VALUE,
+        CODEX_LOCAL_ACCESS_FILE_NAME, CODEX_LOCAL_ACCESS_HEALTH_FILE,
+        CODEX_MODEL_PROVIDERS_FILE_NAME, CODEX_PROFILE_SHARED_COCKPIT_API,
+        CODEX_RUNTIME_MODEL_PROVIDER_ID, CODEX_WEEK_WINDOW_MINUTES,
+        WEEKLY_WINDOW_MINUTES_THRESHOLD,
     };
-    use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexTokens};
+    use crate::models::codex::{
+        CodexAccount, CodexApiProviderMode, CodexAuthMode, CodexQuota, CodexTokens,
+    };
+    use crate::models::codex_local_access::{
+        CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
+        CodexLocalAccessHealthRegistry, CodexLocalAccessModelCooldown,
+    };
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use rusqlite::Connection;
     use std::fs;
     use std::path::Path;
     use std::sync::{LazyLock, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     static TEST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    fn test_codex_account_with_quota(id: &str, quota: CodexQuota) -> CodexAccount {
+        let mut account = CodexAccount::new(
+            id.to_string(),
+            "quota@example.com".to_string(),
+            CodexTokens {
+                id_token: "id-token".to_string(),
+                access_token: "access-token".to_string(),
+                refresh_token: None,
+            },
+        );
+        account.quota = Some(quota);
+        account
+    }
+
+    fn stale_weekly_in_hourly_quota(reset_at: i64) -> CodexQuota {
+        CodexQuota {
+            hourly_percentage: 97,
+            hourly_reset_time: Some(reset_at),
+            hourly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+            hourly_window_present: Some(true),
+            weekly_percentage: 100,
+            weekly_reset_time: None,
+            weekly_window_minutes: None,
+            weekly_window_present: Some(false),
+            raw_data: None,
+        }
+    }
+
+    fn write_codex_logs_sqlite(codex_home: &std::path::Path, rows: &[(i64, i64, &str, &str)]) {
+        fs::create_dir_all(codex_home).expect("codex home should exist");
+        let connection =
+            Connection::open(codex_home.join("logs_2.sqlite")).expect("open test sqlite log");
+        connection
+            .execute(
+                r#"
+                CREATE TABLE logs (
+                    id INTEGER PRIMARY KEY,
+                    ts INTEGER NOT NULL,
+                    thread_id TEXT,
+                    feedback_log_body TEXT NOT NULL
+                )
+                "#,
+                [],
+            )
+            .expect("create logs table");
+        let mut statement = connection
+            .prepare(
+                "INSERT INTO logs (id, ts, thread_id, feedback_log_body) VALUES (?1, ?2, ?3, ?4)",
+            )
+            .expect("prepare insert logs");
+        for (id, ts, thread_id, body) in rows {
+            statement
+                .execute(rusqlite::params![id, ts, thread_id, body])
+                .expect("insert log row");
+        }
+    }
+
+    #[test]
+    fn health_registry_quota_repair_marks_stale_weekly_cache_exhausted() {
+        let now = 1_700_000_000;
+        let reset_at = now + 86_400;
+        let mut account =
+            test_codex_account_with_quota("codex_stale_97", stale_weekly_in_hourly_quota(reset_at));
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_error_scope: Some("account".to_string()),
+                updated_at: (now - 60) * 1000,
+                ..Default::default()
+            },
+        );
+
+        assert!(repair_account_quota_from_local_access_health(
+            &mut account,
+            &registry,
+            now
+        ));
+
+        let quota = account.quota.expect("quota should be repaired");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.weekly_reset_time, Some(reset_at));
+        assert_eq!(quota.weekly_window_minutes, Some(CODEX_WEEK_WINDOW_MINUTES));
+        assert_eq!(
+            account
+                .quota_error
+                .as_ref()
+                .and_then(|error| error.code.as_deref()),
+            Some("usage_limit_reached")
+        );
+    }
+
+    #[test]
+    fn health_registry_quota_repair_skips_expired_reset_evidence() {
+        let now = 1_700_000_000;
+        let mut account = test_codex_account_with_quota(
+            "codex_expired_97",
+            stale_weekly_in_hourly_quota(now - 60),
+        );
+        let original_remaining = account
+            .quota
+            .as_ref()
+            .map(|quota| (quota.hourly_percentage, quota.hourly_reset_time));
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                last_error_type: Some("usage_limit_reached".to_string()),
+                updated_at: (now - 120) * 1000,
+                ..Default::default()
+            },
+        );
+
+        assert!(!repair_account_quota_from_local_access_health(
+            &mut account,
+            &registry,
+            now
+        ));
+        assert_eq!(
+            account
+                .quota
+                .as_ref()
+                .map(|quota| (quota.hourly_percentage, quota.hourly_reset_time)),
+            original_remaining
+        );
+    }
+
+    #[test]
+    fn health_registry_quota_repair_skips_model_scoped_usage_limit_cooldown() {
+        let now = 1_700_000_000;
+        let reset_at = now + 3_600;
+        let mut account = test_codex_account_with_quota(
+            "codex_model_scoped_usage_limit",
+            CodexQuota {
+                hourly_percentage: 64,
+                hourly_reset_time: Some(now + 300),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 27,
+                weekly_reset_time: Some(now + 86_400),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                exhausted_at_ms: Some(now * 1000),
+                estimated_reset_at_ms: Some(reset_at * 1000),
+                estimated_remaining_percentage: Some(0),
+                last_observed_remaining_percentage: Some(0),
+                last_quota_exhausted_at_ms: Some(now * 1000),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        registry.model_cooldowns.insert(
+            format!("{}::gpt-5.5", account.id),
+            CodexLocalAccessModelCooldown {
+                account_id: account.id.clone(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: reset_at * 1000,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_request_id: Some("req-model-limit".to_string()),
+                updated_at: now * 1000,
+            },
+        );
+
+        assert!(!repair_account_quota_from_local_access_health(
+            &mut account,
+            &registry,
+            now
+        ));
+
+        let quota = account.quota.expect("quota should stay");
+        assert_eq!(quota.hourly_percentage, 64);
+        assert_eq!(quota.weekly_percentage, 27);
+        assert!(account.quota_error.is_none());
+    }
+
+    #[test]
+    fn health_registry_quota_repair_skips_generic_upstream_rate_limit_cooldown() {
+        let now = 1_700_000_000;
+        let mut account = test_codex_account_with_quota(
+            "codex_generic_upstream_rate_limit",
+            CodexQuota {
+                hourly_percentage: 64,
+                hourly_reset_time: None,
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 27,
+                weekly_reset_time: None,
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        let original_quota = account.quota.clone();
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some((now + 90) * 1000),
+                last_error_type: Some("upstream_rate_limit".to_string()),
+                reset_source: Some("upstream_reset_hint".to_string()),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+
+        assert!(!repair_account_quota_from_local_access_health(
+            &mut account,
+            &registry,
+            now
+        ));
+        assert_eq!(
+            serde_json::to_value(&account.quota).expect("quota should serialize"),
+            serde_json::to_value(&original_quota).expect("quota should serialize")
+        );
+        assert!(account.quota_error.is_none());
+    }
+
+    #[test]
+    fn health_registry_quota_repair_marks_confirmed_exhaustion_without_reset_hint() {
+        let now = 1_700_000_000;
+        let mut account = test_codex_account_with_quota(
+            "codex_confirmed_zero_no_reset",
+            CodexQuota {
+                hourly_percentage: 64,
+                hourly_reset_time: None,
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 27,
+                weekly_reset_time: None,
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.plan_type = Some("free".to_string());
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Exhausted,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_error_scope: Some("account".to_string()),
+                confidence: Some("confirmed".to_string()),
+                estimated_remaining_percentage: Some(0),
+                last_observed_remaining_percentage: Some(0),
+                updated_at: (now - 60) * 1000,
+                ..Default::default()
+            },
+        );
+
+        assert!(repair_account_quota_from_local_access_health(
+            &mut account,
+            &registry,
+            now
+        ));
+
+        let quota = account.quota.expect("quota should be repaired");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.hourly_reset_time, None);
+        assert_eq!(quota.weekly_reset_time, None);
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_window_present, Some(true));
+        assert_eq!(quota.weekly_window_minutes, Some(10_080));
+        assert_eq!(
+            quota
+                .raw_data
+                .as_ref()
+                .and_then(|value| value.get("reset_unknown"))
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn health_registry_quota_repair_skips_unscoped_usage_limit_without_reset_hint() {
+        let now = 1_700_000_000;
+        let mut account = test_codex_account_with_quota(
+            "codex_unscoped_usage_limit_no_reset",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 97,
+                weekly_reset_time: None,
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.plan_type = Some("free".to_string());
+        let original_quota = account.quota.clone();
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                updated_at: (now - 60) * 1000,
+                ..Default::default()
+            },
+        );
+
+        assert!(!repair_account_quota_from_local_access_health(
+            &mut account,
+            &registry,
+            now
+        ));
+        assert_eq!(
+            serde_json::to_value(&account.quota).expect("quota should serialize"),
+            serde_json::to_value(&original_quota).expect("quota should serialize")
+        );
+        assert!(account.quota_error.is_none());
+    }
+
+    #[test]
+    fn health_registry_refresh_guard_keeps_existing_confirmed_zero_without_reset_hint() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-refresh-confirmed-zero-no-reset");
+        let now = chrono::Utc::now().timestamp();
+        let mut account = test_codex_account_with_quota(
+            "codex_refresh_confirmed_zero_no_reset",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: None,
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: None,
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_health_registry",
+                    "error_type": "usage_limit_reached",
+                    "reset_unknown": true,
+                })),
+            },
+        );
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: "Codex local access quota exhaustion replayed from health registry: error_type=usage_limit_reached, reset_at=unknown".to_string(),
+            timestamp: now - 60,
+        });
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Exhausted,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_error_scope: Some("account".to_string()),
+                confidence: Some("confirmed".to_string()),
+                estimated_remaining_percentage: Some(0),
+                last_observed_remaining_percentage: Some(0),
+                updated_at: (now - 60) * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        assert!(
+            super::repair_account_quota_from_local_access_health_for_refresh(&mut account)
+                .expect("refresh guard should complete"),
+            "refresh-time guard should keep local confirmed zero and skip wham/usage"
+        );
+    }
+
+    #[test]
+    fn health_registry_refresh_guard_recovers_zero_quota_after_elapsed_reset() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-refresh-elapsed-reset-recovery");
+        let now = chrono::Utc::now().timestamp();
+        let expired_reset_at = now - 120;
+        let mut account = test_codex_account_with_quota(
+            "codex_refresh_elapsed_reset_zero",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: Some(expired_reset_at),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(expired_reset_at),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_health_registry",
+                    "error_type": "usage_limit_reached",
+                })),
+            },
+        );
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: format!(
+                "Codex local access quota exhaustion replayed from health registry: error_type=usage_limit_reached, reset_at={}",
+                expired_reset_at
+            ),
+            timestamp: expired_reset_at - 60,
+        });
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::EstimatedAvailable,
+                estimated_remaining_percentage: Some(100),
+                estimated_reset_at_ms: Some(expired_reset_at * 1000),
+                reset_source: Some("upstream_reset_hint".to_string()),
+                confidence: Some("estimated".to_string()),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        assert!(
+            super::repair_account_quota_from_local_access_health_for_refresh(&mut account)
+                .expect("refresh guard should complete"),
+            "refresh-time guard should recover elapsed local zero before wham/usage"
+        );
+
+        let repaired = load_account(&account.id).expect("repaired account should load");
+        let quota = repaired.quota.expect("repaired account should keep quota");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.weekly_percentage, 100);
+        assert_eq!(quota.hourly_reset_time, None);
+        assert_eq!(quota.weekly_reset_time, None);
+        assert!(repaired.quota_error.is_none());
+    }
+
+    #[test]
+    fn list_accounts_clears_stale_paid_health_registry_quota_replay_when_health_is_healthy() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-stale-paid-health-replay");
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 7 * 24 * 60 * 60;
+        let mut account = test_codex_account_with_quota(
+            "codex_stale_paid_health_replay",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(reset_at),
+                weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_health_registry",
+                    "error_type": "usage_limit_reached",
+                    "plan_type": "plus",
+                })),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: format!(
+                "Codex local access quota exhaustion replayed from health registry: error_type=usage_limit_reached, reset_at={}",
+                reset_at
+            ),
+            timestamp: now - 60,
+        });
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: account.plan_type.clone(),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        let listed = list_accounts_checked().expect("accounts should load");
+        let repaired = listed
+            .iter()
+            .find(|item| item.id == account.id)
+            .expect("account should be listed");
+        assert!(repaired.quota.is_none());
+        assert!(repaired.quota_error.is_none());
+
+        let persisted = load_account(&account.id).expect("account should persist");
+        assert!(persisted.quota.is_none());
+        assert!(persisted.quota_error.is_none());
+    }
+
+    #[test]
+    fn list_accounts_clears_stale_local_access_upstream_error_when_health_is_healthy() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-stale-local-access-upstream-error");
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 7 * 24 * 60 * 60;
+        let mut account = test_codex_account_with_quota(
+            "codex_stale_local_access_upstream_error",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: Some(reset_at),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(reset_at),
+                weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_upstream_error",
+                    "quota_exhausted": true,
+                    "error_type": "usage_limit_reached",
+                    "reset_at": reset_at,
+                })),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: format!(
+                "Cockpit API service upstream quota exhausted: status=429, error_type=usage_limit_reached, reset_at={}",
+                reset_at
+            ),
+            timestamp: now - 60,
+        });
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: account.plan_type.clone(),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        let listed = list_accounts_checked().expect("accounts should load");
+        let repaired = listed
+            .iter()
+            .find(|item| item.id == account.id)
+            .expect("account should be listed");
+        assert!(repaired.quota.is_none());
+        assert!(repaired.quota_error.is_none());
+
+        let persisted = load_account(&account.id).expect("account should persist");
+        assert!(persisted.quota.is_none());
+        assert!(persisted.quota_error.is_none());
+    }
+
+    #[test]
+    fn list_accounts_keeps_active_local_access_upstream_error_when_health_confirms_exhaustion() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-active-local-access-upstream-error");
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 7 * 24 * 60 * 60;
+        let mut account = test_codex_account_with_quota(
+            "codex_active_local_access_upstream_error",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: Some(reset_at),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(reset_at),
+                weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_upstream_error",
+                    "quota_exhausted": true,
+                    "error_type": "usage_limit_reached",
+                    "reset_at": reset_at,
+                })),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: format!(
+                "Cockpit API service upstream quota exhausted: status=429, error_type=usage_limit_reached, reset_at={}",
+                reset_at
+            ),
+            timestamp: now - 60,
+        });
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: account.plan_type.clone(),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Exhausted,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_error_scope: Some("account".to_string()),
+                confidence: Some("confirmed".to_string()),
+                estimated_remaining_percentage: Some(0),
+                estimated_reset_at_ms: Some(reset_at * 1000),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        let listed = list_accounts_checked().expect("accounts should load");
+        let preserved = listed
+            .iter()
+            .find(|item| item.id == account.id)
+            .expect("account should be listed");
+        assert!(preserved.quota.is_some());
+        assert!(preserved.quota_error.is_some());
+    }
+
+    #[test]
+    fn refresh_guard_clears_healthy_stale_zero_health_replay_before_live_refresh() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-refresh-clears-healthy-stale-zero");
+        let now = chrono::Utc::now().timestamp();
+        let expired_reset_at = now - 3_600;
+        let mut account = test_codex_account_with_quota(
+            "codex_refresh_healthy_stale_zero",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: None,
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: None,
+                weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_health_registry",
+                    "error_type": "usage_limit_reached",
+                    "reset_unknown": true,
+                })),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: "Codex local access quota exhaustion replayed from health registry: error_type=usage_limit_reached, reset_at=unknown".to_string(),
+            timestamp: now - 60,
+        });
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                estimated_remaining_percentage: Some(0),
+                last_observed_remaining_percentage: Some(0),
+                estimated_reset_at_ms: Some(expired_reset_at * 1000),
+                reset_source: Some("upstream_reset_hint".to_string()),
+                updated_at: (now - 60) * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        assert!(
+            super::repair_account_quota_from_local_access_health_for_refresh(&mut account)
+                .expect("refresh guard should complete"),
+            "stale local-access replay should be cleared so wham/usage can run"
+        );
+        assert!(account.quota.is_none());
+        assert!(account.quota_error.is_none());
+
+        let persisted = load_account(&account.id).expect("account should persist");
+        assert!(persisted.quota.is_none());
+        assert!(persisted.quota_error.is_none());
+    }
+
+    #[test]
+    fn load_account_repairs_stale_plus_weekly_zero_from_embedded_rate_limit_raw() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = TestEnvGuard::new("codex-stale-plus-raw-rate-limit");
+        let now = chrono::Utc::now().timestamp();
+        let mut account = test_codex_account_with_quota(
+            "codex_stale_plus_raw_rate_limit",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: Some(now + 18_000),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(now + 604_800),
+                weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "plan_type": "plus",
+                    "rate_limit": {
+                        "allowed": false,
+                        "limit_reached": true,
+                        "primary_window": {
+                            "used_percent": 100,
+                            "limit_window_seconds": 18_000,
+                            "reset_after_seconds": 16_155,
+                            "reset_at": now + 16_155,
+                        },
+                        "secondary_window": {
+                            "used_percent": 16,
+                            "limit_window_seconds": 604_800,
+                            "reset_after_seconds": 602_955,
+                            "reset_at": now + 602_955,
+                        }
+                    },
+                    "rate_limit_reached_type": {
+                        "type": "rate_limit_reached",
+                        "details": "default"
+                    }
+                })),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: account.plan_type.clone(),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        fs::write(
+            get_accounts_dir().join(format!("{}.json", account.id)),
+            serde_json::to_string_pretty(&account).expect("account should serialize"),
+        )
+        .expect("stale account should be written");
+
+        let loaded = load_account(&account.id).expect("account should load");
+        let quota = loaded.quota.expect("quota should be repaired");
+        assert_eq!(quota.hourly_percentage, 0);
+        assert_eq!(quota.hourly_window_minutes, Some(300));
+        assert_eq!(quota.weekly_percentage, 84);
+        assert_eq!(quota.weekly_window_minutes, Some(CODEX_WEEK_WINDOW_MINUTES));
+    }
+
+    #[test]
+    fn elapsed_reset_recovery_accepts_raw_quota_exhaustion_marker_without_quota_error() {
+        let now = chrono::Utc::now().timestamp();
+        let expired_reset_at = now - 120;
+        let mut account = test_codex_account_with_quota(
+            "codex_elapsed_reset_raw_marker",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: Some(expired_reset_at),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(expired_reset_at),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_session_rate_limits",
+                    "quota_exhausted": true,
+                    "rate_limit_reached_type": {
+                        "type": "usage_limit_reached"
+                    }
+                })),
+            },
+        );
+        account.quota_error = None;
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+
+        assert!(super::repair_account_quota_elapsed_reset_recovery(
+            &mut account,
+            &registry,
+            now
+        ));
+
+        let quota = account.quota.expect("repaired account should keep quota");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.weekly_percentage, 100);
+        assert!(account.quota_error.is_none());
+        assert_eq!(
+            quota
+                .raw_data
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(|value| value.as_str()),
+            Some("codex_local_access_reset_elapsed_recovery")
+        );
+    }
+
+    #[test]
+    fn list_accounts_recovers_elapsed_direct_zero_without_health_entry() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = TestEnvGuard::new("codex-list-elapsed-direct-zero-no-health");
+        let now = chrono::Utc::now().timestamp();
+        let expired_reset_at = now - 120;
+        let mut account = test_codex_account_with_quota(
+            "codex_elapsed_direct_zero_no_health",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: Some(expired_reset_at),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(expired_reset_at),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_session_rate_limits",
+                    "quota_exhausted": true,
+                    "rate_limit_reached_type": {
+                        "type": "usage_limit_reached"
+                    },
+                    "reset_at": expired_reset_at,
+                })),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: format!(
+                "Codex Direct OAuth upstream quota exhausted: status=429, error_type=usage_limit_reached, reset_at={}",
+                expired_reset_at
+            ),
+            timestamp: expired_reset_at - 60,
+        });
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: account.plan_type.clone(),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let listed = list_accounts_checked().expect("accounts should load");
+        let repaired = listed
+            .iter()
+            .find(|item| item.id == account.id)
+            .expect("account should be listed");
+        let quota = repaired.quota.as_ref().expect("quota should remain");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.weekly_percentage, 100);
+        assert_eq!(quota.hourly_reset_time, None);
+        assert_eq!(quota.weekly_reset_time, None);
+        assert!(repaired.quota_error.is_none());
+
+        let persisted = load_account(&account.id).expect("account should persist");
+        assert!(persisted.quota_error.is_none());
+    }
+
+    #[test]
+    fn startup_quota_consistency_scan_repairs_stale_positive_from_health_registry() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-startup-quota-scan-repair-test");
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 86_400;
+        let account = test_codex_account_with_quota(
+            "codex_startup_stale_97",
+            stale_weekly_in_hourly_quota(reset_at),
+        );
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_error_scope: Some("account".to_string()),
+                estimated_reset_at_ms: Some(reset_at * 1000),
+                updated_at: (now - 60) * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        let report = run_startup_quota_consistency_scan_for_tests(true)
+            .expect("startup quota scan should succeed");
+
+        assert_eq!(report.scanned_accounts, 1);
+        assert_eq!(report.repaired_accounts, 1);
+        assert!(!report.skipped_recent);
+        let repaired = load_account(&account.id).expect("repaired account should load");
+        let quota = repaired.quota.expect("repaired account should have quota");
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.weekly_reset_time, Some(reset_at));
+        assert_eq!(quota.weekly_window_minutes, Some(10_080));
+        assert_eq!(quota.hourly_window_present, Some(false));
+    }
+
+    #[test]
+    fn startup_quota_consistency_scan_recovers_zero_quota_after_elapsed_reset() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-startup-quota-scan-reset-recovery-test");
+        let now = chrono::Utc::now().timestamp();
+        let expired_reset_at = now - 120;
+        let mut account = test_codex_account_with_quota(
+            "codex_startup_elapsed_reset_zero",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: Some(expired_reset_at),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(expired_reset_at),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_health_registry",
+                    "error_type": "usage_limit_reached",
+                })),
+            },
+        );
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: format!(
+                "Codex local access quota exhaustion replayed from health registry: error_type=usage_limit_reached, reset_at={}",
+                expired_reset_at
+            ),
+            timestamp: expired_reset_at - 60,
+        });
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::EstimatedAvailable,
+                estimated_remaining_percentage: Some(100),
+                estimated_reset_at_ms: Some(expired_reset_at * 1000),
+                reset_source: Some("upstream_reset_hint".to_string()),
+                confidence: Some("estimated".to_string()),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        let report = run_startup_quota_consistency_scan_for_tests(true)
+            .expect("startup quota scan should succeed");
+
+        assert_eq!(report.scanned_accounts, 1);
+        assert_eq!(report.repaired_accounts, 1);
+        let repaired = load_account(&account.id).expect("repaired account should load");
+        let quota = repaired.quota.expect("repaired account should keep quota");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.weekly_percentage, 100);
+        assert_eq!(quota.hourly_reset_time, None);
+        assert_eq!(quota.weekly_reset_time, None);
+        assert!(repaired.quota_error.is_none());
+        assert_eq!(
+            quota
+                .raw_data
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(|value| value.as_str()),
+            Some("codex_local_access_reset_elapsed_recovery")
+        );
+    }
+
+    #[test]
+    fn startup_quota_consistency_scan_preserves_nonzero_window_after_elapsed_reset() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-startup-quota-scan-partial-reset-recovery-test");
+        let now = chrono::Utc::now().timestamp();
+        let expired_reset_at = now - 120;
+        let mut account = test_codex_account_with_quota(
+            "codex_startup_elapsed_weekly_zero",
+            CodexQuota {
+                hourly_percentage: 40,
+                hourly_reset_time: Some(now + 3_600),
+                hourly_window_minutes: Some(300),
+                hourly_window_present: Some(true),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(expired_reset_at),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_local_access_health_registry",
+                    "error_type": "usage_limit_reached",
+                })),
+            },
+        );
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: format!(
+                "Codex local access quota exhaustion replayed from health registry: error_type=usage_limit_reached, reset_at={}",
+                expired_reset_at
+            ),
+            timestamp: expired_reset_at - 60,
+        });
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: None,
+            created_at: now,
+            last_used: now,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::EstimatedAvailable,
+                estimated_remaining_percentage: Some(100),
+                estimated_reset_at_ms: Some(expired_reset_at * 1000),
+                reset_source: Some("upstream_reset_hint".to_string()),
+                confidence: Some("estimated".to_string()),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        fs::write(
+            guard
+                .home_dir
+                .join(".antigravity_cockpit")
+                .join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        let report = run_startup_quota_consistency_scan_for_tests(true)
+            .expect("startup quota scan should succeed");
+
+        assert_eq!(report.scanned_accounts, 1);
+        assert_eq!(report.repaired_accounts, 1);
+        let repaired = load_account(&account.id).expect("repaired account should load");
+        let quota = repaired.quota.expect("repaired account should keep quota");
+        assert_eq!(quota.hourly_percentage, 40);
+        assert_eq!(quota.hourly_reset_time, Some(now + 3_600));
+        assert_eq!(quota.weekly_percentage, 100);
+        assert_eq!(quota.weekly_reset_time, None);
+        assert_eq!(
+            quota
+                .raw_data
+                .as_ref()
+                .and_then(|value| value.get("estimated_remaining_percentage"))
+                .and_then(|value| value.as_i64()),
+            Some(40)
+        );
+        assert!(repaired.quota_error.is_none());
+    }
+
+    #[test]
+    fn list_accounts_checked_does_not_replay_direct_oauth_official_logs() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-list-direct-websocket-log-repair-test");
+        let local_access_root = guard.home_dir.join(".antigravity_cockpit");
+        let previous_local_access_root = std::env::var_os("COCKPIT_LOCAL_ACCESS_DATA_ROOT");
+        std::env::set_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT", &local_access_root);
+
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 7_200;
+        let mut account = test_codex_account_with_quota(
+            "codex_list_direct_websocket_log",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 97,
+                weekly_reset_time: Some(reset_at + 10_000),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.email = "direct@example.com".to_string();
+        account.account_id = Some("acc-direct".to_string());
+        account.last_used = now - 60;
+        account.usage_updated_at = Some(now - 60);
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: now - 120,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+        write_codex_logs_sqlite(
+            &guard.codex_home(),
+            &[
+                (
+                    1,
+                    now - 30,
+                    "thread-a",
+                    r#"codex_otel.log_only user.account_id="acc-direct" user.email="direct@example.com""#,
+                ),
+                (
+                    2,
+                    now,
+                    "thread-a",
+                    r#"websocket.stream_request: websocket event: {"type":"response.failed","response":{"error":{"type":"usage_limit_reached","reset_after_seconds":7200}}}"#,
+                ),
+            ],
+        );
+
+        let accounts = list_accounts_checked().expect("accounts should list");
+        match previous_local_access_root {
+            Some(value) => std::env::set_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT", value),
+            None => std::env::remove_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT"),
+        }
+
+        let listed = accounts
+            .iter()
+            .find(|item| item.id == "codex_list_direct_websocket_log")
+            .expect("account should be listed");
+        let quota = listed.quota.as_ref().expect("quota should be preserved");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.weekly_percentage, 97);
+        assert_eq!(quota.weekly_reset_time, Some(reset_at + 10_000));
+        assert!(listed.quota_error.is_none());
+
+        let persisted = load_account("codex_list_direct_websocket_log")
+            .expect("listed account should still load");
+        assert_eq!(
+            persisted
+                .quota
+                .as_ref()
+                .map(|quota| quota.weekly_percentage),
+            Some(97)
+        );
+    }
+
+    #[test]
+    fn local_quota_sync_repairs_api_service_health_registry_without_list_refresh() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = TestEnvGuard::new("codex-local-quota-sync-health-test");
+
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 3_600;
+        let account = test_codex_account_with_quota(
+            "codex_api_service_local_sync",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 97,
+                weekly_reset_time: Some(reset_at + 10_000),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: now - 120,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        let mut registry = CodexLocalAccessHealthRegistry::default();
+        registry.accounts.insert(
+            account.id.clone(),
+            CodexLocalAccessAccountHealth {
+                last_error_type: Some("usage_limit_reached".to_string()),
+                estimated_reset_at_ms: Some(reset_at * 1000),
+                last_quota_exhausted_at_ms: Some(now * 1000),
+                updated_at: now * 1000,
+                ..Default::default()
+            },
+        );
+        let health_path =
+            get_accounts_storage_path().with_file_name(CODEX_LOCAL_ACCESS_HEALTH_FILE);
+        fs::write(
+            &health_path,
+            serde_json::to_string_pretty(&registry).expect("registry should serialize"),
+        )
+        .expect("health registry should be saved");
+
+        let repaired = sync_local_quota_observations().expect("local sync should complete");
+
+        assert_eq!(repaired, 1);
+        let persisted = load_account("codex_api_service_local_sync").expect("account should load");
+        let quota = persisted.quota.as_ref().expect("quota should be repaired");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.weekly_reset_time, Some(reset_at));
+    }
+
+    #[test]
+    fn local_quota_sync_preserves_nonzero_quota_from_direct_oauth_error_logs() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-direct-oauth-local-sync-test");
+
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 3_600;
+        let mut account = test_codex_account_with_quota(
+            "codex_direct_oauth_local_sync",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 97,
+                weekly_reset_time: Some(reset_at + 10_000),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.email = "direct-sync@example.com".to_string();
+        account.account_id = Some("acc-direct-sync".to_string());
+        account.last_used = now - 60;
+        account.usage_updated_at = Some(now - 60);
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: now - 120,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+        write_codex_logs_sqlite(
+            &guard.codex_home(),
+            &[
+                (
+                    1,
+                    now - 30,
+                    "thread-sync",
+                    r#"codex_otel.log_only user.account_id="acc-direct-sync" user.email="direct-sync@example.com""#,
+                ),
+                (
+                    2,
+                    now,
+                    "thread-sync",
+                    r#"websocket.stream_request: websocket event: {"type":"response.failed","response":{"error":{"type":"usage_limit_reached","reset_after_seconds":3600}}}"#,
+                ),
+            ],
+        );
+
+        let repaired = sync_local_quota_observations().expect("local sync should complete");
+
+        assert_eq!(repaired, 0);
+        let persisted = load_account("codex_direct_oauth_local_sync").expect("account should load");
+        let quota = persisted.quota.as_ref().expect("quota should be repaired");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_percentage, 97);
+        assert_eq!(quota.weekly_reset_time, Some(reset_at + 10_000));
+    }
+
+    #[test]
+    fn local_quota_sync_skips_direct_oauth_logs_at_or_before_cursor() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-direct-oauth-cursor-skip-test");
+
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 3_600;
+        let mut account = test_codex_account_with_quota(
+            "codex_direct_oauth_cursor_skip",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 97,
+                weekly_reset_time: Some(reset_at + 10_000),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.email = "cursor-skip@example.com".to_string();
+        account.account_id = Some("acc-cursor-skip".to_string());
+        account.last_used = now - 60;
+        account.usage_updated_at = Some(now - 60);
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: now - 120,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+        write_codex_logs_sqlite(
+            &guard.codex_home(),
+            &[
+                (
+                    1,
+                    now - 30,
+                    "thread-cursor-skip",
+                    r#"codex_otel.log_only user.account_id="acc-cursor-skip" user.email="cursor-skip@example.com""#,
+                ),
+                (
+                    2,
+                    now,
+                    "thread-cursor-skip",
+                    r#"websocket.stream_request: websocket event: {"type":"response.failed","response":{"error":{"type":"usage_limit_reached","reset_after_seconds":3600}}}"#,
+                ),
+            ],
+        );
+        fs::write(
+            super::get_codex_accounts_data_dir().join("codex_direct_quota_log_sync.json"),
+            serde_json::json!({
+                "last_log_id": 2,
+                "last_synced_at_ms": now * 1000
+            })
+            .to_string(),
+        )
+        .expect("sync state should be written");
+
+        let repaired = sync_local_quota_observations().expect("local sync should complete");
+
+        assert_eq!(repaired, 0);
+        let persisted =
+            load_account("codex_direct_oauth_cursor_skip").expect("account should load");
+        let quota = persisted.quota.as_ref().expect("quota should be preserved");
+        assert_eq!(quota.weekly_percentage, 97);
+        assert_eq!(quota.weekly_reset_time, Some(reset_at + 10_000));
+    }
+
+    #[test]
+    fn local_quota_sync_preserves_nonzero_direct_oauth_logs_after_cursor_and_advances_cursor() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-direct-oauth-cursor-advance-test");
+
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 3_600;
+        let mut account = test_codex_account_with_quota(
+            "codex_direct_oauth_cursor_advance",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 97,
+                weekly_reset_time: Some(reset_at + 10_000),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.email = "cursor-advance@example.com".to_string();
+        account.account_id = Some("acc-cursor-advance".to_string());
+        account.last_used = now - 60;
+        account.usage_updated_at = Some(now - 60);
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: now - 120,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+        write_codex_logs_sqlite(
+            &guard.codex_home(),
+            &[
+                (
+                    1,
+                    now - 40,
+                    "thread-old",
+                    r#"websocket.stream_request: websocket event: {"type":"response.output_text.delta","delta":"old"}"#,
+                ),
+                (
+                    3,
+                    now - 30,
+                    "thread-cursor-advance",
+                    r#"codex_otel.log_only user.account_id="acc-cursor-advance" user.email="cursor-advance@example.com""#,
+                ),
+                (
+                    4,
+                    now,
+                    "thread-cursor-advance",
+                    r#"websocket.stream_request: websocket event: {"type":"response.failed","response":{"error":{"type":"usage_limit_reached","reset_after_seconds":3600}}}"#,
+                ),
+            ],
+        );
+        fs::write(
+            super::get_codex_accounts_data_dir().join("codex_direct_quota_log_sync.json"),
+            serde_json::json!({
+                "last_log_id": 2,
+                "last_synced_at_ms": (now - 60) * 1000
+            })
+            .to_string(),
+        )
+        .expect("sync state should be written");
+
+        let repaired = sync_local_quota_observations().expect("local sync should complete");
+
+        assert_eq!(repaired, 0);
+        let persisted =
+            load_account("codex_direct_oauth_cursor_advance").expect("account should load");
+        let quota = persisted.quota.as_ref().expect("quota should be preserved");
+        assert_eq!(quota.hourly_percentage, 100);
+        assert_eq!(quota.hourly_window_present, Some(false));
+        assert_eq!(quota.weekly_percentage, 97);
+        assert_eq!(quota.weekly_reset_time, Some(reset_at + 10_000));
+        let state_text = fs::read_to_string(
+            super::get_codex_accounts_data_dir().join("codex_direct_quota_log_sync.json"),
+        )
+        .expect("sync state should still exist");
+        let state: serde_json::Value =
+            serde_json::from_str(&state_text).expect("sync state should be valid json");
+        assert_eq!(
+            state.get("last_log_id").and_then(|value| value.as_i64()),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn local_quota_sync_repairs_exhausted_direct_oauth_reset_from_rate_limit_logs() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-list-direct-reset-hint-repair-test");
+        let local_access_root = guard.home_dir.join(".antigravity_cockpit");
+        let previous_local_access_root = std::env::var_os("COCKPIT_LOCAL_ACCESS_DATA_ROOT");
+        std::env::set_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT", &local_access_root);
+
+        let now = chrono::Utc::now().timestamp();
+        let reset_at = now + 4 * 24 * 60 * 60;
+        let mut account = test_codex_account_with_quota(
+            "codex_list_direct_reset_hint",
+            CodexQuota {
+                hourly_percentage: 0,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 0,
+                weekly_reset_time: Some(now - 60),
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: Some(serde_json::json!({
+                    "source": "codex_official_websocket_error",
+                    "quota_exhausted": true,
+                    "reset_after_seconds": 120
+                })),
+            },
+        );
+        account.email = "direct@example.com".to_string();
+        account.account_id = Some("acc-direct".to_string());
+        account.last_used = now - 120;
+        account.usage_updated_at = Some(now - 30);
+        account.quota_error = Some(crate::models::codex::CodexQuotaErrorInfo {
+            code: Some("usage_limit_reached".to_string()),
+            message: "Codex Direct OAuth upstream quota exhausted".to_string(),
+            timestamp: now - 30,
+        });
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: now - 240,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+        let rate_limit_log = format!(
+            r#"websocket.stream_request: websocket event: {{"type":"codex.rate_limits","plan_type":"free","rate_limits":{{"allowed":true,"limit_reached":false,"primary":{{"used_percent":88,"window_minutes":10080,"reset_after_seconds":{},"reset_at":{}}},"secondary":null}}}}"#,
+            reset_at - (now - 10),
+            reset_at
+        );
+        write_codex_logs_sqlite(
+            &guard.codex_home(),
+            &[
+                (
+                    1,
+                    now - 20,
+                    "thread-a",
+                    r#"codex_otel.log_only user.account_id="acc-direct" user.email="direct@example.com""#,
+                ),
+                (2, now - 10, "thread-a", rate_limit_log.as_str()),
+            ],
+        );
+
+        let repaired =
+            sync_local_quota_observations().expect("local quota sync should repair reset hint");
+        match previous_local_access_root {
+            Some(value) => std::env::set_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT", value),
+            None => std::env::remove_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT"),
+        }
+        assert_eq!(repaired, 1);
+
+        let listed =
+            load_account("codex_list_direct_reset_hint").expect("account should be persisted");
+        let quota = listed.quota.as_ref().expect("quota should be repaired");
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.weekly_reset_time, Some(reset_at));
+        assert_eq!(
+            listed
+                .quota_error
+                .as_ref()
+                .and_then(|error| error.code.as_deref()),
+            Some("usage_limit_reached")
+        );
+    }
+
+    #[test]
+    fn startup_quota_consistency_scan_skips_recent_success_marker() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let _guard = TestEnvGuard::new("codex-startup-quota-scan-throttle-test");
+        let first = run_startup_quota_consistency_scan_for_tests(true)
+            .expect("first forced startup quota scan should succeed");
+        assert!(!first.skipped_recent);
+
+        let second = run_startup_quota_consistency_scan_for_tests(false)
+            .expect("second startup quota scan should use recent marker");
+        assert!(second.skipped_recent);
+        assert_eq!(second.scanned_accounts, 0);
+        assert_eq!(second.repaired_accounts, 0);
+    }
+
+    #[test]
+    fn startup_quota_consistency_scan_does_not_run_direct_oauth_log_repair() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-startup-skip-direct-session-scan-test");
+        let local_access_root = guard.home_dir.join(".antigravity_cockpit");
+        let previous_local_access_root = std::env::var_os("COCKPIT_LOCAL_ACCESS_DATA_ROOT");
+        std::env::set_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT", &local_access_root);
+
+        let mut account = test_codex_account_with_quota(
+            "codex_startup_direct_scan",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 100,
+                weekly_reset_time: None,
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.last_used = 1;
+        account.email = "startup-direct@example.com".to_string();
+        account.account_id = Some("acc-startup".to_string());
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: None,
+            created_at: 1,
+            last_used: 1,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        fs::write(
+            local_access_root.join("codex_runtime_mode.json"),
+            serde_json::json!({
+                "mode": "direct_projection",
+                "accountKind": "oauth",
+                "currentAccountId": account.id,
+                "updatedAt": 0
+            })
+            .to_string(),
+        )
+        .expect("runtime mode should be written");
+        let sessions_dir = guard
+            .codex_home()
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("25");
+        fs::create_dir_all(&sessions_dir).expect("sessions dir should be created");
+        fs::write(
+            sessions_dir.join("session.jsonl"),
+            serde_json::json!({
+                "timestamp": "2030-05-25T11:42:31Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "error",
+                    "status": 429,
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "reset_after_seconds": 120
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("direct session event should be written");
+        write_codex_logs_sqlite(
+            &guard.codex_home(),
+            &[
+                (
+                    1,
+                    2,
+                    "thread-startup",
+                    r#"codex_otel.log_only user.account_id="acc-startup" user.email="startup-direct@example.com""#,
+                ),
+                (
+                    2,
+                    3,
+                    "thread-startup",
+                    r#"websocket.stream_request: websocket event: {"type":"response.failed","response":{"error":{"type":"usage_limit_reached","reset_after_seconds":120}}}"#,
+                ),
+            ],
+        );
+
+        let report = run_startup_quota_consistency_scan_for_tests(true)
+            .expect("startup quota scan should succeed");
+        match previous_local_access_root {
+            Some(value) => std::env::set_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT", value),
+            None => std::env::remove_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT"),
+        }
+
+        assert_eq!(report.scanned_accounts, 1);
+        assert_eq!(report.repaired_accounts, 0);
+        let listed = load_account("codex_startup_direct_scan").expect("account should load");
+        assert!(
+            listed.quota_error.is_none(),
+            "startup scan must stay local-only and not inspect direct OAuth session or Desktop logs"
+        );
+        assert_eq!(
+            listed.quota.as_ref().map(|quota| quota.weekly_percentage),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn list_accounts_checked_does_not_run_direct_session_quota_repair() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-list-skip-direct-session-scan-test");
+        let local_access_root = guard.home_dir.join(".antigravity_cockpit");
+        let previous_local_access_root = std::env::var_os("COCKPIT_LOCAL_ACCESS_DATA_ROOT");
+        std::env::set_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT", &local_access_root);
+
+        let mut account = test_codex_account_with_quota(
+            "codex_list_direct_scan",
+            CodexQuota {
+                hourly_percentage: 100,
+                hourly_reset_time: None,
+                hourly_window_minutes: None,
+                hourly_window_present: Some(false),
+                weekly_percentage: 100,
+                weekly_reset_time: None,
+                weekly_window_minutes: Some(WEEKLY_WINDOW_MINUTES_THRESHOLD),
+                weekly_window_present: Some(true),
+                raw_data: None,
+            },
+        );
+        account.last_used = 1;
+        let mut index = CodexAccountIndex::new();
+        index.current_account_id = Some(account.id.clone());
+        index.accounts.push(CodexAccountSummary {
+            id: account.id.clone(),
+            email: account.email.clone(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: None,
+            created_at: 1,
+            last_used: 1,
+        });
+        save_account_index(&index).expect("index should be saved");
+        save_account(&account).expect("account should be saved");
+
+        fs::write(
+            local_access_root.join("codex_runtime_mode.json"),
+            serde_json::json!({
+                "mode": "direct_projection",
+                "accountKind": "oauth",
+                "currentAccountId": account.id,
+                "updatedAt": 0
+            })
+            .to_string(),
+        )
+        .expect("runtime mode should be written");
+        let sessions_dir = guard
+            .codex_home()
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("25");
+        fs::create_dir_all(&sessions_dir).expect("sessions dir should be created");
+        fs::write(
+            sessions_dir.join("session.jsonl"),
+            serde_json::json!({
+                "timestamp": "2030-05-25T11:42:31Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "error",
+                    "status": 429,
+                    "error": {
+                        "type": "usage_limit_reached",
+                        "reset_after_seconds": 120
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .expect("direct session event should be written");
+
+        let accounts = list_accounts_checked().expect("accounts should list");
+        let listed = accounts
+            .iter()
+            .find(|item| item.id == "codex_list_direct_scan")
+            .expect("account should be listed")
+            .clone();
+        match previous_local_access_root {
+            Some(value) => std::env::set_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT", value),
+            None => std::env::remove_var("COCKPIT_LOCAL_ACCESS_DATA_ROOT"),
+        }
+
+        assert!(
+            listed.quota_error.is_none(),
+            "account list must not synchronously repair quota from direct session logs"
+        );
+        assert_eq!(
+            listed.quota.as_ref().map(|quota| quota.weekly_percentage),
+            Some(100)
+        );
+    }
 
     #[test]
     fn parse_line_delimited_json_values_accepts_one_object_per_line() {
@@ -5037,7 +8518,9 @@ mod tests {
         fn new(prefix: &str) -> Self {
             let home_dir = make_temp_dir(prefix);
             let codex_home = home_dir.join(".codex");
+            let accounts_data_dir = home_dir.join(".antigravity_cockpit");
             fs::create_dir_all(&codex_home).expect("create codex home");
+            fs::create_dir_all(&accounts_data_dir).expect("create accounts data dir");
 
             let previous_home = std::env::var("HOME").ok();
             let previous_codex_home = std::env::var("CODEX_HOME").ok();
@@ -5045,6 +8528,12 @@ mod tests {
             std::env::set_var("HOME", &home_dir);
             std::env::set_var("CODEX_HOME", &codex_home);
             std::env::set_var("COCKPIT_TOOLS_DATA_DIR", &home_dir);
+            super::TEST_CODEX_HOME_OVERRIDE.with(|value| {
+                *value.borrow_mut() = Some(codex_home.clone());
+            });
+            super::TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE.with(|value| {
+                *value.borrow_mut() = Some(accounts_data_dir.clone());
+            });
 
             Self {
                 home_dir,
@@ -5057,10 +8546,20 @@ mod tests {
         fn codex_home(&self) -> std::path::PathBuf {
             self.home_dir.join(".codex")
         }
+
+        fn accounts_data_dir(&self) -> std::path::PathBuf {
+            self.home_dir.join(".antigravity_cockpit")
+        }
     }
 
     impl Drop for TestEnvGuard {
         fn drop(&mut self) {
+            super::TEST_CODEX_HOME_OVERRIDE.with(|value| {
+                *value.borrow_mut() = None;
+            });
+            super::TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE.with(|value| {
+                *value.borrow_mut() = None;
+            });
             match self.previous_home.as_ref() {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
@@ -5120,6 +8619,611 @@ mod tests {
         }
     }
 
+    #[test]
+    fn paid_plan_detection_matches_official_known_plan_families() {
+        for paid in [
+            "plus",
+            "pro",
+            "prolite",
+            "pro-lite",
+            "team",
+            "self_serve_business_usage_based",
+            "business",
+            "enterprise_cbp_usage_based",
+            "enterprise",
+            "hc",
+            "education",
+            "edu",
+        ] {
+            assert!(
+                is_paid_codex_plan_type(Some(paid)),
+                "{paid} should be treated as paid or workspace"
+            );
+        }
+
+        for non_paid in ["free", "go", "API_KEY", "mystery_tier", ""] {
+            assert!(
+                !is_paid_codex_plan_type(Some(non_paid)),
+                "{non_paid} should not be treated as paid evidence"
+            );
+        }
+    }
+
+    #[test]
+    fn go_plan_observation_does_not_override_existing_plus_plan() {
+        let email = "go@example.com";
+        let account_id = "acc-go";
+        let organization_id = "org-go";
+        let mut account = CodexAccount::new(
+            "codex_go_plan_preserve".to_string(),
+            email.to_string(),
+            make_codex_tokens(email, account_id, organization_id, "old", "rt-old"),
+        );
+        account.plan_type = Some("plus".to_string());
+
+        let resolved = resolve_observed_plan_type(&account, Some("go".to_string()));
+
+        assert_eq!(resolved.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn sync_identity_from_tokens_preserves_existing_subscription_when_claim_is_missing() {
+        let email = "demo@example.com";
+        let account_id = "acc-current";
+        let organization_id = "org-current";
+        let mut account = CodexAccount::new(
+            "codex_subscription_preserve".to_string(),
+            email.to_string(),
+            make_codex_tokens(email, account_id, organization_id, "old", "rt-old"),
+        );
+        account.plan_type = Some("plus".to_string());
+        account.subscription_active_until = Some("2026-07-01T00:00:00Z".to_string());
+
+        account.tokens.id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-new",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-new",
+                "chatgpt_plan_type": "plus",
+                "account_id": account_id,
+                "organization_id": organization_id
+            }
+        }));
+
+        assert!(sync_identity_from_tokens(&mut account));
+        assert_eq!(
+            account.subscription_active_until.as_deref(),
+            Some("2026-07-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn local_oauth_snapshot_preserves_existing_subscription_when_claim_is_missing() {
+        let email = "demo@example.com";
+        let account_id = "acc-current";
+        let organization_id = "org-current";
+        let mut account = CodexAccount::new(
+            "codex_snapshot_subscription_preserve".to_string(),
+            email.to_string(),
+            make_codex_tokens(email, account_id, organization_id, "old", "rt-old"),
+        );
+        account.account_id = Some(account_id.to_string());
+        account.organization_id = Some(organization_id.to_string());
+        account.subscription_active_until = Some("2026-07-01T00:00:00Z".to_string());
+
+        let snapshot = LocalCodexOAuthSnapshot {
+            tokens: make_codex_tokens(email, account_id, organization_id, "new", "rt-new"),
+            email: email.to_string(),
+            subscription_active_until: None,
+            account_id: Some(account_id.to_string()),
+            organization_id: Some(organization_id.to_string()),
+            last_refresh_at: Some(account.token_updated_at.unwrap_or(0) + 10),
+        };
+
+        assert!(apply_local_oauth_snapshot(&mut account, &snapshot));
+        assert_eq!(
+            account.subscription_active_until.as_deref(),
+            Some("2026-07-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn upsert_account_with_hints_preserves_paid_plan_when_token_claims_are_free() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-upsert-free-token-paid-plan");
+        let email = "fete_pigpen.4r+g2@icloud.com";
+        let account_id = "acc-upsert-paid";
+        let organization_id = "org-upsert-paid";
+        let storage_id = build_account_storage_id(email, Some(account_id), Some(organization_id));
+        let existing_id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-existing-free-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-existing-free-token",
+                "chatgpt_plan_type": "free",
+                "account_id": account_id,
+                "organization_id": organization_id
+            }
+        }));
+        let existing_access_token = make_jwt(serde_json::json!({
+            "sub": "access-existing-free-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "organization_id": organization_id,
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let old_tokens = CodexTokens {
+            id_token: existing_id_token,
+            access_token: existing_access_token,
+            refresh_token: Some("refresh-existing-free-token".to_string()),
+        };
+        let mut existing = CodexAccount::new(storage_id.clone(), email.to_string(), old_tokens);
+        existing.user_id = Some("user-existing-plus".to_string());
+        existing.plan_type = Some("plus".to_string());
+        existing.account_id = Some(account_id.to_string());
+        existing.organization_id = Some(organization_id.to_string());
+        existing.subscription_active_until = Some("2026-07-01T00:00:00Z".to_string());
+        save_account(&existing).expect("save existing paid account");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.clone(),
+            email: email.to_string(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: existing.subscription_active_until.clone(),
+            created_at: existing.created_at,
+            last_used: existing.last_used,
+        });
+        save_account_index(&index).expect("save existing index");
+
+        let free_id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-upsert-free-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-upsert-free-token",
+                "chatgpt_plan_type": "free",
+                "account_id": account_id,
+                "organization_id": organization_id
+            }
+        }));
+        let free_access_token = make_jwt(serde_json::json!({
+            "sub": "access-upsert-free-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "organization_id": organization_id,
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let upserted = upsert_account_with_hints(
+            CodexTokens {
+                id_token: free_id_token,
+                access_token: free_access_token,
+                refresh_token: Some("refresh-upsert-free-token".to_string()),
+            },
+            None,
+            None,
+        )
+        .expect("upsert account");
+
+        assert_eq!(upserted.id, storage_id);
+        assert_eq!(upserted.plan_type.as_deref(), Some("plus"));
+        assert_eq!(
+            upserted.subscription_active_until.as_deref(),
+            Some("2026-07-01T00:00:00Z")
+        );
+
+        let reloaded = load_account(&storage_id).expect("reload account");
+        assert_eq!(reloaded.plan_type.as_deref(), Some("plus"));
+        assert_eq!(
+            reloaded.subscription_active_until.as_deref(),
+            Some("2026-07-01T00:00:00Z")
+        );
+
+        let repaired_index = load_account_index();
+        let summary = repaired_index
+            .accounts
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("index summary");
+        assert_eq!(summary.plan_type.as_deref(), Some("plus"));
+        assert_eq!(
+            summary.subscription_active_until.as_deref(),
+            Some("2026-07-01T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn load_account_preserves_paid_plan_when_token_claims_are_free() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-stale-plan-refresh");
+        let email = "filter-raisins.9f+g1@icloud.com";
+        let account_id = "38677d7a-3c87-4d26-94d3-14a6f0b4c2fc";
+        let storage_id = "codex_stale_plus_real_free";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-stale-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-stale-plan",
+                "chatgpt_plan_type": "free",
+                "account_id": account_id
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-stale-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let mut account = CodexAccount::new(
+            storage_id.to_string(),
+            email.to_string(),
+            CodexTokens {
+                id_token,
+                access_token,
+                refresh_token: Some("refresh-stale-plan".to_string()),
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.account_id = Some(account_id.to_string());
+        save_account(&account).expect("save stale account detail");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.to_string(),
+            email: email.to_string(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: None,
+            created_at: account.created_at,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("save stale account index");
+
+        let loaded = load_account(storage_id).expect("load account");
+        assert_eq!(loaded.plan_type.as_deref(), Some("plus"));
+
+        let listed = list_accounts_checked().expect("list accounts checked");
+        let listed_account = listed
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("listed account");
+        assert_eq!(listed_account.plan_type.as_deref(), Some("plus"));
+
+        let repaired_index = load_account_index();
+        let repaired_summary = repaired_index
+            .accounts
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("repaired summary");
+        assert_eq!(repaired_summary.plan_type.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn resolve_observed_plan_type_accepts_confirmed_free_over_expired_plus() {
+        let mut account = CodexAccount::new(
+            "codex_confirmed_free_expired_plus".to_string(),
+            "confirmed-free@example.com".to_string(),
+            CodexTokens {
+                id_token: "id".to_string(),
+                access_token: "access".to_string(),
+                refresh_token: None,
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.subscription_active_until = Some("2000-01-01T00:00:00Z".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 95,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(43_200),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "free" })),
+        });
+
+        assert_eq!(
+            resolve_observed_plan_type(&account, Some("free".to_string())).as_deref(),
+            Some("free")
+        );
+    }
+
+    #[test]
+    fn load_account_reconciles_expired_plus_to_confirmed_free_plan() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-expired-plus-confirmed-free");
+        let email = "confirmed-free@example.com";
+        let account_id = "acc-confirmed-free";
+        let storage_id = "codex_expired_plus_confirmed_free";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-confirmed-free",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-confirmed-free",
+                "chatgpt_plan_type": "free",
+                "account_id": account_id
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-confirmed-free",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": account_id,
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let mut account = CodexAccount::new(
+            storage_id.to_string(),
+            email.to_string(),
+            CodexTokens {
+                id_token,
+                access_token,
+                refresh_token: Some("refresh-confirmed-free".to_string()),
+            },
+        );
+        account.account_id = Some(account_id.to_string());
+        account.plan_type = Some("plus".to_string());
+        account.subscription_active_until = Some("2000-01-01T00:00:00Z".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 95,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(43_200),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "free" })),
+        });
+        save_account(&account).expect("save stale plus account");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.to_string(),
+            email: email.to_string(),
+            plan_type: Some("plus".to_string()),
+            subscription_active_until: Some("2000-01-01T00:00:00Z".to_string()),
+            created_at: account.created_at,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("save stale plus index");
+
+        let loaded = load_account(storage_id).expect("load account");
+        assert_eq!(loaded.plan_type.as_deref(), Some("free"));
+        assert_eq!(loaded.subscription_active_until, None);
+
+        let listed = list_accounts_checked().expect("list accounts checked");
+        let listed_account = listed
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("listed account");
+        assert_eq!(listed_account.plan_type.as_deref(), Some("free"));
+
+        let repaired_index = load_account_index();
+        let repaired_summary = repaired_index
+            .accounts
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("repaired summary");
+        assert_eq!(repaired_summary.plan_type.as_deref(), Some("free"));
+        assert_eq!(repaired_summary.subscription_active_until, None);
+    }
+
+    #[test]
+    fn load_account_recovers_paid_plan_from_quota_raw_plan_when_token_claims_are_free() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-quota-plan-repair");
+        let email = "fete_pigpen.4r+g2@icloud.com";
+        let storage_id = "codex_quota_raw_plus";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-quota-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-quota-plan",
+                "chatgpt_plan_type": "free",
+                "account_id": "acc-quota-plan"
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-quota-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc-quota-plan",
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let mut account = CodexAccount::new(
+            storage_id.to_string(),
+            email.to_string(),
+            CodexTokens {
+                id_token,
+                access_token,
+                refresh_token: Some("refresh-quota-plan".to_string()),
+            },
+        );
+        account.plan_type = Some("free".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 53,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "plus" })),
+        });
+        save_account(&account).expect("save account with quota raw paid plan");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.to_string(),
+            email: email.to_string(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: account.created_at,
+            last_used: account.last_used,
+        });
+        save_account_index(&index).expect("save index");
+
+        let loaded = load_account(storage_id).expect("load account");
+        assert_eq!(loaded.plan_type.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn resolve_observed_plan_type_preserves_existing_paid_plan_over_stale_free_quota_raw_plan() {
+        let mut account = CodexAccount::new(
+            "codex_existing_plus_stale_free_quota".to_string(),
+            "demo@example.com".to_string(),
+            CodexTokens {
+                id_token: "id".to_string(),
+                access_token: "access".to_string(),
+                refresh_token: None,
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: Some(300),
+            hourly_window_present: Some(true),
+            weekly_percentage: 69,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "free" })),
+        });
+
+        assert_eq!(
+            resolve_observed_plan_type(&account, None).as_deref(),
+            Some("plus")
+        );
+    }
+
+    #[test]
+    fn load_account_prefers_paid_token_claim_over_stale_free_quota_raw_plan() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-paid-token-over-stale-quota");
+        let email = "filter-raisins.9f+g1@icloud.com";
+        let storage_id = "codex_paid_token_stale_free_quota";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-paid-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-paid-token",
+                "chatgpt_plan_type": "plus",
+                "account_id": "acc-paid-token"
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-paid-token",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc-paid-token",
+                "chatgpt_plan_type": "plus"
+            }
+        }));
+        let mut account = CodexAccount::new(
+            storage_id.to_string(),
+            email.to_string(),
+            CodexTokens {
+                id_token,
+                access_token,
+                refresh_token: Some("refresh-paid-token".to_string()),
+            },
+        );
+        account.plan_type = Some("free".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 100,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(CODEX_WEEK_WINDOW_MINUTES),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "free" })),
+        });
+        save_account(&account).expect("save account with stale quota raw free plan");
+
+        let loaded = load_account(storage_id).expect("load account");
+        assert_eq!(loaded.plan_type.as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn load_account_recovers_paid_plan_from_detail_backup_when_token_claims_are_free() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-backup-plan-repair");
+        let email = "filter-raisins.9f+g1@icloud.com";
+        let storage_id = "codex_backup_plus";
+        let id_token = make_jwt(serde_json::json!({
+            "aud": ["codex-cli"],
+            "iss": "https://auth.openai.com",
+            "email": email,
+            "sub": "user-backup-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_user_id": "user-backup-plan",
+                "chatgpt_plan_type": "free",
+                "account_id": "acc-backup-plan"
+            }
+        }));
+        let access_token = make_jwt(serde_json::json!({
+            "sub": "access-backup-plan",
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acc-backup-plan",
+                "chatgpt_plan_type": "free"
+            }
+        }));
+        let tokens = CodexTokens {
+            id_token,
+            access_token,
+            refresh_token: Some("refresh-backup-plan".to_string()),
+        };
+        let mut current = CodexAccount::new(storage_id.to_string(), email.to_string(), tokens);
+        current.plan_type = Some("free".to_string());
+        save_account(&current).expect("save current corrupted account");
+
+        let mut backup = current.clone();
+        backup.plan_type = Some("plus".to_string());
+        let backup_path = get_accounts_dir().join(format!("{}.json.bak", storage_id));
+        fs::write(
+            &backup_path,
+            serde_json::to_string_pretty(&backup).expect("serialize backup account"),
+        )
+        .expect("write backup account");
+
+        let mut index = CodexAccountIndex::new();
+        index.accounts.push(CodexAccountSummary {
+            id: storage_id.to_string(),
+            email: email.to_string(),
+            plan_type: Some("free".to_string()),
+            subscription_active_until: None,
+            created_at: current.created_at,
+            last_used: current.last_used,
+        });
+        save_account_index(&index).expect("save index");
+
+        let listed = list_accounts_checked().expect("list accounts checked");
+        let repaired = listed
+            .iter()
+            .find(|item| item.id == storage_id)
+            .expect("listed account");
+        assert_eq!(repaired.plan_type.as_deref(), Some("plus"));
+    }
+
     fn build_test_oauth_account(tokens: CodexTokens) -> CodexAccount {
         let email = "demo@example.com";
         let account_id = "acc-current";
@@ -5174,6 +9278,206 @@ mod tests {
             .join(format!("{}.json", account_id));
         let content = fs::read_to_string(&path).expect("read test account");
         serde_json::from_str(&content).expect("parse test account")
+    }
+
+    #[test]
+    fn load_account_index_repairs_partial_index_from_detail_files() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let env = TestEnvGuard::new("codex-partial-index-repair");
+
+        let first = seed_oauth_account(make_codex_tokens(
+            "first@example.com",
+            "acc-first",
+            "org-first",
+            "first",
+            "refresh-first",
+        ));
+        let mut second = CodexAccount::new(
+            "codex-second".to_string(),
+            "second@example.com".to_string(),
+            make_codex_tokens(
+                "second@example.com",
+                "acc-second",
+                "org-second",
+                "second",
+                "refresh-second",
+            ),
+        );
+        second.last_used = first.last_used + 1;
+        save_account(&second).expect("save second detail");
+
+        let mut partial_index = CodexAccountIndex::new();
+        partial_index.accounts.push(CodexAccountSummary {
+            id: first.id.clone(),
+            email: first.email.clone(),
+            plan_type: first.plan_type.clone(),
+            subscription_active_until: first.subscription_active_until.clone(),
+            created_at: first.created_at,
+            last_used: first.last_used,
+        });
+        partial_index.current_account_id = Some(first.id.clone());
+        save_account_index(&partial_index).expect("save partial index");
+
+        let repaired = load_account_index();
+        let account_ids = repaired
+            .accounts
+            .iter()
+            .map(|account| account.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(account_ids.len(), 2);
+        assert!(account_ids.contains(&first.id.as_str()));
+        assert!(account_ids.contains(&second.id.as_str()));
+        assert_eq!(
+            repaired.current_account_id.as_deref(),
+            Some(first.id.as_str())
+        );
+        assert!(get_accounts_storage_path().exists());
+        assert!(env.codex_home().exists());
+    }
+
+    #[test]
+    fn current_oauth_fallback_repairs_missing_current_account_id() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let _env = TestEnvGuard::new("codex-current-oauth-fallback");
+
+        let mut older = seed_oauth_account(make_codex_tokens(
+            "older@example.com",
+            "acc-older",
+            "org-older",
+            "older",
+            "refresh-older",
+        ));
+        older.created_at = 100;
+        older.last_used = 100;
+        save_account(&older).expect("pin older account recency");
+        let mut newer = CodexAccount::new(
+            "codex-newer".to_string(),
+            "newer@example.com".to_string(),
+            make_codex_tokens(
+                "newer@example.com",
+                "acc-newer",
+                "org-newer",
+                "newer",
+                "refresh-newer",
+            ),
+        );
+        newer.created_at = 200;
+        newer.last_used = 200;
+        save_account(&newer).expect("save newer account");
+
+        let mut api_account = CodexAccount::new(
+            "codex-api".to_string(),
+            "api-key-test".to_string(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: String::new(),
+                refresh_token: None,
+            },
+        );
+        api_account.auth_mode = CodexAuthMode::Apikey;
+        api_account.openai_api_key = Some("sk-test".to_string());
+        api_account.created_at = 300;
+        api_account.last_used = 300;
+        save_account(&api_account).expect("save api account");
+
+        let mut index = CodexAccountIndex::new();
+        for account in [&older, &newer, &api_account] {
+            index.accounts.push(CodexAccountSummary {
+                id: account.id.clone(),
+                email: account.email.clone(),
+                plan_type: account.plan_type.clone(),
+                subscription_active_until: account.subscription_active_until.clone(),
+                created_at: account.created_at,
+                last_used: account.last_used,
+            });
+        }
+        index.current_account_id = None;
+        save_account_index(&index).expect("save missing-current index");
+
+        let selected = get_current_or_fallback_oauth_account().expect("fallback account");
+        assert_eq!(selected.id, newer.id);
+        assert!(!selected.is_api_key_auth());
+        assert_eq!(
+            load_account_index().current_account_id.as_deref(),
+            Some(newer.id.as_str())
+        );
+    }
+
+    #[test]
+    fn switch_account_index_only_does_not_touch_runtime_projection_files() {
+        let _guard = TEST_ENV_LOCK.lock().expect("test env lock");
+        let env = TestEnvGuard::new("codex-index-only-switch");
+        let codex_home = env.codex_home();
+
+        fs::write(codex_home.join("auth.json"), "sentinel-auth").expect("write sentinel auth");
+        fs::write(codex_home.join("config.toml"), "sentinel-config")
+            .expect("write sentinel config");
+
+        let mut direct_account = CodexAccount::new(
+            "direct-account".to_string(),
+            "direct@example.com".to_string(),
+            make_codex_tokens(
+                "direct@example.com",
+                "acc-direct",
+                "org-direct",
+                "direct",
+                "rt-direct",
+            ),
+        );
+        direct_account.account_id = Some("acc-direct".to_string());
+        direct_account.organization_id = Some("org-direct".to_string());
+        direct_account.last_used = 100;
+        let mut api_account = CodexAccount::new(
+            "api-account".to_string(),
+            "api@example.com".to_string(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: String::new(),
+                refresh_token: None,
+            },
+        );
+        api_account.auth_mode = CodexAuthMode::Apikey;
+        api_account.openai_api_key = Some("sk-test".to_string());
+        api_account.last_used = 200;
+
+        save_account(&direct_account).expect("save direct account");
+        save_account(&api_account).expect("save api account");
+
+        let mut index = CodexAccountIndex::new();
+        for account in [&direct_account, &api_account] {
+            index.accounts.push(CodexAccountSummary {
+                id: account.id.clone(),
+                email: account.email.clone(),
+                plan_type: account.plan_type.clone(),
+                subscription_active_until: account.subscription_active_until.clone(),
+                created_at: account.created_at,
+                last_used: account.last_used,
+            });
+        }
+        index.current_account_id = Some(direct_account.id.clone());
+        save_account_index(&index).expect("save account index");
+
+        let switched = switch_account_index_only(&api_account.id).expect("index-only switch");
+
+        assert_eq!(switched.id, api_account.id);
+        assert_eq!(
+            load_account_index().current_account_id.as_deref(),
+            Some(api_account.id.as_str())
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).expect("read sentinel auth"),
+            "sentinel-auth"
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("config.toml")).expect("read sentinel config"),
+            "sentinel-config"
+        );
+        let persisted = load_account(&api_account.id).expect("load switched account");
+        assert!(
+            persisted.last_used >= switched.last_used
+                && persisted.last_used > api_account.last_used,
+            "index-only switch should still refresh last_used"
+        );
     }
 
     fn write_oauth_auth_file(base_dir: &std::path::Path, tokens: &CodexTokens, account_id: &str) {
@@ -5907,6 +10211,57 @@ mod tests {
     }
 
     #[test]
+    fn sync_sidecar_auth_file_updates_rotated_oauth_tokens() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let env = TestEnvGuard::new("codex-sidecar-token-sync-test");
+
+        let stored = seed_oauth_account(make_codex_tokens(
+            "demo@example.com",
+            "acc-current",
+            "org-current",
+            "seed",
+            "rt-seed",
+        ));
+        let latest_tokens = make_codex_tokens(
+            "demo@example.com",
+            "acc-current",
+            "org-current",
+            "sidecar",
+            "rt-sidecar",
+        );
+        let auth_path = env.home_dir.join("sidecar-auth.json");
+        fs::write(
+            &auth_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "type": "codex",
+                "id_token": latest_tokens.id_token.clone(),
+                "access_token": latest_tokens.access_token.clone(),
+                "refresh_token": latest_tokens.refresh_token.clone(),
+                "account_id": "acc-current",
+                "last_refresh": 1_770_000_000
+            }))
+            .expect("serialize sidecar auth"),
+        )
+        .expect("write sidecar auth");
+
+        let synced = super::sync_account_tokens_from_sidecar_auth_file(&stored.id, &auth_path)
+            .expect("sync sidecar auth");
+        assert_eq!(synced.tokens.access_token, latest_tokens.access_token);
+        assert_eq!(
+            synced.tokens.refresh_token.as_deref(),
+            latest_tokens.refresh_token.as_deref()
+        );
+        assert!(synced.token_generation > stored.token_generation);
+
+        let persisted = load_account(&stored.id).expect("persisted account");
+        assert_eq!(persisted.tokens.access_token, latest_tokens.access_token);
+        assert_eq!(
+            persisted.tokens.refresh_token.as_deref(),
+            latest_tokens.refresh_token.as_deref()
+        );
+    }
+
+    #[test]
     fn managed_projection_sync_requires_projection_marker() {
         let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let env = TestEnvGuard::new("codex-managed-projection-sync-test");
@@ -5942,6 +10297,37 @@ mod tests {
     }
 
     #[test]
+    fn managed_projection_skips_unchanged_semantic_write() {
+        let base_dir = make_temp_dir("codex-managed-projection-unchanged-write-test");
+        let account = build_test_oauth_account(make_codex_tokens(
+            "demo@example.com",
+            "acc-current",
+            "org-current",
+            "seed",
+            "rt-seed",
+        ));
+
+        write_managed_projection_to_dir(&base_dir, &account).expect("first projection write");
+        let projection_path = base_dir.join(CODEX_AUTH_PROJECTION_FILE_NAME);
+        let first_projection = fs::read_to_string(&projection_path).expect("read first projection");
+
+        write_managed_projection_to_dir(&base_dir, &account).expect("second projection write");
+
+        assert_eq!(
+            fs::read_to_string(&projection_path).expect("read second projection"),
+            first_projection
+        );
+        assert!(
+            !base_dir
+                .join(format!("{}.bak", CODEX_AUTH_PROJECTION_FILE_NAME))
+                .exists(),
+            "unchanged managed projection should not create a backup through atomic rewrite"
+        );
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
     fn config_toml_uses_openai_base_url_for_builtin_openai() {
         let base_dir = make_temp_dir("codex-config-openai-base-url-test");
         let provider_config = resolve_api_provider_config(
@@ -5957,7 +10343,8 @@ mod tests {
         let config_path = base_dir.join("config.toml");
         let content = fs::read_to_string(&config_path).expect("read config");
         assert!(content.contains("openai_base_url = \"https://api.example.com\""));
-        assert!(!content.contains("model_provider = "));
+        assert!(content.contains("model_provider = \"openai\""));
+        assert!(content.contains("[profiles.shared-current-provider]"));
         assert!(!content.contains("codex_local_access"));
         assert_eq!(
             read_api_provider_from_config_toml(&base_dir),
@@ -5986,20 +10373,196 @@ mod tests {
         write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
 
         let config_path = base_dir.join("config.toml");
-        assert!(!config_path.exists());
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(content.contains("model_provider = \"openai\""));
+        assert!(content.contains("forced_login_method = \"chatgpt\""));
+        assert!(content.contains("[profiles.shared-current-provider]"));
+        assert!(content.contains("[profiles.shared-cockpit-auth]"));
+        assert!(!content.contains("[profiles.shared-cockpit-api]"));
 
         fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
     }
 
     #[test]
-    fn config_toml_removes_runtime_provider_when_switching_to_builtin_openai() {
+    fn config_toml_skips_unchanged_official_projection_write() {
+        let base_dir = make_temp_dir("codex-config-openai-unchanged-write-test");
+        let provider_config = resolve_api_provider_config(
+            None,
+            Some(CodexApiProviderMode::OpenaiBuiltin),
+            None,
+            None,
+        )
+        .expect("resolve provider config");
+
+        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("first write");
+        let config_path = base_dir.join("config.toml");
+        let first_content = fs::read_to_string(&config_path).expect("read first config");
+
+        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("second write");
+
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("read second config"),
+            first_content
+        );
+        assert!(
+            !base_dir.join("config.toml.bak").exists(),
+            "unchanged projection should not create a backup through atomic rewrite"
+        );
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn config_toml_clears_stale_shared_cockpit_api_for_builtin_openai() {
+        let base_dir = make_temp_dir("codex-config-clear-stale-cockpit-api-profile-test");
+        let config_path = base_dir.join("config.toml");
+        fs::write(
+            &config_path,
+            r#"model_provider = "cmp_stale_remote"
+forced_login_method = "api"
+
+[profiles.shared-cockpit-api]
+forced_login_method = "api"
+model_provider = "cmp_stale_remote"
+
+[model_providers.cmp_stale_remote]
+name = "Stale Remote"
+base_url = "http://35.213.82.91:8003/v1"
+wire_api = "responses"
+requires_openai_auth = false
+supports_websockets = false
+"#,
+        )
+        .expect("write stale profile config");
+        let provider_config = resolve_api_provider_config(
+            None,
+            Some(CodexApiProviderMode::OpenaiBuiltin),
+            None,
+            None,
+        )
+        .expect("resolve provider config");
+
+        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(content.contains("model_provider = \"openai\""));
+        assert!(content.contains("forced_login_method = \"chatgpt\""));
+        assert!(content.contains("[profiles.shared-current-provider]"));
+        assert!(content.contains("[profiles.shared-cockpit-auth]"));
+        assert!(!content.contains(&format!("[profiles.{}]", CODEX_PROFILE_SHARED_COCKPIT_API)));
+        assert!(!content.contains("model_provider = \"cmp_stale_remote\""));
+        assert!(content.contains("[model_providers.cmp_stale_remote]"));
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn config_toml_preserves_saved_and_local_access_providers_for_resume() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-config-preserve-resume-providers-test");
+        fs::write(
+            guard
+                .accounts_data_dir()
+                .join(CODEX_MODEL_PROVIDERS_FILE_NAME),
+            serde_json::json!([
+                {
+                    "id": "cmp_1778165666417_1",
+                    "name": "35.213.82.91",
+                    "baseUrl": "http://35.213.82.91:8003/v1",
+                    "apiKeys": []
+                },
+                {
+                    "id": "cmp_1778246510288_1",
+                    "name": "RightCode",
+                    "baseUrl": "https://right.codes/codex/v1",
+                    "apiKeys": []
+                }
+            ])
+            .to_string(),
+        )
+        .expect("write saved providers");
+        fs::write(
+            guard.accounts_data_dir().join(CODEX_LOCAL_ACCESS_FILE_NAME),
+            serde_json::json!({
+                "enabled": true,
+                "port": 45336,
+                "apiKey": "agt_test",
+                "accountIds": ["acc-a"],
+                "createdAt": 1,
+                "updatedAt": 2
+            })
+            .to_string(),
+        )
+        .expect("write local access config");
+
+        let provider_config = resolve_api_provider_config(
+            None,
+            Some(CodexApiProviderMode::OpenaiBuiltin),
+            None,
+            None,
+        )
+        .expect("resolve provider config");
+        write_api_provider_to_config_toml(&guard.codex_home(), &provider_config)
+            .expect("write config");
+
+        let content =
+            fs::read_to_string(guard.codex_home().join("config.toml")).expect("read config");
+        assert!(content.contains("model_provider = \"openai\""));
+        assert!(content.contains("[model_providers.cmp_1778165666417_1]"));
+        assert!(content.contains("base_url = \"http://35.213.82.91:8003/v1\""));
+        assert!(content.contains("[model_providers.cmp_1778246510288_1]"));
+        assert!(content.contains("base_url = \"https://right.codes/codex/v1\""));
+        assert!(content.contains("[model_providers.codex_local_access]"));
+        assert!(content.contains("base_url = \"http://127.0.0.1:45336/v1\""));
+    }
+
+    #[test]
+    fn api_key_config_toml_preserves_saved_provider_sections_after_official_switch() {
+        let _lock = TEST_ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let guard = TestEnvGuard::new("codex-api-key-preserve-provider-sections-test");
+        fs::write(
+            guard
+                .accounts_data_dir()
+                .join(CODEX_MODEL_PROVIDERS_FILE_NAME),
+            serde_json::json!([
+                {
+                    "id": "cmp_1778165666417_1",
+                    "name": "35.213.82.91",
+                    "baseUrl": "http://35.213.82.91:8003/v1",
+                    "apiKeys": []
+                }
+            ])
+            .to_string(),
+        )
+        .expect("write saved providers");
+        let provider_config = resolve_api_provider_config(
+            Some("https://api.openai.com/v1/"),
+            Some(CodexApiProviderMode::OpenaiBuiltin),
+            None,
+            None,
+        )
+        .expect("resolve provider config");
+
+        write_api_key_provider_to_config_toml(&guard.codex_home(), &provider_config, "sk-test")
+            .expect("write config");
+
+        let content =
+            fs::read_to_string(guard.codex_home().join("config.toml")).expect("read config");
+        assert!(content.contains("model_provider = \"codex_local_access\""));
+        assert!(content.contains("base_url = \"https://api.openai.com/v1\""));
+        assert!(content.contains("experimental_bearer_token = \"sk-test\""));
+        assert!(content.contains("[model_providers.cmp_1778165666417_1]"));
+        assert!(content.contains("base_url = \"http://35.213.82.91:8003/v1\""));
+    }
+
+    #[test]
+    fn config_toml_cleans_managed_api_key_providers_for_builtin_openai() {
         let base_dir = make_temp_dir("codex-config-clean-managed-provider-test");
         let config_path = base_dir.join("config.toml");
         fs::write(
             &config_path,
             r#"model_provider = "codex_local_access"
 openai_base_url = "https://legacy.example.com/v1"
-model_catalog_json = "cockpit-provider-model-catalog.json"
 model_context_window = 1000000
 
 [model_providers.codex_local_access]
@@ -6040,13 +10603,13 @@ requires_openai_auth = false
         write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
 
         let content = fs::read_to_string(&config_path).expect("read config");
-        assert!(!content.contains("model_provider = "));
-        assert!(!content.contains("[model_providers.codex_local_access]"));
-        assert!(!content.contains("experimental_bearer_token = \"sk-history\""));
+        assert!(content.contains("model_provider = \"openai\""));
+        assert!(content.contains("[profiles.shared-current-provider]"));
+        assert!(content.contains("[profiles.shared-cockpit-auth]"));
+        assert!(!content.contains("codex_local_access"));
         assert!(!content.contains("[model_providers.cockpit_api]"));
         assert!(!content.contains("[model_providers.openai_api_key]"));
         assert!(content.contains("[model_providers.user_manual_provider_not_managed]"));
-        assert!(!content.contains("model_catalog_json"));
         assert!(!content.contains("openai_base_url"));
         assert!(content.contains("model_context_window = 1000000"));
         assert_eq!(
@@ -6100,6 +10663,35 @@ requires_openai_auth = false
     }
 
     #[test]
+    fn config_toml_writes_shared_cockpit_api_for_local_access_runtime_provider() {
+        let base_dir = make_temp_dir("codex-config-local-access-runtime-provider-test");
+        let provider_config = resolve_api_provider_config(
+            Some("http://127.0.0.1:45335/v1/"),
+            Some(CodexApiProviderMode::Custom),
+            Some(CODEX_RUNTIME_MODEL_PROVIDER_ID),
+            Some("Cockpit API Service"),
+        )
+        .expect("resolve provider config");
+
+        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+
+        let config_path = base_dir.join("config.toml");
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(content.contains("model_provider = \"codex_local_access\""));
+        assert!(content.contains("[profiles.shared-current-provider]"));
+        assert!(content.contains("[profiles.shared-cockpit-api]"));
+        assert!(content.contains("[profiles.shared-cockpit-auth]"));
+        assert!(content.contains("[model_providers.codex_local_access]"));
+        assert!(content.contains("name = \"Cockpit API Service\""));
+        assert!(content.contains("base_url = \"http://127.0.0.1:45335/v1\""));
+        assert!(content.contains("wire_api = \"responses\""));
+        assert!(content.contains("requires_openai_auth = false"));
+        assert!(content.contains("supports_websockets = false"));
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
     fn api_key_config_toml_uses_fixed_provider_for_default_official_endpoint() {
         let base_dir = make_temp_dir("codex-api-key-config-openai-default-test");
         let provider_config = resolve_api_provider_config(
@@ -6138,7 +10730,150 @@ requires_openai_auth = false
     }
 
     #[test]
-    fn api_key_config_toml_uses_fixed_provider_for_custom_provider() {
+    fn api_key_config_toml_skips_unchanged_projection_write() {
+        let base_dir = make_temp_dir("codex-api-key-config-unchanged-write-test");
+        let provider_config = resolve_api_provider_config(
+            Some("https://api.openai.com/v1/"),
+            Some(CodexApiProviderMode::OpenaiBuiltin),
+            None,
+            None,
+        )
+        .expect("resolve provider config");
+
+        write_api_key_provider_to_config_toml(&base_dir, &provider_config, "sk-test")
+            .expect("first write");
+        let config_path = base_dir.join("config.toml");
+        let first_content = fs::read_to_string(&config_path).expect("read first config");
+
+        write_api_key_provider_to_config_toml(&base_dir, &provider_config, "sk-test")
+            .expect("second write");
+
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("read second config"),
+            first_content
+        );
+        assert!(
+            !base_dir.join("config.toml.bak").exists(),
+            "unchanged API key projection should not create a backup through atomic rewrite"
+        );
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn api_key_auth_bundle_skips_unchanged_auth_and_config_writes() {
+        let base_dir = make_temp_dir("codex-api-key-auth-bundle-unchanged-write-test");
+        let account = CodexAccount::new_api_key(
+            "api-account".to_string(),
+            "api@example.com".to_string(),
+            "sk-test".to_string(),
+            CodexApiProviderMode::OpenaiBuiltin,
+            Some("https://api.openai.com/v1".to_string()),
+            None,
+            None,
+        );
+
+        write_auth_file_to_dir(&base_dir, &account).expect("first bundle write");
+        let auth_path = base_dir.join("auth.json");
+        let config_path = base_dir.join("config.toml");
+        let first_auth = fs::read_to_string(&auth_path).expect("read first auth");
+        let first_config = fs::read_to_string(&config_path).expect("read first config");
+
+        write_auth_file_to_dir(&base_dir, &account).expect("second bundle write");
+
+        assert_eq!(
+            fs::read_to_string(&auth_path).expect("read second auth"),
+            first_auth
+        );
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("read second config"),
+            first_config
+        );
+        assert!(!base_dir.join("auth.json.bak").exists());
+        assert!(!base_dir.join("config.toml.bak").exists());
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn api_key_account_bundle_skips_all_unchanged_projection_writes() {
+        let base_dir = make_temp_dir("codex-api-key-account-bundle-unchanged-write-test");
+        let account = CodexAccount::new_api_key(
+            "api-account".to_string(),
+            "api@example.com".to_string(),
+            "sk-test".to_string(),
+            CodexApiProviderMode::OpenaiBuiltin,
+            Some("https://api.openai.com/v1".to_string()),
+            None,
+            None,
+        );
+
+        write_account_bundle_to_dir(&base_dir, &account).expect("first account bundle write");
+        let auth_path = base_dir.join("auth.json");
+        let config_path = base_dir.join("config.toml");
+        let projection_path = base_dir.join(CODEX_AUTH_PROJECTION_FILE_NAME);
+        let first_auth = fs::read_to_string(&auth_path).expect("read first auth");
+        let first_config = fs::read_to_string(&config_path).expect("read first config");
+        let first_projection = fs::read_to_string(&projection_path).expect("read first projection");
+
+        write_account_bundle_to_dir(&base_dir, &account).expect("second account bundle write");
+
+        assert_eq!(
+            fs::read_to_string(&auth_path).expect("read second auth"),
+            first_auth
+        );
+        assert_eq!(
+            fs::read_to_string(&config_path).expect("read second config"),
+            first_config
+        );
+        assert_eq!(
+            fs::read_to_string(&projection_path).expect("read second projection"),
+            first_projection
+        );
+        assert!(!base_dir.join("auth.json.bak").exists());
+        assert!(!base_dir.join("config.toml.bak").exists());
+        assert!(!base_dir
+            .join(format!("{}.bak", CODEX_AUTH_PROJECTION_FILE_NAME))
+            .exists());
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn api_key_bundle_with_oauth_semantically_matches_detects_unchanged_projection() {
+        let base_dir = make_temp_dir("codex-runtime-bundle-semantic-match-test");
+        let oauth_account = build_test_oauth_account(make_codex_tokens(
+            "oauth@example.com",
+            "acc-oauth",
+            "org-oauth",
+            "access-oauth",
+            "refresh-oauth",
+        ));
+        let mut api_key_account = CodexAccount::new_api_key(
+            "api-account".to_string(),
+            "api@example.com".to_string(),
+            "sk-test".to_string(),
+            CodexApiProviderMode::OpenaiBuiltin,
+            Some("https://api.openai.com/v1".to_string()),
+            None,
+            None,
+        );
+        api_key_account.bound_oauth_account_id = Some(oauth_account.id.clone());
+
+        write_api_key_account_bundle_with_oauth_to_dir(&base_dir, &api_key_account, &oauth_account)
+            .expect("write initial api key bundle");
+
+        assert!(api_key_bundle_with_oauth_semantically_matches(
+            &base_dir,
+            &api_key_account,
+            &oauth_account,
+        ));
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn api_key_config_toml_uses_custom_no_websocket_provider_for_custom_provider() {
         let base_dir = make_temp_dir("codex-api-key-config-custom-provider-test");
         let provider_config = resolve_api_provider_config(
             Some("https://relay.example.com/v1/"),
@@ -6154,6 +10889,7 @@ requires_openai_auth = false
         let config_path = base_dir.join("config.toml");
         let content = fs::read_to_string(&config_path).expect("read config");
         assert!(content.contains("model_provider = \"codex_local_access\""));
+        assert!(content.contains("forced_login_method = \"api\""));
         assert!(content.contains("[model_providers.codex_local_access]"));
         assert!(!content.contains("[model_providers.relay]"));
         assert!(content.contains("name = \"Relay\""));
@@ -6172,6 +10908,42 @@ requires_openai_auth = false
                 provider_name: Some("Relay".to_string()),
             }
         );
+
+        fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn api_key_config_toml_sets_cockpit_current_model_for_api_service() {
+        let base_dir = make_temp_dir("codex-api-key-config-api-service-test");
+        let provider_config = resolve_api_provider_config(
+            Some("http://127.0.0.1:4000/v1/"),
+            Some(CodexApiProviderMode::Custom),
+            Some("litellm_gateway"),
+            Some("Cockpit API Service"),
+        )
+        .expect("resolve provider config");
+
+        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+
+        let config_path = base_dir.join("config.toml");
+        let content = fs::read_to_string(&config_path).expect("read config");
+        assert!(content.contains("model_provider = \"litellm_gateway\""));
+        assert!(content.contains("model = \"cockpit-current\""));
+        assert!(content.contains("base_url = \"http://127.0.0.1:4000/v1\""));
+        assert!(content.contains("supports_websockets = false"));
+
+        let official_provider_config = resolve_api_provider_config(
+            None,
+            Some(CodexApiProviderMode::OpenaiBuiltin),
+            None,
+            None,
+        )
+        .expect("resolve official provider config");
+        write_api_provider_to_config_toml(&base_dir, &official_provider_config)
+            .expect("write official config");
+        let content = fs::read_to_string(&config_path).expect("read restored config");
+        assert!(!content.contains("model = \"cockpit-current\""));
+        assert!(content.contains("model_provider = \"openai\""));
 
         fs::remove_dir_all(&base_dir).expect("cleanup temp dir");
     }
@@ -6198,7 +10970,6 @@ requires_openai_auth = false
             Some("http://127.0.0.1:14998/v1".to_string()),
             Some("codex_local_access".to_string()),
             Some("Codex API Service".to_string()),
-            Vec::new(),
         );
         api_key_account.bound_oauth_account_id = Some(oauth_account.id.clone());
         let profile_dir = env.home_dir.join("managed-profile");
@@ -6251,7 +11022,6 @@ requires_openai_auth = false
             Some("http://127.0.0.1:14998/v1".to_string()),
             Some("codex_local_access".to_string()),
             Some("Codex API Service".to_string()),
-            Vec::new(),
         );
         api_key_account.bound_oauth_account_id = Some(oauth_account.id.clone());
         let profile_dir = env.home_dir.join("managed-profile");
@@ -6288,7 +11058,6 @@ requires_openai_auth = false
             &config_path,
             r#"model_provider = "mimo"
 openai_base_url = "https://legacy.example.com/v1"
-model_catalog_json = "cockpit-provider-model-catalog.json"
 model_context_window = 1000000
 
 [model_providers.mimo]
@@ -6318,10 +11087,12 @@ requires_openai_auth = true
 
         let content = fs::read_to_string(&config_path).expect("read config");
         assert!(content.contains("model_provider = \"codex_local_access\""));
+        assert!(content.contains("base_url = \"https://api.openai.com/v1\""));
+        assert!(content.contains("forced_login_method = \"api\""));
         assert!(content.contains("[model_providers.codex_local_access]"));
+        assert!(content.contains("experimental_bearer_token = \"sk-test\""));
         assert!(content.contains("[model_providers.mimo]"));
         assert!(content.contains("[model_providers.relay]"));
-        assert!(!content.contains("model_catalog_json"));
         assert!(!content.contains("openai_base_url"));
         assert!(content.contains("model_context_window = 1000000"));
 
@@ -6769,10 +11540,6 @@ pub fn update_api_key_credentials(
     api_provider_mode: Option<CodexApiProviderMode>,
     api_provider_id: Option<String>,
     api_provider_name: Option<String>,
-    api_model_catalog: Vec<String>,
-    api_wire_api: Option<String>,
-    api_supports_vision: bool,
-    api_model_vision_support: std::collections::HashMap<String, bool>,
 ) -> Result<CodexAccount, String> {
     let mut account =
         load_account(account_id).ok_or_else(|| format!("账号不存在: {}", account_id))?;
@@ -6804,15 +11571,7 @@ pub fn update_api_key_credentials(
         account.id = new_id.clone();
     }
 
-    apply_api_key_fields(
-        &mut account,
-        &normalized_key,
-        provider_config,
-        api_model_catalog,
-        api_wire_api,
-        api_supports_vision,
-        api_model_vision_support,
-    );
+    apply_api_key_fields(&mut account, &normalized_key, provider_config);
     account.update_last_used();
     save_account(&account)?;
 

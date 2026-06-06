@@ -789,6 +789,19 @@ func TestExtractSessionID_CodexSessionIDHeader(t *testing.T) {
 	}
 }
 
+func TestExtractSessionID_CodexOfficialSessionIDHeader(t *testing.T) {
+	t.Parallel()
+
+	headers := make(http.Header)
+	headers.Set("Session-Id", "codex-session-official")
+
+	got := ExtractSessionID(headers, nil, nil)
+	want := "codex:codex-session-official"
+	if got != want {
+		t.Errorf("ExtractSessionID() with Session-Id = %q, want %q", got, want)
+	}
+}
+
 func TestExtractSessionID_ClientRequestIDHeader(t *testing.T) {
 	t.Parallel()
 

@@ -238,7 +238,7 @@ pub async fn github_copilot_start_instance(
             modules::process::close_pid(pid, 20)?;
             let _ = modules::github_copilot_instance::update_default_pid(None)?;
         }
-        modules::process::close_vscode(&[default_dir_str.clone()], 20)?;
+        modules::process::close_vscode(std::slice::from_ref(&default_dir_str), 20)?;
         inject_bound_account_for_instance_start(
             &default_dir_str,
             default_settings.bind_account_id.as_deref(),
@@ -279,7 +279,7 @@ pub async fn github_copilot_start_instance(
         modules::process::close_pid(pid, 20)?;
         let _ = modules::github_copilot_instance::update_instance_pid(&instance.id, None)?;
     }
-    modules::process::close_vscode(&[instance.user_data_dir.clone()], 20)?;
+    modules::process::close_vscode(std::slice::from_ref(&instance.user_data_dir), 20)?;
 
     inject_bound_account_for_instance_start(
         &instance.user_data_dir,

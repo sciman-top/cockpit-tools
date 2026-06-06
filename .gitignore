@@ -13,7 +13,6 @@ dist
 dist-ssr
 *.local
 .gemini
-.codegraph/
 # Editor directories and files
 .vscode/*
 .planning
@@ -26,10 +25,18 @@ dist-ssr
 *.sln
 *.sw?
 
-# Local AI instructions
-AGENTS.md
-
 locale-check-report.md
+.playwright-mcp/
+
+# Keep curated evidence summaries in reports/, but do not commit huge raw runtime streams.
+reports/**/monitor-checkpoint.json
+reports/**/live-monitor-*.json
+reports/local-hardened-api-smoke/
+reports/local-hardened-api-live-monitor/
+reports/tauri-command-runs/
+reports/tauri-dev-run/
+reports/live-api-service-verify-20260606-*/
+reports/live-verify-20260605-231830/
 
 docs/platform-integration-guide.md
 docs/plugin-architecture-design.md
@@ -45,6 +52,9 @@ src-tauri/native/macos-native-menu/.build/
 
 # Rust
 target/
+target-codex-verify/
+target-codex-quota-verify*/
+target-test/
 **/*.rs.bk
 docs/plugin-architecture-proposal.md
 .aitasks

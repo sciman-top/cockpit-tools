@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
+import { isTauriRuntimeAvailable } from '../utils/tauriRuntime';
 import { ALL_PLATFORM_IDS, PlatformId } from '../types/platform';
 
 const PLATFORM_LAYOUT_STORAGE_KEY = 'agtools.platform_layout.v1';
@@ -768,11 +769,13 @@ function normalizeHiddenEntryIds(
 function normalizeSidebarEntryIds(
   rawSidebarEntryIds: unknown,
   orderedEntryIds: PlatformLayoutEntryId[],
-  _hiddenEntryIds: PlatformLayoutEntryId[],
+  hiddenEntryIds: PlatformLayoutEntryId[],
   groups: PlatformLayoutGroup[],
   legacySidebarPlatformIds: PlatformId[],
 ): PlatformLayoutEntryId[] {
-  const normalized = normalizeEntryVisibilityList(rawSidebarEntryIds, orderedEntryIds);
+  const hiddenSet = new Set(hiddenEntryIds);
+  const normalized = normalizeEntryVisibilityList(rawSidebarEntryIds, orderedEntryIds)
+    .filter((entryId) => !hiddenSet.has(entryId));
   if (normalized.length > 0) {
     return normalized;
   }
@@ -801,13 +804,13 @@ function normalizeSidebarEntryIds(
     legacySidebarPlatformIds,
     orderedEntryIds,
     groups,
-  );
+  ).filter((entryId) => !hiddenSet.has(entryId));
 
   if (fallback.length > 0) {
     return fallback;
   }
 
-  return orderedEntryIds;
+  return orderedEntryIds.filter((entryId) => !hiddenSet.has(entryId));
 }
 
 function derivePlatformOrderFromEntryOrder(
@@ -874,11 +877,15 @@ function deriveHiddenPlatformIds(
 
 function deriveSidebarPlatformIds(
   sidebarEntryIds: PlatformLayoutEntryId[],
-  _hiddenEntryIds: PlatformLayoutEntryId[],
+  hiddenEntryIds: PlatformLayoutEntryId[],
   groups: PlatformLayoutGroup[],
 ): PlatformId[] {
+  const hiddenSet = new Set(hiddenEntryIds);
   const result: PlatformId[] = [];
   for (const entryId of sidebarEntryIds) {
+    if (hiddenSet.has(entryId)) {
+      continue;
+    }
     const platformId = resolveEntryDefaultPlatformId(entryId, groups);
     if (!platformId || result.includes(platformId)) {
       continue;
@@ -903,6 +910,9 @@ function syncTrayLayoutToBackend(
     'orderedPlatformIds' | 'trayPlatformIds' | 'traySortMode' | 'orderedEntryIds' | 'platformGroups'
   >,
 ) {
+  if (!isTauriRuntimeAvailable()) {
+    return;
+  }
   invoke('save_tray_platform_layout', {
     sortMode: state.traySortMode,
     orderedPlatformIds: state.orderedPlatformIds,
@@ -1302,6 +1312,10 @@ export const usePlatformLayoutStore = create<PlatformLayoutState>((set, get) => 
   },
 
   toggleSidebarEntry: (id) => {
+    if (get().hiddenEntryIds.includes(id)) {
+      return;
+    }
+
     const current = [...get().sidebarEntryIds];
     let nextSidebar: PlatformLayoutEntryId[] = [];
 
@@ -1513,6 +1527,8 @@ export const usePlatformLayoutStore = create<PlatformLayoutState>((set, get) => 
 
 if (typeof window !== 'undefined') {
   window.setTimeout(() => {
-    usePlatformLayoutStore.getState().syncTrayLayout();
+    if (isTauriRuntimeAvailable()) {
+      usePlatformLayoutStore.getState().syncTrayLayout();
+    }
   }, 0);
 }

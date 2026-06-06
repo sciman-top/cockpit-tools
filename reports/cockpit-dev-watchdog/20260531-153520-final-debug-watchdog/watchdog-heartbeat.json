@@ -1,0 +1,71 @@
+{
+  "timestamp": "2026-05-31T22:16:13.4920622+08:00",
+  "pid": 33720,
+  "desiredInstance": "Debug",
+  "debugSwitchMode": "PrebuildThenStop",
+  "releaseFallbackEnabled": true,
+  "releaseFallbackCooldownSeconds": 10,
+  "debugExePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe",
+  "releaseExePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe",
+  "runningCockpitProcessCount": 1,
+  "runningCockpitProcesses": [
+    {
+      "ProcessId": 13856,
+      "Name": "cockpit-tools.exe",
+      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe",
+      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe\" "
+    }
+  ],
+  "runningDebugProcessCount": 0,
+  "runningDebugProcesses": [],
+  "runningNonDebugProcessCount": 1,
+  "runningNonDebugProcesses": [
+    {
+      "ProcessId": 13856,
+      "Name": "cockpit-tools.exe",
+      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe",
+      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe\" "
+    }
+  ],
+  "tauriDevLauncherCount": 0,
+  "tauriDevLaunchers": [],
+  "stableLocalAccessGatewayProcesses": [
+    {
+      "ProcessId": 13280,
+      "Name": "codex-local-access-gateway.exe",
+      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\codex-local-access-gateway.exe",
+      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\codex-local-access-gateway.exe\" --serve"
+    }
+  ],
+  "localAccessConfig": {
+    "exists": true,
+    "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access.json",
+    "enabled": false,
+    "port": 45335,
+    "updatedAt": 1780211940885
+  },
+  "periodicStableLocalAccessGateway": null,
+  "activeCodexStreamGuard": {
+    "activeStreamCount": 0,
+    "activeLeaseIds": [],
+    "auditPaths": [
+      "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl.1",
+      "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl"
+    ],
+    "dataRoot": "C:\\Users\\sciman\\.antigravity_cockpit",
+    "windowMinutes": 720,
+    "lastEventTimestampMs": 1780211810753,
+    "parseErrorCount": 0
+  },
+  "launchCount": 2,
+  "prebuildCount": 3,
+  "releaseFallbackCount": 2,
+  "lastLaunchAt": null,
+  "lastPrebuildAt": "2026-05-31T22:16:13.4908728+08:00",
+  "lastReleaseFallbackAt": "2026-05-31T22:15:53.0863828+08:00",
+  "debugPrebuild": null,
+  "pendingDebugLaunchAfterPrebuild": false,
+  "pendingDebugLaunchPrebuild": null,
+  "debugMissingSince": "2026-05-31T22:15:53.5610099+08:00",
+  "stopSignalFile": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-153520-final-debug-watchdog\\stop.signal"
+}

@@ -1,0 +1,11 @@
+{
+  "startedAt": "2026-05-31T01:29:47.6820028+08:00",
+  "pid": 29004,
+  "repoRoot": "D:\\CODE\\external\\Cockpit-Tools-Local",
+  "reportDir": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-005118-debug-self-heal-watchdog\\stable-local-access-gateway-20260531-012945782",
+  "dataRoot": "C:\\Users\\sciman\\.antigravity_cockpit",
+  "configPath": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access.json",
+  "checkOnly": false,
+  "allowConfigEnable": true,
+  "readyTimeoutSeconds": 30
+}

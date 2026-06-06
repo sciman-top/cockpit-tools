@@ -1,0 +1,236 @@
+{
+  "runId": "20260604T135905Z",
+  "generatedAt": "2026-06-04T13:59:05.572Z",
+  "accountsDir": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_accounts",
+  "accountCount": 7,
+  "issueCount": 0,
+  "flagCounts": {},
+  "accounts": [
+    {
+      "filename": "codex_310e213ecc0c80158f54625b01579170.json",
+      "id": "codex_310e213ecc0c80158f54625b01579170",
+      "email": "sciman.top@gmail.com",
+      "account_id": "1245e956-e5d9-45aa-94bb-2e3f497b8d04",
+      "auth_mode": "oauth",
+      "plan_type": "plus",
+      "raw_quota_plan_type": "plus",
+      "raw_quota_source": "",
+      "subscription_active_until": "2026-06-05T14:14:34+00:00",
+      "effective_plan_type": "plus",
+      "effective_plan_key": "plus",
+      "presentation": {
+        "planLabel": "PLUS",
+        "planClass": "plus codex-plus",
+        "subscription": {
+          "bucket": "within_7d",
+          "tone": "warning",
+          "valueText": "2天",
+          "detailText": "2026-06-05 22:14"
+        },
+        "quotaRows": [
+          {
+            "key": "primary",
+            "label": "5h",
+            "valueText": "97%",
+            "percentage": 97,
+            "resetText": "3h 30m (06/05 01:29)"
+          },
+          {
+            "key": "secondary",
+            "label": "Weekly",
+            "valueText": "100%",
+            "percentage": 100,
+            "resetText": "6d 22h 30m (06/11 20:29)"
+          }
+        ]
+      },
+      "flags": []
+    },
+    {
+      "filename": "codex_apikey_463c5a855ae8aa2b36112aae81d1ecf1.json",
+      "id": "codex_apikey_463c5a855ae8aa2b36112aae81d1ecf1",
+      "email": "api-key-463c5a85",
+      "account_id": null,
+      "auth_mode": "apikey",
+      "plan_type": "API_KEY",
+      "raw_quota_plan_type": "",
+      "raw_quota_source": "",
+      "effective_plan_type": "API_KEY",
+      "effective_plan_key": "api_key",
+      "presentation": {
+        "planLabel": "API_KEY",
+        "planClass": "api_key",
+        "subscription": {
+          "bucket": "missing",
+          "tone": "missing",
+          "valueText": "",
+          "detailText": ""
+        },
+        "quotaRows": []
+      },
+      "flags": []
+    },
+    {
+      "filename": "codex_apikey_8b8853f15e823dc53bd156163035bc78.json",
+      "id": "codex_apikey_8b8853f15e823dc53bd156163035bc78",
+      "email": "api-key-8b8853f1",
+      "account_id": null,
+      "auth_mode": "apikey",
+      "plan_type": "API_KEY",
+      "raw_quota_plan_type": "",
+      "raw_quota_source": "",
+      "effective_plan_type": "API_KEY",
+      "effective_plan_key": "api_key",
+      "presentation": {
+        "planLabel": "API_KEY",
+        "planClass": "api_key",
+        "subscription": {
+          "bucket": "missing",
+          "tone": "missing",
+          "valueText": "",
+          "detailText": ""
+        },
+        "quotaRows": []
+      },
+      "flags": []
+    },
+    {
+      "filename": "codex_c641df4d56baceca12b3ffcd597061b3.json",
+      "id": "codex_c641df4d56baceca12b3ffcd597061b3",
+      "email": "ai.sciman.top@gmail.com",
+      "account_id": "d23cbc21-b2fb-475f-81e6-82fc669e47aa",
+      "auth_mode": "oauth",
+      "plan_type": "free",
+      "raw_quota_plan_type": "free",
+      "raw_quota_source": "",
+      "effective_plan_type": "free",
+      "effective_plan_key": "free",
+      "presentation": {
+        "planLabel": "FREE",
+        "planClass": "free",
+        "subscription": {
+          "bucket": "known_plan",
+          "tone": "active",
+          "valueText": "FREE",
+          "detailText": ""
+        },
+        "quotaRows": [
+          {
+            "key": "secondary",
+            "label": "5 Week",
+            "valueText": "95%",
+            "percentage": 95,
+            "resetText": "29d 22h 30m (07/04 20:29)"
+          }
+        ]
+      },
+      "flags": []
+    },
+    {
+      "filename": "codex_d5918a432f646d7a4f7070307400cc61.json",
+      "id": "codex_d5918a432f646d7a4f7070307400cc61",
+      "email": "sciman.phys@gmail.com",
+      "account_id": "d78a3337-2b40-4582-80c0-2b39f985785d",
+      "auth_mode": "oauth",
+      "plan_type": "free",
+      "raw_quota_plan_type": "free",
+      "raw_quota_source": "",
+      "effective_plan_type": "free",
+      "effective_plan_key": "free",
+      "presentation": {
+        "planLabel": "FREE",
+        "planClass": "free",
+        "subscription": {
+          "bucket": "known_plan",
+          "tone": "active",
+          "valueText": "FREE",
+          "detailText": ""
+        },
+        "quotaRows": [
+          {
+            "key": "secondary",
+            "label": "5 Week",
+            "valueText": "95%",
+            "percentage": 95,
+            "resetText": "29d 22h 30m (07/04 20:29)"
+          }
+        ]
+      },
+      "flags": []
+    },
+    {
+      "filename": "codex_e00290f319d024b165a064c1b7068a61.json",
+      "id": "codex_e00290f319d024b165a064c1b7068a61",
+      "email": "nishanthansen.h@gmail.com",
+      "account_id": "3da94806-e66e-48dc-b797-9cac8e7138d6",
+      "auth_mode": "oauth",
+      "plan_type": "prolite",
+      "raw_quota_plan_type": "prolite",
+      "raw_quota_source": "codex_official_websocket_rate_limits",
+      "subscription_active_until": "2026-06-15T05:03:57+00:00",
+      "effective_plan_type": "prolite",
+      "effective_plan_key": "prolite",
+      "expected_pro_tier": "prolite",
+      "presentation": {
+        "planLabel": "PRO 5x",
+        "planClass": "pro codex-pro-lite",
+        "subscription": {
+          "bucket": "within_30d",
+          "tone": "active",
+          "valueText": "11天",
+          "detailText": "2026-06-15 13:03"
+        },
+        "quotaRows": [
+          {
+            "key": "primary",
+            "label": "5h",
+            "valueText": "8%",
+            "percentage": 8,
+            "resetText": "2h 28m (06/05 00:27)"
+          },
+          {
+            "key": "secondary",
+            "label": "Weekly",
+            "valueText": "70%",
+            "percentage": 70,
+            "resetText": "6d 10h 31m (06/11 08:30)"
+          }
+        ]
+      },
+      "flags": []
+    },
+    {
+      "filename": "codex_f9c21376dc05ab18f5d70f4e61b66a34.json",
+      "id": "codex_f9c21376dc05ab18f5d70f4e61b66a34",
+      "email": "agi.phys@gmail.com",
+      "account_id": "07b79eeb-070f-492b-b37c-8bfd0021cdd7",
+      "auth_mode": "oauth",
+      "plan_type": "go",
+      "raw_quota_plan_type": "go",
+      "raw_quota_source": "",
+      "subscription_active_until": "2027-04-22T21:43:12+00:00",
+      "effective_plan_type": "go",
+      "effective_plan_key": "go",
+      "presentation": {
+        "planLabel": "GO",
+        "planClass": "go",
+        "subscription": {
+          "bucket": "known_plan",
+          "tone": "active",
+          "valueText": "GO",
+          "detailText": ""
+        },
+        "quotaRows": [
+          {
+            "key": "secondary",
+            "label": "5 Week",
+            "valueText": "95%",
+            "percentage": 95,
+            "resetText": "29d 22h 30m (07/04 20:29)"
+          }
+        ]
+      },
+      "flags": []
+    }
+  ]
+}

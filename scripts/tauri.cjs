@@ -17,34 +17,31 @@ function run(command, args, options = {}) {
     throw result.error;
   }
 
-  if (result.status !== 0) {
-    process.exit(typeof result.status === 'number' ? result.status : 1);
-  }
+  return typeof result.status === 'number' ? result.status : 1;
 }
 
-function runFinal(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: repoRoot,
-    stdio: 'inherit',
-    shell: false,
-    ...options,
-  });
-
-  if (result.error) {
-    throw result.error;
+function runChecked(command, args, options = {}) {
+  const status = run(command, args, options);
+  if (status !== 0) {
+    process.exit(status);
   }
+  return status;
+}
 
-  process.exit(typeof result.status === 'number' ? result.status : 1);
+function exitWithStatus(status) {
+  process.exit(typeof status === 'number' ? status : 1);
 }
 
 function runTauriDirect() {
-  run('npm.cmd', ['run', 'sync-version'], { shell: process.platform === 'win32' });
-  runFinal('npx.cmd', ['tauri', ...process.argv.slice(2)], { shell: process.platform === 'win32' });
+  const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const npxCommand = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  const spawnOptions = { shell: process.platform === 'win32' };
+  runChecked(npmCommand, ['run', 'sync-version'], spawnOptions);
+  exitWithStatus(run(npxCommand, ['tauri', ...process.argv.slice(2)], spawnOptions));
 }
 
 if (process.platform !== 'win32') {
-  run('npm', ['run', 'sync-version']);
-  runFinal('npx', ['tauri', ...process.argv.slice(2)]);
+  runTauriDirect();
 }
 
 const vcvars64Path = 'C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat';
@@ -64,12 +61,8 @@ if (!fs.existsSync(tauriCliPath)) {
   runTauriDirect();
 }
 
-const quotedArgs = tauriArgs.map((arg) => {
-  if (/[\s"]/u.test(arg)) {
-    return `"${arg.replace(/"/g, '""')}"`;
-  }
-  return arg;
-});
+const quoteCmdArg = (arg) => `"${String(arg).replace(/"/g, '""').replace(/%/g, '%%')}"`;
+const quotedArgs = tauriArgs.map(quoteCmdArg);
 const scriptBody = [
   '@echo off',
   `set "PATH=${goBinPath};%PATH%"`,
@@ -82,8 +75,11 @@ const scriptBody = [
 
 fs.writeFileSync(tempScriptPath, scriptBody);
 
+let finalStatus = 1;
 try {
-  runFinal('cmd.exe', ['/d', '/c', tempScriptPath]);
+  finalStatus = run('cmd.exe', ['/d', '/c', tempScriptPath]);
 } finally {
   fs.rmSync(tempScriptPath, { force: true });
 }
+
+exitWithStatus(finalStatus);

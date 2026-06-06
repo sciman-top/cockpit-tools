@@ -209,12 +209,7 @@ fn parse_external_import_url_with_reason(
     let min_app_version = query
         .get("min_app_version")
         .or_else(|| query.get("minappversion"))
-        .map(|value| {
-            value
-                .trim()
-                .trim_start_matches(|ch| ch == 'v' || ch == 'V')
-                .to_string()
-        })
+        .map(|value| value.trim().trim_start_matches(['v', 'V']).to_string())
         .filter(|value| !value.is_empty());
 
     let auto_import = parse_boolean_like(

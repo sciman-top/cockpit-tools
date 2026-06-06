@@ -447,7 +447,11 @@ fn is_instance_running(
     instance: &CodexSyncInstance,
     process_entries: &[(u32, Option<String>)],
 ) -> bool {
-    let codex_home = instance.data_dir.to_str();
+    let codex_home = if instance.id == DEFAULT_INSTANCE_ID {
+        None
+    } else {
+        instance.data_dir.to_str()
+    };
     modules::process::resolve_codex_pid_from_entries(instance.last_pid, codex_home, process_entries)
         .is_some()
 }
@@ -777,7 +781,7 @@ fn rollout_content_activity_and_len(content: &str) -> (i128, u64) {
         .filter_map(|value| parse_rollout_line_timestamp_ms(&value))
         .max()
         .unwrap_or(0);
-    (activity_ms, content.as_bytes().len() as u64)
+    (activity_ms, content.len() as u64)
 }
 
 fn parse_rollout_line_timestamp_ms(value: &JsonValue) -> Option<i128> {
@@ -1533,7 +1537,9 @@ mod tests {
         )
         .expect("write source rollout");
         let source_modified_at = UNIX_EPOCH + Duration::from_secs(1_710_000_000);
-        fs::File::open(&rollout_path)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&rollout_path)
             .expect("open source rollout")
             .set_modified(source_modified_at)
             .expect("set source mtime");
@@ -1577,7 +1583,9 @@ mod tests {
         )
         .expect("write rollout");
         let original_modified_at = UNIX_EPOCH + Duration::from_secs(1_720_000_000);
-        fs::File::open(&rollout_path)
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&rollout_path)
             .expect("open rollout")
             .set_modified(original_modified_at)
             .expect("set rollout mtime");

@@ -163,6 +163,7 @@ pub struct AccountInfo {
     pub name: Option<String>,
     pub is_current: bool,
     pub disabled: bool,
+    pub has_fingerprint: bool,
     pub last_used: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscription_tier: Option<String>,
@@ -176,6 +177,7 @@ pub struct AccountTokenInfo {
     pub name: Option<String>,
     pub is_current: bool,
     pub disabled: bool,
+    pub has_fingerprint: bool,
     pub last_used: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub subscription_tier: Option<String>,
@@ -597,7 +599,8 @@ async fn handle_client_message(
 
     match msg {
         WsMessage::Ping => {
-            let pong = serde_json::to_string(&WsMessage::Pong).unwrap();
+            let pong = serde_json::to_string(&WsMessage::Pong)
+                .map_err(|e| format!("序列化 Pong 失败: {}", e))?;
             sender
                 .send(Message::Text(pong.into()))
                 .await
@@ -907,6 +910,7 @@ fn get_accounts_info() -> Result<(Vec<AccountInfo>, Option<String>), String> {
                 name: acc.name.clone(),
                 is_current: current_id.as_ref() == Some(&acc.id),
                 disabled: acc.disabled,
+                has_fingerprint: acc.fingerprint_id.is_some(),
                 last_used: acc.last_used,
                 subscription_tier,
             }
@@ -936,6 +940,7 @@ fn get_accounts_with_tokens_info() -> Result<(Vec<AccountTokenInfo>, Option<Stri
                 name: acc.name.clone(),
                 is_current: current_id.as_ref() == Some(&acc.id),
                 disabled: acc.disabled,
+                has_fingerprint: acc.fingerprint_id.is_some(),
                 last_used: acc.last_used,
                 subscription_tier,
                 refresh_token: acc.token.refresh_token.clone(),
@@ -967,6 +972,7 @@ fn get_current_account_info() -> Result<Option<AccountInfo>, String> {
             name: acc.name.clone(),
             is_current: current_id.as_ref() == Some(&acc.id),
             disabled: acc.disabled,
+            has_fingerprint: acc.fingerprint_id.is_some(),
             last_used: acc.last_used,
             subscription_tier,
         }

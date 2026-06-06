@@ -47,4 +47,3 @@ export function setAntigravityRuntimeTargetFromPlatform(platformId: PlatformId):
   }
   setAntigravityRuntimeTarget(platformId);
 }
-

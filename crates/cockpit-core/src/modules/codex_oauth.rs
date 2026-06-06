@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{ErrorKind, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::{AppHandle, Emitter};
 use url::Url;
 
@@ -63,6 +63,16 @@ struct OAuthState {
 lazy_static::lazy_static! {
     static ref OAUTH_STATE: Arc<Mutex<Option<OAuthState>>> = Arc::new(Mutex::new(None));
     static ref COMPLETE_ATTEMPT_SEQ: AtomicU64 = AtomicU64::new(0);
+}
+
+fn lock_oauth_state() -> MutexGuard<'static, Option<OAuthState>> {
+    match OAUTH_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            logger::log_warn("Codex OAuth 内存状态锁已中毒，继续使用最后一次可恢复状态");
+            poisoned.into_inner()
+        }
+    }
 }
 
 fn generate_base64url_token() -> String {
@@ -130,7 +140,7 @@ fn persist_state_to_disk(state: Option<&OAuthState>) {
 }
 
 fn hydrate_oauth_state_if_missing() {
-    let mut guard = OAUTH_STATE.lock().unwrap();
+    let mut guard = lock_oauth_state();
     if guard.is_none() {
         *guard = load_pending_state_from_disk();
     }
@@ -138,7 +148,7 @@ fn hydrate_oauth_state_if_missing() {
 
 fn set_oauth_state(state: Option<OAuthState>) {
     {
-        let mut guard = OAUTH_STATE.lock().unwrap();
+        let mut guard = lock_oauth_state();
         *guard = state.clone();
     }
     persist_state_to_disk(state.as_ref());
@@ -282,7 +292,7 @@ fn to_start_response(state: &OAuthState) -> CodexOAuthLoginStartResponse {
 
 fn clear_oauth_state_if_matches(expected_state: &str, expected_login_id: &str) {
     let should_clear = {
-        let oauth_state = OAUTH_STATE.lock().unwrap();
+        let oauth_state = lock_oauth_state();
         oauth_state
             .as_ref()
             .is_some_and(|s| s.state == expected_state && s.login_id == expected_login_id)
@@ -297,7 +307,7 @@ pub async fn start_oauth_login(
 ) -> Result<CodexOAuthLoginStartResponse, String> {
     hydrate_oauth_state_if_missing();
     {
-        let oauth_state = OAUTH_STATE.lock().unwrap();
+        let oauth_state = lock_oauth_state();
         if let Some(state) = oauth_state.as_ref() {
             if state.expires_at <= now_timestamp() {
                 let expected_state = state.state.clone();
@@ -387,7 +397,7 @@ async fn start_callback_server(
 
     loop {
         let should_stop = {
-            let oauth_state = OAUTH_STATE.lock().unwrap();
+            let oauth_state = lock_oauth_state();
             match oauth_state.as_ref() {
                 Some(state) => state.state != expected_state || state.login_id != expected_login_id,
                 None => true,
@@ -475,17 +485,20 @@ async fn start_callback_server(
 </body>
 </html>"#;
 
-                let response = Response::from_string(html).with_header(
-                    tiny_http::Header::from_bytes(
-                        &b"Content-Type"[..],
-                        &b"text/html; charset=utf-8"[..],
-                    )
-                    .unwrap(),
-                );
+                let mut response = Response::from_string(html);
+                match tiny_http::Header::from_bytes(
+                    &b"Content-Type"[..],
+                    &b"text/html; charset=utf-8"[..],
+                ) {
+                    Ok(header) => {
+                        response = response.with_header(header);
+                    }
+                    Err(_) => logger::log_warn("Codex OAuth 回调响应 Content-Type 头构造失败"),
+                }
                 let _ = request.respond(response);
 
                 let login_id = {
-                    let mut oauth_state = OAUTH_STATE.lock().unwrap();
+                    let mut oauth_state = lock_oauth_state();
                     if let Some(state_data) = oauth_state.as_mut() {
                         if state_data.state == expected_state
                             && state_data.login_id == expected_login_id
@@ -654,7 +667,7 @@ pub async fn complete_oauth_login(login_id: &str) -> Result<CodexTokens, String>
         attempt_id, login_id, started_at_ms
     ));
     let (code, code_verifier, port) = {
-        let oauth_state = OAUTH_STATE.lock().unwrap();
+        let oauth_state = lock_oauth_state();
         let state = oauth_state
             .as_ref()
             .ok_or("OAuth 状态不存在，请重新发起授权")?;
@@ -709,7 +722,7 @@ pub async fn complete_oauth_login(login_id: &str) -> Result<CodexTokens, String>
 pub fn cancel_oauth_flow_for(login_id: Option<&str>) -> Result<(), String> {
     hydrate_oauth_state_if_missing();
     let port = {
-        let oauth_state = OAUTH_STATE.lock().unwrap();
+        let oauth_state = lock_oauth_state();
         let Some(current) = oauth_state.as_ref() else {
             logger::log_info("Codex OAuth 取消请求已忽略：当前无活动流程");
             return Ok(());
@@ -745,7 +758,7 @@ pub fn cancel_oauth_flow_for(login_id: Option<&str>) -> Result<(), String> {
 pub fn submit_callback_url(login_id: &str, callback_url: &str) -> Result<(), String> {
     hydrate_oauth_state_if_missing();
     let (expected_state, port) = {
-        let guard = OAUTH_STATE.lock().unwrap();
+        let guard = lock_oauth_state();
         let state = guard
             .as_ref()
             .ok_or_else(|| "OAuth 状态不存在，请重新发起授权".to_string())?;
@@ -777,7 +790,7 @@ pub fn submit_callback_url(login_id: &str, callback_url: &str) -> Result<(), Str
         return Err("回调 state 校验失败，请确认粘贴的是当前登录会话链接".to_string());
     }
 
-    let mut guard = OAUTH_STATE.lock().unwrap();
+    let mut guard = lock_oauth_state();
     let current = guard
         .as_mut()
         .ok_or_else(|| "OAuth 状态不存在，请重新发起授权".to_string())?;
@@ -797,7 +810,7 @@ pub fn submit_callback_url(login_id: &str, callback_url: &str) -> Result<(), Str
 pub fn restore_pending_oauth_listener(app_handle: AppHandle) {
     hydrate_oauth_state_if_missing();
     let state = {
-        let guard = OAUTH_STATE.lock().unwrap();
+        let guard = lock_oauth_state();
         guard.as_ref().cloned()
     };
     if let Some(pending) = state.as_ref() {

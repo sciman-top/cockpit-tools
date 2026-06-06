@@ -51,7 +51,7 @@ fn build_session_json(account: &crate::models::codebuddy::CodebuddyAccount) -> S
 
 fn ensure_codebuddy_cn_state_db_path(user_data_dir: &str) -> Result<PathBuf, String> {
     let root = Path::new(user_data_dir);
-    let candidates = vec![
+    let candidates = [
         root.join("User").join("globalStorage").join("state.vscdb"),
         root.join("globalStorage").join("state.vscdb"),
         root.join("state.vscdb"),

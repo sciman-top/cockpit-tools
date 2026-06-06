@@ -1,0 +1,67 @@
+{
+  "timestamp": "2026-06-01T00:48:17.7590848+08:00",
+  "pid": 416,
+  "desiredInstance": "Debug",
+  "debugSwitchMode": "PrebuildThenStop",
+  "releaseFallbackEnabled": true,
+  "releaseFallbackCooldownSeconds": 10,
+  "debugExePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe",
+  "releaseExePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\release\\cockpit-tools.exe",
+  "runningCockpitProcessCount": 1,
+  "runningCockpitProcesses": [
+    {
+      "ProcessId": 46784,
+      "Name": "cockpit-tools.exe",
+      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe",
+      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe\""
+    }
+  ],
+  "runningDebugProcessCount": 1,
+  "runningDebugProcesses": [
+    {
+      "ProcessId": 46784,
+      "Name": "cockpit-tools.exe",
+      "ExecutablePath": "D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe",
+      "CommandLine": "\"D:\\CODE\\external\\Cockpit-Tools-Local\\target\\debug\\cockpit-tools.exe\""
+    }
+  ],
+  "runningNonDebugProcessCount": 0,
+  "runningNonDebugProcesses": [],
+  "tauriDevLauncherCount": 0,
+  "tauriDevLaunchers": [],
+  "stableLocalAccessGatewayProcesses": [],
+  "localAccessConfig": {
+    "exists": true,
+    "path": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access.json",
+    "enabled": true,
+    "port": 45335,
+    "updatedAt": 1780243353671
+  },
+  "periodicStableLocalAccessGateway": null,
+  "activeCodexStreamGuard": {
+    "activeStreamCount": 2,
+    "activeLeaseIds": [
+      "954",
+      "956"
+    ],
+    "auditPaths": [
+      "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl.1",
+      "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl"
+    ],
+    "dataRoot": "C:\\Users\\sciman\\.antigravity_cockpit",
+    "windowMinutes": 720,
+    "lastEventTimestampMs": 1780246097423,
+    "parseErrorCount": 0
+  },
+  "launchCount": 3,
+  "prebuildCount": 3,
+  "releaseFallbackCount": 1,
+  "lastLaunchAt": "2026-05-31T23:33:22.9951157+08:00",
+  "lastPrebuildAt": "2026-05-31T23:33:22.9665249+08:00",
+  "lastReleaseFallbackAt": "2026-05-31T23:31:15.9910648+08:00",
+  "debugPrebuild": null,
+  "pendingDebugLaunchAfterPrebuild": false,
+  "pendingDebugLaunchPrebuild": null,
+  "debugMissingSince": null,
+  "stopSignalFile": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-221620-latest-debug-watchdog\\stop.signal"
+}

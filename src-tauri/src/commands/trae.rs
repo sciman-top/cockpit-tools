@@ -231,7 +231,7 @@ pub async fn refresh_all_trae_tokens(app: AppHandle) -> Result<i32, String> {
         success_count,
         started_at.elapsed().as_millis()
     ));
-    Ok(success_count as i32)
+    Ok(success_count)
 }
 
 #[tauri::command]

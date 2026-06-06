@@ -317,6 +317,7 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 			if contentsResult.IsArray() {
 				contentResults := contentsResult.Array()
 				numContents := len(contentResults)
+				var currentMessageThinkingSignature string
 				for j := 0; j < numContents; j++ {
 					contentResult := contentResults[j]
 					contentTypeResult := contentResult.Get("type")
@@ -346,6 +347,8 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							logDroppedAntigravityEmptyThinking(modelName, i, j)
 							continue
 						}
+
+						currentMessageThinkingSignature = signature
 
 						// Valid signature with content, send as thought block.
 						partJSON := []byte(`{}`)
@@ -393,6 +396,11 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							partJSON := []byte(`{}`)
 
 							signature := resolveToolUseThoughtSignature(modelName, contentResult, true)
+							if signature == "" {
+								if _, _, hasToolUseSignature := firstToolUseSignatureField(contentResult); !hasToolUseSignature && hasResolvedThinkingSignature(modelName, currentMessageThinkingSignature) {
+									signature = currentMessageThinkingSignature
+								}
+							}
 							if signature != "" {
 								partJSON, _ = sjson.SetBytes(partJSON, "thoughtSignature", signature)
 							} else {

@@ -1,17 +1,31 @@
-# Cockpit Tools
+# Cockpit Tools Local
 
 English · [Portuguese (BR)](README.pt-br.md) · [简体中文](README.md)
 
-[![GitHub stars](https://img.shields.io/github/stars/jlcodes99/cockpit-tools?style=flat&color=gold)](https://github.com/jlcodes99/cockpit-tools)
-[![GitHub downloads](https://img.shields.io/github/downloads/jlcodes99/cockpit-tools/total?style=flat&color=blue)](https://github.com/jlcodes99/cockpit-tools/releases)
-[![GitHub release](https://img.shields.io/github/v/release/jlcodes99/cockpit-tools?style=flat)](https://github.com/jlcodes99/cockpit-tools/releases)
-[![GitHub issues](https://img.shields.io/github/issues/jlcodes99/cockpit-tools)](https://github.com/jlcodes99/cockpit-tools/issues)
+[![GitHub release](https://img.shields.io/github/v/release/sciman-top/cockpit-tools-local?style=flat)](https://github.com/sciman-top/cockpit-tools-local/releases)
+
+## Start Here: This Is The Cockpit Tools Local Self-Use Edition
+
+This repository is a personal self-use fork of [`jlcodes99/cockpit-tools`](https://github.com/jlcodes99/cockpit-tools), not the official upstream release repository. The GitHub landing page, releases, version numbers, and installable assets are maintained under the `Cockpit Tools Local` self-use semantics.
+
+| Area | Cockpit Tools Local | Official upstream |
+| --- | --- | --- |
+| Repository and product identity | `sciman-top/cockpit-tools-local`, product name `Cockpit Tools Local`, Tauri identifier `com.sciman.cockpit-tools-local` | Official `jlcodes99/cockpit-tools` identity |
+| Versioning and releases | Uses local suffixes such as `0.24.10-local.1`; releases publish self-use builds only and do not mirror official install assets | Uses official version numbers and official release assets |
+| Upstream absorption | `main` remains the self-use source line; official source is tracked as `upstream/main` and merged through isolated local branches/worktrees after review | Official project development line |
+| Codex local enhancements | Keeps the local API Service, hardened gateway, account pool/follow-current routing, provider projection, session visibility, quota/cooldown, and continuity guards | Follows official default behavior |
+| Safety and runtime boundaries | Live upstream probes, drains, dev app/server runs, and release exe replacement require explicit confirmation; current Codex/Cockpit sessions are not interrupted automatically | Host-local self-use guards are not part of upstream |
+| Merge policy | Overlaps default to the Local implementation; when upstream is clearly better, the recommendation and rationale are explained before adoption | Does not maintain this local delta |
+
+Main self-owned capabilities include Codex Direct OAuth/API Key provider roundtrip switching, Local API Service small-pool scheduling, hardened local API mode, quota/cooldown registry, redacted stream/audit evidence, account cache sanitization, Windows-first local entrypoints, self-use release flow, and compatible absorption of the official CLIProxyAPI sidecar.
+
+See [Self-Use Delta](docs/SELF_USE_DELTA.md) for the full local delta and [Upstream Sync Policy](docs/UPSTREAM_SYNC_POLICY.md) for future upstream absorption.
 
 A **universal AI IDE account management tool**, currently supporting **Antigravity IDE**, **Codex**, **GitHub Copilot**, **Windsurf**, **Kiro**, **Cursor**, **Gemini Cli**, **CodeBuddy**, **CodeBuddy CN**, **Qoder**, **Trae**, and **Zed**, with multi-instance parallel workflows.
 
 > Designed to help users efficiently manage multiple AI IDE accounts, this tool supports one-click switching, quota monitoring, wake-up tasks, and multi-instance parallel runs, helping you fully utilize resources from different accounts.
 
-**Features**: One-click Switch · Multi-account Management · Multi-instance · Quota Monitoring · Wake-up Tasks · Plugin Integration · GitHub Copilot Management · Windsurf Management · Kiro Management · Cursor Management · Gemini Cli Management · CodeBuddy Management · CodeBuddy CN Management · Qoder Management · Trae Management · Zed Management
+**Features**: One-click Switch · Multi-account Management · Multi-instance · Quota Monitoring · Wake-up Tasks · Device Fingerprints · Plugin Integration · GitHub Copilot Management · Windsurf Management · Kiro Management · Cursor Management · Gemini Cli Management · CodeBuddy Management · CodeBuddy CN Management · Qoder Management · Trae Management · Zed Management
 
 **Languages**: Supports 18 languages
 
@@ -39,11 +53,13 @@ A brand new visual dashboard providing a one-stop status overview:
 - **One-Click Switch**: Switch the currently active account instantly without manual login/logout
 - **Multiple Import Methods**: OAuth, Refresh Token, Plugin Sync
 - **Wake-up Tasks**: Schedule AI model wake-ups to trigger quota reset cycles in advance
+- **Device Fingerprints**: Generate, manage, and bind device fingerprints to reduce risk
 
 > ![Antigravity IDE Accounts](docs/images/antigravity_list.png)
 >
-> *(Wakeup Tasks)*
+> *(Wakeup Tasks & Device Fingerprints)*
 > ![Wakeup Tasks](docs/images/wakeup_detail.png)
+> ![Device Fingerprints](docs/images/fingerprint_detail.png)
 
 #### 2.1 Antigravity IDE Multi-Instance
 
@@ -60,7 +76,7 @@ Run multiple Antigravity IDE instances in parallel with different accounts. For 
 - **Dedicated Support**: Optimized account management experience for Codex
 - **Quota Display**: Clear display of Hourly and Weekly quota status
 - **Plan Recognition**: Automatically identifies account Plan types (Basic, Plus, Team, etc.)
-- **API Service**: The local Codex API service is powered by the bundled CLIProxyAPI sidecar. Cockpit Tools handles account sync, config projection, status, and usage statistics while keeping the same Base URL, API keys, and user workflow.
+- **API Service & Switching Ownership**: Cockpit Tools Local natively owns Codex roundtrip switching among Direct OAuth, Direct API/API Key providers, and the Local API Service, including single-account/follow-current behavior, provider writes, session visibility repair, managed instance launch state, account sync, config projection, status, and usage statistics; the local edition keeps the hardened gateway and continuity guards first while staying compatible with the official CLIProxyAPI sidecar configuration model.
 
 > ![Codex Accounts](docs/images/codex_list.png)
 
@@ -225,7 +241,7 @@ These are the most common security questions answered directly:
 - **This is a local desktop tool**: it does not require a separate cloud account for this project, and it does not rely on a project-hosted cloud account storage.
 - **Data is mainly stored on your machine**:
   - `~/.antigravity_cockpit`: Antigravity IDE accounts, configs, WebSocket status, etc.
-  - `~/.codex`: official Codex current login `auth.json`
+  - `~/.codex`: official Codex current login `auth.json`, plus Codex provider/config and session state written by Cockpit
   - `~/.gemini`: Gemini Cli local session files (for example `oauth_creds.json`, `google_accounts.json`, `settings.json`)
   - local app data folder under `com.antigravity.cockpit-tools`: Codex / GitHub Copilot / Windsurf / Kiro / Cursor / Gemini Cli / CodeBuddy / CodeBuddy CN / Qoder / Trae / Zed multi-account index data, etc.
 - **WebSocket is local-only by default**: binds to `127.0.0.1`, default port `19528`; you can disable it or change the port in Settings.
@@ -291,18 +307,18 @@ Notes:
 
 ### Option A: Manual Download (Recommended)
 
-Go to [GitHub Releases](https://github.com/jlcodes99/cockpit-tools/releases) to download the package for your system:
+Go to this repository's [Cockpit Tools Local Releases](https://github.com/sciman-top/cockpit-tools-local/releases) to download self-use builds. Releases here represent `Cockpit Tools Local` only; if the current version has no installable assets yet, build locally with the development flow below instead of treating the official upstream release as this local edition.
 
-*   **macOS**: `.dmg` (Apple Silicon & Intel)
-*   **Windows**: `.msi` (Recommended) or `.exe`
-*   **Linux**: `.deb` (Debian/Ubuntu), `.rpm`, or `.AppImage` (Universal)
+*   **macOS**: `.dmg` (Apple Silicon & Intel), when available in this repository's release assets
+*   **Windows**: `.msi` (Recommended) or `.exe`, when available in this repository's release assets
+*   **Linux**: official Linux assets are not treated as Local release assets by default; build locally when needed
 
 ### Option B: Install with Homebrew (macOS)
 
-> Homebrew is required.
+> The self-use Homebrew cask must point to this repository's self-use release. If the matching cask update has not been published yet, prefer manual download or local build; do not use the official upstream tap as a substitute for Cockpit Tools Local.
 
 ```bash
-brew tap jlcodes99/cockpit-tools https://github.com/jlcodes99/cockpit-tools
+brew tap sciman-top/cockpit-tools-local https://github.com/sciman-top/cockpit-tools-local
 brew install --cask cockpit-tools
 ```
 
@@ -371,7 +387,7 @@ npm run tauri build
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jlcodes99/cockpit-tools&type=Date)](https://star-history.com/#jlcodes99/cockpit-tools&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=sciman-top/cockpit-tools-local&type=Date)](https://star-history.com/#sciman-top/cockpit-tools-local&Date)
 
 ---
 
@@ -391,10 +407,8 @@ Every bit of support helps sustain open-source development. Thank you!
 
 ## Acknowledgments
 
-- Antigravity account switching logic references: [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
-- Codex API service references and integrates: [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
-- Codex third-party provider presets reference: [CC Switch](https://github.com/farion1231/cc-switch)
-- Codex model catalog and frontend model display ideas reference: [CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus)
+- Antigravity IDE account switching logic based on: [Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
+- Codex API service sidecar integration: [router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
 Thanks to the project author for their open-source contributions! If these projects have helped you, please give them a ⭐ Star to show your support!
 

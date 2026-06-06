@@ -228,7 +228,7 @@ pub async fn kiro_start_instance(instance_id: String) -> Result<InstanceProfileV
             let _ = modules::kiro_instance::update_default_pid(None)?;
         }
 
-        modules::kiro_instance::close_kiro(&[default_dir_str.clone()], 20)?;
+        modules::kiro_instance::close_kiro(std::slice::from_ref(&default_dir_str), 20)?;
         inject_bound_account_for_instance_start(
             &default_dir_str,
             default_settings.bind_account_id.as_deref(),
@@ -273,7 +273,7 @@ pub async fn kiro_start_instance(instance_id: String) -> Result<InstanceProfileV
         let _ = modules::kiro_instance::update_instance_pid(&instance.id, None)?;
     }
 
-    modules::kiro_instance::close_kiro(&[instance.user_data_dir.clone()], 20)?;
+    modules::kiro_instance::close_kiro(std::slice::from_ref(&instance.user_data_dir), 20)?;
     inject_bound_account_for_instance_start(
         &instance.user_data_dir,
         instance.bind_account_id.as_deref(),

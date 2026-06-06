@@ -1,18 +1,32 @@
-# Cockpit Tools
+# Cockpit Tools Local
 
 [English](README.en.md) · [Portuguese (BR)](README.pt-br.md) · 简体中文
 
-[![GitHub stars](https://img.shields.io/github/stars/jlcodes99/cockpit-tools?style=flat&color=gold)](https://github.com/jlcodes99/cockpit-tools)
-[![GitHub downloads](https://img.shields.io/github/downloads/jlcodes99/cockpit-tools/total?style=flat&color=blue)](https://github.com/jlcodes99/cockpit-tools/releases)
-[![GitHub release](https://img.shields.io/github/v/release/jlcodes99/cockpit-tools?style=flat)](https://github.com/jlcodes99/cockpit-tools/releases)
-[![GitHub issues](https://img.shields.io/github/issues/jlcodes99/cockpit-tools)](https://github.com/jlcodes99/cockpit-tools/issues)
+[![GitHub release](https://img.shields.io/github/v/release/sciman-top/cockpit-tools-local?style=flat)](https://github.com/sciman-top/cockpit-tools-local/releases)
+
+## 先看这里：这是 Cockpit Tools Local 自用版
+
+本仓库是 [`jlcodes99/cockpit-tools`](https://github.com/jlcodes99/cockpit-tools) 的个人自用版 fork，不是官方原版发布仓库。GitHub 首页、Release、版本号和安装资产都按 `Cockpit Tools Local` 自用版语义维护。
+
+| 领域 | Cockpit Tools Local 自用版 | 官方原版 |
+| --- | --- | --- |
+| 仓库与产品身份 | `sciman-top/cockpit-tools-local`、产品名 `Cockpit Tools Local`、Tauri identifier `com.sciman.cockpit-tools-local` | `jlcodes99/cockpit-tools` 官方项目身份 |
+| 版本与发布 | 使用 `0.24.10-local.1` 这类本地后缀；Release 只发布自用版构建产物，不镜像官方安装资产 | 使用官方版本号与官方发布资产 |
+| 上游吸收方式 | `main` 保持自用主线，官方源码只作为 `upstream/main` 输入；通过本地隔离分支/worktree 深度审查后合并 | 官方项目自身开发主线 |
+| Codex 本地增强 | 保留本地 API Service、hardened gateway、账号池/跟随当前账号、provider 投影、session 可见性、quota/cooldown 和连续性守卫 | 以官方默认实现为准 |
+| 安全与运行边界 | live upstream probe、drain、dev app/server、release exe 替换等需要显式确认；不自动打断当前 Codex/Cockpit 运行 | 不适用本机自用运行守卫 |
+| 合并裁决 | 冲突/重叠默认保留自用版；官方实现明显更优时先说明推荐理由并等待确认 | 不维护本地自用差异 |
+
+主要自有特性/功能包括：Codex Direct OAuth 与 API Key provider 往返切换、本地 API Service 小池调度、hardened local API mode、quota/cooldown registry、stream/audit 脱敏证据链、账号缓存清洗、Windows-first 本机入口、self-use release 流程，以及保留官方 CLIProxyAPI sidecar 的兼容吸收能力。
+
+完整差异与合并守卫见 [自用差异清单](docs/SELF_USE_DELTA.md)，后续吸收官方新版按 [官方上游吸收策略](docs/UPSTREAM_SYNC_POLICY.md) 执行。
 
 一款**通用的 AI IDE 账号管理工具**，目前支持 **Antigravity IDE**、**Codex**、**GitHub Copilot**、**Windsurf**、**Kiro**、**Cursor**、**Gemini Cli**、**CodeBuddy**、**CodeBuddy CN**、**Qoder**、**Trae** 和 **Zed**，并支持多账号多实例并行运行。
 
 
 > 本工具旨在帮助用户高效管理多个 AI IDE 账号，支持一键切换、配额监控、自动唤醒与多开实例并行运行，助您充分利用不同账号的资源。
 
-**功能**：一键切号 · 多账号管理 · 多开实例 · 配额监控 · 唤醒任务 · 插件联动 · GitHub Copilot 管理 · Windsurf 管理 · Kiro 管理 · Cursor 管理 · Gemini Cli 管理 · CodeBuddy 管理 · CodeBuddy CN 管理 · Qoder 管理 · Trae 管理 · Zed 管理
+**功能**：一键切号 · 多账号管理 · 多开实例 · 配额监控 · 唤醒任务 · 设备指纹 · 插件联动 · GitHub Copilot 管理 · Windsurf 管理 · Kiro 管理 · Cursor 管理 · Gemini Cli 管理 · CodeBuddy 管理 · CodeBuddy CN 管理 · Qoder 管理 · Trae 管理 · Zed 管理
 
 **语言**：支持 18 种语言
 
@@ -40,11 +54,13 @@
 - **一键切号**：一键切换当前使用的账号，无需手动登录登出
 - **多种导入**：支持 OAuth 授权、Refresh Token、插件同步
 - **唤醒任务**：定时唤醒 AI 模型，提前触发配额重置周期
+- **设备指纹**：生成、管理、绑定设备指纹，降低风控风险
 
 > ![Antigravity IDE Accounts](docs/images/antigravity_list.png)
 >
-> *(唤醒任务)*
+> *(唤醒任务与设备指纹管理)*
 > ![Wakeup Tasks](docs/images/wakeup_detail.png)
+> ![Device Fingerprints](docs/images/fingerprint_detail.png)
 
 #### 2.1 Antigravity IDE 多开实例
 
@@ -61,7 +77,7 @@
 - **专属支持**：专为 Codex 优化的账号管理体验
 - **配额展示**：清晰展示 Hourly 和 Weekly 配额状态
 - **计划识别**：自动识别账号 Plan 类型 (Basic, Plus, Team 等)
-- **API 服务**：本地 Codex API 服务由内置 CLIProxyAPI sidecar 驱动，Cockpit Tools 负责账号同步、配置投影、状态与用量统计；Base URL、API Key 与用户操作方式保持不变。
+- **API 服务与切换归属**：Cockpit Tools Local 原生负责 Codex Direct OAuth、Direct API/API Key provider 与本地 API Service 的往返切换，包括单账号池/跟随当前账号、provider 写入、会话可见性修复、托管实例启动状态、账号同步、配置投影、状态与用量统计；本地版优先保留 hardened gateway 与连续性守卫，并兼容官方 CLIProxyAPI sidecar 的配置模型。
 
 > ![Codex Accounts](docs/images/codex_list.png)
 
@@ -226,7 +242,7 @@ Codex 同样支持多账号多实例并行运行。比如同时打开两个 Code
 - **这是本地桌面工具**：不需要单独注册平台账号，也不依赖项目自建云端来存你的账号列表。
 - **数据主要保存在本机**：
   - `~/.antigravity_cockpit`：Antigravity IDE 账号、配置、WebSocket 状态等
-  - `~/.codex`：Codex 官方当前登录 `auth.json`
+  - `~/.codex`：Codex 官方当前登录 `auth.json`、Cockpit 写入的 Codex provider/config 与会话状态
   - `~/.gemini`：Gemini Cli 本地会话文件（如 `oauth_creds.json`、`google_accounts.json`、`settings.json`）
   - 系统本地应用数据目录下 `com.antigravity.cockpit-tools`：Codex / GitHub Copilot / Windsurf / Kiro / Cursor / Gemini Cli / CodeBuddy / CodeBuddy CN / Qoder / Trae / Zed 多账号索引等
 - **WebSocket 默认仅本机访问**：监听 `127.0.0.1`，默认端口 `19528`，可在设置中关闭或改端口。
@@ -288,18 +304,18 @@ Codex 同样支持多账号多实例并行运行。比如同时打开两个 Code
 
 ### 选项 A: 手动下载 (推荐)
 
-前往 [GitHub Releases](https://github.com/jlcodes99/cockpit-tools/releases) 下载对应系统的安装包：
+前往本仓 [Cockpit Tools Local Releases](https://github.com/sciman-top/cockpit-tools-local/releases) 下载自用版安装包。这里的 Release 只代表 `Cockpit Tools Local` 自用构建；如果当前版本尚未发布安装资产，请使用下方开发/构建流程自行构建，不要把官方原版 Release 当作本仓自用版。
 
-*   **macOS**: `.dmg` (Apple Silicon & Intel)
-*   **Windows**: `.msi` (推荐) 或 `.exe`
-*   **Linux**: `.deb` (Debian/Ubuntu)、`.rpm` 或 `.AppImage` (通用)
+*   **macOS**: `.dmg` (Apple Silicon & Intel)，以本仓 Release 实际资产为准
+*   **Windows**: `.msi` (推荐) 或 `.exe`，以本仓 Release 实际资产为准
+*   **Linux**: 自用版默认不把官方 Linux 包当作发布资产；需要时建议按构建文档自编译
 
 ### 选项 B: Homebrew 安装 (macOS)
 
-> 需要先安装 Homebrew。
+> 自用版 Homebrew cask 只应指向本仓 self-use release。若本仓尚未发布对应 cask 更新，请优先使用手动下载或本地构建；不要用官方 tap 代替 Cockpit Tools Local。
 
 ```bash
-brew tap jlcodes99/cockpit-tools https://github.com/jlcodes99/cockpit-tools
+brew tap sciman-top/cockpit-tools-local https://github.com/sciman-top/cockpit-tools-local
 brew install --cask cockpit-tools
 ```
 
@@ -358,17 +374,21 @@ npm install
 npm run tauri dev
 ```
 
+日常开发中，AI agent 应自主执行有限验证命令，例如 `npm run typecheck`、`npm run build`、Cargo tests 和 focused script checks；不要把所有 `npm run` 都当成需要确认。只有当实时查看最新代码必须启动、重启或重跑 `npm run dev`、`npm run tauri dev`、`npm run tauri build` 等长时间或影响会话的 app/server 流程时，才先说明命令、实时验证原因、窗口/端口/单实例唤醒/资源占用/Codex 或 Cockpit 连续性影响，并询问当前任务是否允许执行。维护 Cockpit 且当前 Codex 正在使用时，先把 Codex 放到已验证可用的 Direct API 或 Direct OAuth 兜底，并用真实 `codex exec` 探针确认连通；未经当前任务明确授权，不要自动停止、重启、kill、拉起 Codex App / `codex` 进程，也不要自动启动上述 live dev/build 流程；授权执行后再复测 Codex 连通性。
+
 ### 构建产物
 
 ```bash
 npm run tauri build
 ```
 
+需要完整 Tauri 构建或打包验证时再执行 `npm run tauri build`。
+
 ---
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=jlcodes99/cockpit-tools&type=Date)](https://star-history.com/#jlcodes99/cockpit-tools&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=sciman-top/cockpit-tools-local&type=Date)](https://star-history.com/#sciman-top/cockpit-tools-local&Date)
 
 ---
 
@@ -394,10 +414,8 @@ QQ 交流群、微信群或新建的 Telegram 畅聊群都可以加入。
 
 ## 致谢
 
-- Antigravity 账号切号逻辑参考：[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
-- Codex API 服务参考并集成：[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
-- Codex 第三方供应商预设参考：[CC Switch](https://github.com/farion1231/cc-switch)
-- Codex 模型目录与前端模型显示思路参考：[CodexPlusPlus](https://github.com/BigPizzaV3/CodexPlusPlus)
+- Antigravity IDE 账号切号逻辑参考：[Antigravity-Manager](https://github.com/lbjlaq/Antigravity-Manager)
+- Codex API 服务由内置 sidecar 集成：[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
 感谢项目作者的开源贡献！如果这些项目对你有帮助，也请给他们点个 ⭐ Star 支持一下！
 

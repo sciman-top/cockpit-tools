@@ -37,6 +37,49 @@ export interface CodexLocalAccessAccountModelRule {
   excludedModels: string[];
 }
 
+export type CodexRuntimeIntegrationMode =
+  | 'direct_projection'
+  | 'cockpit_api_service';
+
+export type CodexRuntimeAccountKind = 'oauth' | 'api' | 'unknown';
+export type CodexLocalApiFallbackMode = 'disabled' | 'next_request_only' | 'unknown';
+export type CodexLocalApiSafetyPresetId =
+  | 'maximum_safety'
+  | 'balanced_self_use'
+  | 'quota_drain_careful';
+
+export interface CodexRuntimeModeState {
+  mode: CodexRuntimeIntegrationMode;
+  accountKind: CodexRuntimeAccountKind;
+  currentAccountId?: string | null;
+  updatedAt: number;
+}
+
+export interface CodexLocalApiLoggingConfig {
+  redactSensitiveValues: boolean;
+  includeRequestId: boolean;
+  includeAccountHash: boolean;
+  includeRoute: boolean;
+  includeModel: boolean;
+  includeLatency: boolean;
+  includePromptResponse: boolean;
+  includeRawUpstreamBody: boolean;
+}
+
+export interface CodexLocalApiSafetyConfig {
+  schemaVersion: number;
+  hardenedLocalMode: boolean;
+  maxConcurrentRequests: number;
+  minRequestIntervalSeconds: number;
+  maxQueueWaitSeconds: number;
+  requestTimeoutSeconds: number;
+  maxRequestBodyMb: number;
+  maxRetries: number;
+  maxRetryAccounts: number;
+  fallbackMode: CodexLocalApiFallbackMode;
+  logging: CodexLocalApiLoggingConfig;
+}
+
 export interface CodexLocalAccessModelAlias {
   sourceModel: string;
   alias: string;
@@ -54,7 +97,6 @@ export interface CodexLocalAccessApiKey {
   id: string;
   label: string;
   key: string;
-  accountIds?: string[];
   modelPrefix?: string | null;
   allowedModels: string[];
   excludedModels: string[];
@@ -100,6 +142,7 @@ export interface CodexLocalAccessCollection {
   enabled: boolean;
   port: number;
   apiKey: string;
+  safetyConfig: CodexLocalApiSafetyConfig;
   apiKeys: CodexLocalAccessApiKey[];
   accessScope: CodexLocalAccessScope;
   clientBaseUrlHost: CodexLocalAccessClientBaseUrlHost;
@@ -122,6 +165,7 @@ export interface CodexLocalAccessCollection {
   timeoutPresets: CodexLocalAccessTimeoutPreset[];
   disableCooling: boolean;
   restrictFreeAccounts: boolean;
+  followCurrentAccount: boolean;
   boundOauthAccountId?: string | null;
   accountIds: string[];
   createdAt: number;
@@ -260,6 +304,77 @@ export interface CodexLocalAccessAccountHealth {
   cooldowns: CodexLocalAccessAccountCooldown[];
 }
 
+export type CodexLocalAccessAccountHealthStatus =
+  | 'healthy'
+  | 'estimated_available'
+  | 'cooling_down'
+  | 'exhausted'
+  | 'auth_suspect'
+  | 'manual_required'
+  | 'disabled';
+
+export interface CodexLocalAccessAccountHealthView {
+  accountId: string;
+  status: CodexLocalAccessAccountHealthStatus;
+  manualRequired: boolean;
+  cooldownUntilMs: number | null;
+  exhaustedAtMs: number | null;
+  estimatedResetAtMs: number | null;
+  lastStatus: number | null;
+  lastErrorType: string | null;
+  lastProviderCode: string | null;
+  updatedAt: number;
+  activeModelCooldownCount: number;
+  nearestModelCooldownUntilMs: number | null;
+}
+
+export interface CodexLocalAccessHealthSummary {
+  schemaVersion: number;
+  updatedAt: number;
+  unavailable: boolean;
+  loadError: string | null;
+  accounts?: CodexLocalAccessAccountHealthView[];
+  healthyCount: number;
+  estimatedAvailableCount: number;
+  coolingCount: number;
+  exhaustedCount: number;
+  authSuspectCount: number;
+  manualRequiredCount: number;
+  disabledCount: number;
+  activeModelCooldownCount: number;
+  stickyAccountHash: string | null;
+  stickyReason: string | null;
+  stickyExpiresAtMs: number | null;
+  nearestCooldownUntilMs: number | null;
+  lastErrorType: string | null;
+  lastStatus: number | null;
+  lastRequestId: string | null;
+  auditDegraded: boolean;
+  auditError: string | null;
+  auditDegradedAtMs: number | null;
+}
+
+export interface CodexLocalAccessConcurrencyDiagnostics {
+  updatedAt: number;
+  maxConcurrentRequests: number;
+  activeRequestCount: number;
+  activeStreamCount: number;
+  requestCapacity: number;
+  minRequestIntervalSeconds: number;
+  maxQueueWaitSeconds: number;
+  startIntervalRemainingMs: number;
+  auditWindowMs: number;
+  recentAuditEventCount: number;
+  recentRequestCount: number;
+  recentLocalBackpressureCount: number;
+  recentPoolWaitCount: number;
+  recentUpstreamLimitCount: number;
+  recentStreamErrorCount: number;
+  lastProblemAtMs: number | null;
+  lastProblemKind: string | null;
+  auditLoadError: string | null;
+}
+
 export interface CodexLocalAccessProfileAttachment {
   profileDir: string;
   attached: boolean;
@@ -282,7 +397,34 @@ export interface CodexLocalAccessState {
   modelPricingPresets: CodexLocalAccessModelPricing[];
   lastError: string | null;
   memberCount: number;
+  effectiveAccountIds: string[];
   stats: CodexLocalAccessStats;
+  health: CodexLocalAccessHealthSummary;
+  concurrencyDiagnostics: CodexLocalAccessConcurrencyDiagnostics;
+  accountHealth: CodexLocalAccessAccountHealth[];
+}
+
+export interface CodexLocalAccessLightConcurrencyDiagnostics {
+  updatedAt: number;
+  maxConcurrentRequests: number;
+  activeRequestCount: number;
+  activeStreamCount: number;
+  requestCapacity: number;
+  minRequestIntervalSeconds: number;
+  maxQueueWaitSeconds: number;
+  startIntervalRemainingMs: number;
+}
+
+export interface CodexLocalAccessLightState {
+  running: boolean;
+  apiPortUrl: string | null;
+  baseUrl: string | null;
+  lanBaseUrl: string | null;
+  lastError: string | null;
+  memberCount: number;
+  effectiveAccountIds: string[];
+  health: CodexLocalAccessHealthSummary;
+  concurrencyDiagnostics: CodexLocalAccessLightConcurrencyDiagnostics;
   accountHealth: CodexLocalAccessAccountHealth[];
 }
 

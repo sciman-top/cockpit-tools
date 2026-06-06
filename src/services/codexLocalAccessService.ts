@@ -7,6 +7,7 @@ import type {
   CodexLocalAccessClientBaseUrlHost,
   CodexLocalAccessGatewayMode,
   CodexLocalAccessImageGenerationMode,
+  CodexLocalAccessLightState,
   CodexLocalAccessModelAlias,
   CodexLocalAccessModelPricing,
   CodexLocalAccessPortCleanupResult,
@@ -14,14 +15,21 @@ import type {
   CodexLocalAccessRoutingStrategy,
   CodexLocalAccessScope,
   CodexLocalAccessState,
+  CodexLocalApiSafetyPresetId,
   CodexLocalAccessTestResult,
   CodexLocalAccessTimeoutPreset,
   CodexLocalAccessTimeouts,
   CodexLocalAccessUsageEventPage,
+  CodexRuntimeIntegrationMode,
+  CodexRuntimeModeState,
 } from "../types/codexLocalAccess";
 
 export async function getCodexLocalAccessState(): Promise<CodexLocalAccessState> {
   return await invoke("codex_local_access_get_state");
+}
+
+export async function getCodexLocalAccessLightState(): Promise<CodexLocalAccessLightState> {
+  return await invoke("codex_local_access_get_light_state");
 }
 
 export async function saveCodexLocalAccessAccounts(
@@ -54,6 +62,19 @@ export async function updateCodexLocalAccessBoundOAuthAccount(
 
 export async function clearCodexLocalAccessStats(): Promise<CodexLocalAccessState> {
   return await invoke("codex_local_access_clear_stats");
+}
+
+export async function recoverCodexLocalAccessHealth(
+  accountId: string,
+  model?: string | null,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_recover_health', { accountId, model });
+}
+
+export async function pauseCodexLocalAccessHealth(
+  accountId: string,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_pause_health', { accountId });
 }
 
 export async function queryCodexLocalAccessRequestLogs(
@@ -93,6 +114,12 @@ export async function updateCodexLocalAccessRoutingStrategy(
   return await invoke("codex_local_access_update_routing_strategy", {
     strategy,
   });
+}
+
+export async function applyCodexLocalAccessSafetyPreset(
+  preset: CodexLocalApiSafetyPresetId,
+): Promise<CodexLocalAccessState> {
+  return await invoke('codex_local_access_apply_safety_preset', { preset });
 }
 
 export async function updateCodexLocalAccessCustomRouting(
@@ -247,12 +274,34 @@ export async function deleteCodexLocalAccessApiKey(
 
 export async function setCodexLocalAccessEnabled(
   enabled: boolean,
+  options?: { force?: boolean },
 ): Promise<CodexLocalAccessState> {
-  return await invoke("codex_local_access_set_enabled", { enabled });
+  return await invoke("codex_local_access_set_enabled", {
+    enabled,
+    force: options?.force ?? false,
+  });
 }
 
-export async function activateCodexLocalAccess(): Promise<CodexLocalAccessState> {
-  return await invoke("codex_local_access_activate");
+export async function getCodexRuntimeMode(): Promise<CodexRuntimeModeState> {
+  return await invoke("codex_runtime_mode_get");
+}
+
+export async function setCodexRuntimeMode(
+  mode: CodexRuntimeIntegrationMode,
+  options?: { force?: boolean },
+): Promise<CodexRuntimeModeState> {
+  return await invoke("codex_runtime_mode_set", {
+    mode,
+    force: options?.force ?? false,
+  });
+}
+
+export async function activateCodexLocalAccess(options?: {
+  force?: boolean;
+}): Promise<CodexLocalAccessState> {
+  return await invoke("codex_local_access_activate", {
+    force: options?.force ?? false,
+  });
 }
 
 export async function testCodexLocalAccess(): Promise<CodexLocalAccessTestResult> {

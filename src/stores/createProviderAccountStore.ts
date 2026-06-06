@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { PlatformId } from '../types/platform';
 import { emitAccountsChanged, emitCurrentAccountChanged } from '../utils/accountSyncEvents';
+import { sanitizeAccountsForLocalCache } from '../utils/accountCacheSanitizer';
+import { loadJsonFromLocalStorage } from '../utils/storageJson';
 
 type ProviderUsage = {
   inlineSuggestionsUsedPercent: number | null;
@@ -85,19 +87,24 @@ export function createProviderAccountStore<TAccount extends ProviderAccountAugme
   let allowNextEmptyCurrentAccountId = false;
 
   const loadCachedAccounts = (): TAccount[] => {
-    try {
-      const raw = localStorage.getItem(cacheKey);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as TAccount[]) : [];
-    } catch {
+    const parsed = loadJsonFromLocalStorage<unknown>(cacheKey, (error) => {
+      console.warn(`[Provider Store] 清理损坏的账号缓存: ${cacheKey}`, error);
+    });
+    if (!Array.isArray(parsed)) {
       return [];
     }
+    const sanitized = sanitizeAccountsForLocalCache(parsed as TAccount[]);
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify(sanitized));
+    } catch {
+      // ignore cache write failures
+    }
+    return sanitized;
   };
 
   const persistAccountsCache = (accounts: TAccount[]) => {
     try {
-      localStorage.setItem(cacheKey, JSON.stringify(accounts));
+      localStorage.setItem(cacheKey, JSON.stringify(sanitizeAccountsForLocalCache(accounts)));
     } catch {
       // ignore cache write failures
     }

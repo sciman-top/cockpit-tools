@@ -15,10 +15,9 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
-import { FileText, FolderOpen, HeartHandshake, RefreshCw, X } from 'lucide-react';
+import { FileText, FolderOpen, RefreshCw, X } from 'lucide-react';
 import { SideNav } from './components/layout/SideNav';
 import { GlobalModal } from './components/GlobalModal';
-import { TopCenterPromoBanner } from './components/TopCenterPromoBanner';
 import type { QuickSettingsType } from './components/QuickSettingsPopover';
 import { Page } from './types/navigation';
 import { useAutoRefresh } from './hooks/useAutoRefresh';
@@ -40,8 +39,6 @@ import { useWorkbuddyAccountStore } from './stores/useWorkbuddyAccountStore';
 import { useZedAccountStore } from './stores/useZedAccountStore';
 import { useSideNavLayoutStore } from './stores/useSideNavLayoutStore';
 import { usePlatformLayoutStore } from './stores/usePlatformLayoutStore';
-import { useTopRightAdStore } from './stores/useTopRightAdStore';
-import { useSponsorStore } from './stores/useSponsorStore';
 import type { UpdateCheckResult, UpdateInfo } from './components/UpdateNotification';
 import type { Update as UpdaterUpdate } from '@tauri-apps/plugin-updater';
 import { parseUpdaterReleaseNotes, resolveUpdaterDownloadUrl } from './utils/updaterReleaseNotes';
@@ -64,6 +61,11 @@ import {
 } from './utils/externalProviderImport';
 import { runAutoBackupCycle } from './services/scheduledBackupService';
 import { prepareCodexLocalAccessForRestart } from './services/codexLocalAccessService';
+import { isTauriRuntimeAvailable } from './utils/tauriRuntime';
+import { loadJsonFromLocalStorage } from './utils/storageJson';
+
+const SELF_BUILD_UPDATES_DISABLED = true;
+const TAURI_RUNTIME_AVAILABLE = isTauriRuntimeAvailable();
 
 const DashboardPage = lazy(() =>
   import('./pages/DashboardPage').then((module) => ({ default: module.DashboardPage })),
@@ -111,7 +113,10 @@ const WorkbuddyAccountsPage = lazy(() =>
 );
 const ZedAccountsPage = lazy(() =>
   import('./pages/ZedAccountsPage').then((module) => ({ default: module.ZedAccountsPage })),
-);;
+);
+const FingerprintsPage = lazy(() =>
+  import('./pages/FingerprintsPage').then((module) => ({ default: module.FingerprintsPage })),
+);
 const WakeupTasksPage = lazy(() =>
   import('./pages/WakeupTasksPage').then((module) => ({ default: module.WakeupTasksPage })),
 );
@@ -125,9 +130,6 @@ const SettingsPage = lazy(() =>
 );
 const TwoFactorAuthPage = lazy(() =>
   import('./pages/TwoFactorAuthPage').then((module) => ({ default: module.TwoFactorAuthPage })),
-);
-const SponsorsPage = lazy(() =>
-  import('./pages/SponsorsPage').then((module) => ({ default: module.SponsorsPage })),
 );
 const ManualPage = lazy(() =>
   import('./pages/ManualPage').then((module) => ({ default: module.ManualPage })),
@@ -167,7 +169,6 @@ interface GeneralConfig extends GeneralConfigTheme {
   antigravity_app_path: string;
   codex_app_path: string;
   codex_launch_on_switch: boolean;
-  top_right_ad_visible?: boolean;
   vscode_app_path: string;
   windsurf_app_path: string;
   kiro_app_path: string;
@@ -201,8 +202,23 @@ type AppPathMissingDetail = {
 const WAKEUP_ENABLED_KEY = 'agtools.wakeup.enabled';
 const TASKS_STORAGE_KEY = 'agtools.wakeup.tasks';
 const WAKEUP_FORCE_DISABLE_MIGRATION_KEY = 'agtools.wakeup.migration.force_disable_0_8_14';
-const TOP_RIGHT_AD_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const EXTERNAL_IMPORT_DEDUPE_WINDOW_MS = 30 * 1000;
+const TRAY_QUOTA_REFRESH_STEP_DELAY_MS = 750;
+type StoredWakeupTask = { id: string; lastRunAt?: number; [key: string]: unknown };
+
+const isStoredWakeupTask = (value: unknown): value is StoredWakeupTask => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const task = value as Record<string, unknown>;
+  return (
+    typeof task.id === 'string' &&
+    task.id.trim() !== '' &&
+    (task.lastRunAt === undefined || typeof task.lastRunAt === 'number')
+  );
+};
+
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
 type WakeupHistoryRecord = {
   id: string;
@@ -535,12 +551,6 @@ function MainApp() {
   const updateCheckRequestIdRef = useRef(0);
   const externalImportHandledAtRef = useRef<Map<string, number>>(new Map());
   const { showModal, closeModal } = useGlobalModal();
-  const topRightAdState = useTopRightAdStore((state) => state.state);
-  const fetchTopRightAdState = useTopRightAdStore((state) => state.fetchState);
-  const sponsorModuleState = useSponsorStore((state) => state.state);
-  const fetchSponsorModuleState = useSponsorStore((state) => state.fetchState);
-  const sponsorEntryVisible = Boolean(sponsorModuleState.sponsorModule);
-  const [topRightAdVisible, setTopRightAdVisible] = useState(true);
   const trayRefreshInFlightRef = useRef(false);
   const openPlatformLayoutModal = useCallback(() => {
     setPlatformLayoutRequestedGroupId(null);
@@ -676,6 +686,9 @@ function MainApp() {
 
   // 初始化唤醒通知监听器
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     initWakeupNotificationListener();
   }, []);
 
@@ -699,59 +712,6 @@ function MainApp() {
       window.removeEventListener('keydown', handleRefreshShortcut, true);
     };
   }, []);
-
-  useEffect(() => {
-    void fetchTopRightAdState();
-  }, [fetchTopRightAdState]);
-
-  useEffect(() => {
-    const loadTopRightAdVisible = async () => {
-      try {
-        const config = await invoke<GeneralConfig>('get_general_config');
-        setTopRightAdVisible(config.top_right_ad_visible ?? true);
-      } catch (error) {
-        console.error('Failed to load top-right ad visibility config:', error);
-        setTopRightAdVisible(true);
-      }
-    };
-
-    void loadTopRightAdVisible();
-    window.addEventListener('config-updated', loadTopRightAdVisible);
-    return () => {
-      window.removeEventListener('config-updated', loadTopRightAdVisible);
-    };
-  }, []);
-
-  useEffect(() => {
-    void fetchSponsorModuleState();
-  }, [fetchSponsorModuleState]);
-
-  useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      void fetchTopRightAdState();
-      void fetchSponsorModuleState();
-    }, TOP_RIGHT_AD_REFRESH_INTERVAL_MS);
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [fetchSponsorModuleState, fetchTopRightAdState]);
-
-  useEffect(() => {
-    const handleLanguageChanged = () => {
-      void fetchTopRightAdState();
-      void fetchSponsorModuleState();
-    };
-    window.addEventListener('general-language-updated', handleLanguageChanged);
-    return () => {
-      window.removeEventListener('general-language-updated', handleLanguageChanged);
-    };
-  }, [fetchSponsorModuleState, fetchTopRightAdState]);
-
-  useEffect(() => {
-    if (page === 'sponsors' && !sponsorEntryVisible) {
-      setPage('dashboard');
-    }
-  }, [page, sponsorEntryVisible]);
 
   useEffect(() => {
     if (sideNavLayoutMode !== 'classic' || sideNavClassicFirstSyncDone) {
@@ -787,6 +747,9 @@ function MainApp() {
   }, [updateAction.state]);
 
   const writeUpdateLog = useCallback((level: 'info' | 'warn' | 'error', message: string) => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     void invoke('update_log', { level, message }).catch(() => {});
   }, []);
 
@@ -810,6 +773,9 @@ function MainApp() {
   }, [t, writeUpdateLog]);
 
   const restoreCodexLocalAccessAfterRelaunchFailure = useCallback(async () => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     await invoke('codex_local_access_get_state').catch((error) => {
       writeUpdateLog(
         'warn',
@@ -820,7 +786,8 @@ function MainApp() {
 
   const prepareUpdateNotificationInfo = useCallback(async (update: UpdaterUpdate): Promise<UpdateInfo> => {
     const { releaseNotes, releaseNotesZh } = parseUpdaterReleaseNotes(update.body);
-    const currentVersion = update.currentVersion || (await getVersion());
+    const currentVersion = update.currentVersion
+      || (TAURI_RUNTIME_AVAILABLE ? await getVersion() : 'browser-preview');
     return {
       current_version: currentVersion,
       latest_version: update.version,
@@ -874,6 +841,10 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      setUpdateRuntimeInfoLoaded(true);
+      return;
+    }
     let cancelled = false;
 
     invoke<UpdateRuntimeInfo>('get_update_runtime_info')
@@ -902,6 +873,9 @@ function MainApp() {
   }, [writeUpdateLog]);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let cancelled = false;
     invoke<{
       auto_check?: boolean;
@@ -952,6 +926,9 @@ function MainApp() {
   }, [updateRuntimeInfo]);
 
   const runUpdaterCheck = useCallback(async () => {
+    if (SELF_BUILD_UPDATES_DISABLED) {
+      return null;
+    }
     const { check } = await import('@tauri-apps/plugin-updater');
     const target = getUpdaterCheckTarget();
     return target ? check({ target }) : check();
@@ -1579,6 +1556,9 @@ function MainApp() {
     };
 
     const applyUiScale = async (rawScale?: number) => {
+      if (!TAURI_RUNTIME_AVAILABLE) {
+        return;
+      }
       const scale = typeof rawScale === 'number' && Number.isFinite(rawScale) ? rawScale : 1;
       const normalizedScale = Math.min(2, Math.max(0.8, scale));
       try {
@@ -1608,6 +1588,10 @@ function MainApp() {
     };
 
     const initTheme = async () => {
+      if (!TAURI_RUNTIME_AVAILABLE) {
+        applyTheme('light');
+        return;
+      }
       try {
         const config = await invoke<GeneralConfigTheme>('get_general_config');
         applyTheme(config.theme);
@@ -1630,6 +1614,9 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     const syncWakeupStateOnStartup = async () => {
       let officialLsVersionMode = loadWakeupOfficialLsVersionMode();
       try {
@@ -1639,8 +1626,10 @@ function MainApp() {
           localStorage.setItem(WAKEUP_FORCE_DISABLE_MIGRATION_KEY, '1');
         }
         const enabled = localStorage.getItem(WAKEUP_ENABLED_KEY) === 'true';
-        const tasksRaw = localStorage.getItem(TASKS_STORAGE_KEY);
-        const tasks = tasksRaw ? JSON.parse(tasksRaw) : [];
+        const parsedTasks = loadJsonFromLocalStorage<unknown>(TASKS_STORAGE_KEY, (error) => {
+          console.warn('[Wakeup] 忽略损坏的唤醒任务缓存:', error);
+        });
+        const tasks = Array.isArray(parsedTasks) ? parsedTasks.filter(isStoredWakeupTask) : [];
         officialLsVersionMode = loadWakeupOfficialLsVersionMode();
         await invoke('wakeup_sync_state', {
           enabled,
@@ -1704,6 +1693,13 @@ function MainApp() {
     let intervalId: number | undefined;
 
     const checkUpdates = async (trigger: 'startup' | 'hourly') => {
+      if (SELF_BUILD_UPDATES_DISABLED) {
+        writeUpdateLog(
+          'info',
+          `${trigger === 'startup' ? '启动' : '每小时轮询'}更新检查跳过：自构建版本禁用官方更新通道`,
+        );
+        return;
+      }
       if (updateCheckInFlight) {
         writeUpdateLog('info', `${trigger === 'startup' ? '启动' : '每小时轮询'}更新检查跳过：上一次尚未结束`);
         return;
@@ -2176,6 +2172,9 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
 
     listen<string>('settings:language_changed', (event) => {
@@ -2195,6 +2194,9 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
 
@@ -2354,23 +2356,29 @@ function MainApp() {
   }, [closeModal, openQuickSettingsForPlatform, showModal, t]);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
 
     const handleWakeupResult = (payload: WakeupTaskResultPayload) => {
       if (!payload || typeof payload.taskId !== 'string') return;
 
       // 更新任务的最后运行时间
-      const tasksRaw = localStorage.getItem(TASKS_STORAGE_KEY);
-      if (tasksRaw) {
-        try {
-          const tasks = JSON.parse(tasksRaw) as Array<{ id: string; lastRunAt?: number }>;
-          const nextTasks = tasks.map((task) =>
-            task.id === payload.taskId ? { ...task, lastRunAt: payload.lastRunAt } : task
-          );
+      try {
+        const tasks = loadJsonFromLocalStorage<unknown>(TASKS_STORAGE_KEY, (error) => {
+          console.warn('[Wakeup] 忽略损坏的唤醒任务缓存:', error);
+        });
+        if (Array.isArray(tasks)) {
+          const nextTasks = tasks
+            .filter(isStoredWakeupTask)
+            .map((task) =>
+              task.id === payload.taskId ? { ...task, lastRunAt: payload.lastRunAt } : task
+            );
           localStorage.setItem(TASKS_STORAGE_KEY, JSON.stringify(nextTasks));
-        } catch (error) {
-          console.error('更新唤醒任务时间失败:', error);
         }
+      } catch (error) {
+        console.error('更新唤醒任务时间失败:', error);
       }
 
       // 历史记录已由后端写入文件，这里只需通知前端刷新
@@ -2404,6 +2412,9 @@ function MainApp() {
   }, [runModalUpdateCheck]);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
 
     listen<LinuxUpdateProgressPayload>('update://linux-progress', (event) => {
@@ -2480,6 +2491,9 @@ function MainApp() {
   }, [t]);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
 
     const refreshTasks = [
@@ -2540,13 +2554,14 @@ function MainApp() {
       trayRefreshInFlightRef.current = true;
 
       try {
-        await Promise.all(
-          refreshTasks.map(({ command, errorMessage }) =>
-            invoke(command).catch((error) => {
-              console.error(errorMessage, error);
-            }),
-          ),
-        );
+        for (const { command, errorMessage } of refreshTasks) {
+          try {
+            await invoke(command);
+          } catch (error) {
+            console.error(errorMessage, error);
+          }
+          await sleep(TRAY_QUOTA_REFRESH_STEP_DELAY_MS);
+        }
       } finally {
         trayRefreshInFlightRef.current = false;
       }
@@ -2560,6 +2575,9 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
     const handlePayload = (payload: unknown) => {
       if (!payload || typeof payload !== 'object') return;
@@ -2601,6 +2619,9 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let active = true;
     if (!appPathMissing) {
       setAppPathDraft('');
@@ -2786,6 +2807,9 @@ function MainApp() {
 
   // 监听窗口关闭请求事件
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
 
     listen('window:close_requested', () => {
@@ -2800,6 +2824,9 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let unlisten: UnlistenFn | undefined;
 
         listen<string>('tray:navigate', (event) => {
@@ -2852,6 +2879,9 @@ function MainApp() {
   }, [handleExternalProviderImportRawPayload]);
 
   useEffect(() => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     let canceled = false;
     void invoke<unknown>('external_import_take_pending')
       .then((payload) => {
@@ -2873,6 +2903,9 @@ function MainApp() {
 
   // 窗口拖拽处理
   const handleDragStart = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!TAURI_RUNTIME_AVAILABLE) {
+      return;
+    }
     if (event.button !== 0) {
       return;
     }
@@ -3169,24 +3202,17 @@ function MainApp() {
         updateProgress={updateAction.progress}
         onUpdateActionClick={handleQuickUpdateActionClick}
         updateRemindersEnabled={updateRemindersEnabled}
-        sponsorEntryVisible={sponsorEntryVisible}
         onOpenLogViewer={() => setShowLogViewer(true)}
       />
 
       {sideNavLayoutMode !== 'classic' && (
         <button
           className="log-entry-fab"
-          onClick={() => {
-            if (sponsorEntryVisible) {
-              setPage('sponsors');
-              return;
-            }
-            setShowLogViewer(true);
-          }}
-          title={sponsorEntryVisible ? t('nav.sponsorAppreciation', '赞赏') : t('manual.dataPrivacy.keywords.5', '日志')}
-          aria-label={sponsorEntryVisible ? t('nav.sponsorAppreciation', '赞赏') : t('manual.dataPrivacy.keywords.5', '日志')}
+          onClick={() => setShowLogViewer(true)}
+          title={t('manual.dataPrivacy.keywords.5', '日志')}
+          aria-label={t('manual.dataPrivacy.keywords.5', '日志')}
         >
-          {sponsorEntryVisible ? <HeartHandshake size={18} /> : <FileText size={18} />}
+          <FileText size={18} />
         </button>
       )}
 
@@ -3213,11 +3239,6 @@ function MainApp() {
               onNavigate={setPage}
               onOpenPlatformLayout={openPlatformLayoutModal}
               onEasterEggTriggerClick={handleBreakoutEntryTriggerClick}
-              topCenterBanner={
-                topRightAdVisible && topRightAdState.ads.length > 0 ? (
-                  <TopCenterPromoBanner reserveWhenEmpty={false} />
-                ) : null
-              }
             />
           )}
           {page === 'overview' && <AccountsPage onNavigate={setPage} />}
@@ -3235,10 +3256,10 @@ function MainApp() {
           {page === 'workbuddy' && <WorkbuddyAccountsPage />}
           {page === 'zed' && <ZedAccountsPage />}
           {page === 'instances' && <InstancesPage onNavigate={setPage} />}
+          {page === 'fingerprints' && <FingerprintsPage onNavigate={setPage} />}
           {page === 'wakeup' && <WakeupTasksPage onNavigate={setPage} />}
           {page === 'verification' && <WakeupVerificationPage onNavigate={setPage} />}
           {page === '2fa' && <TwoFactorAuthPage />}
-          {page === 'sponsors' && <SponsorsPage />}
           {page === 'manual' && (
             <ManualPage
               onNavigate={setPage}
@@ -3253,7 +3274,7 @@ function MainApp() {
 }
 
 function App() {
-  const windowLabel = getCurrentWindow().label;
+  const windowLabel = TAURI_RUNTIME_AVAILABLE ? getCurrentWindow().label : 'browser-preview';
   if (windowLabel === 'floating-card' || windowLabel.startsWith('instance-floating-card-')) {
     return <FloatingCardWindow />;
   }

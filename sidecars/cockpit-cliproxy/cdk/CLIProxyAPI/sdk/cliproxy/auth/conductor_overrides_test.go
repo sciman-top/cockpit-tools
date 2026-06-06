@@ -162,6 +162,8 @@ type authFallbackExecutor struct {
 	streamCalls       []string
 	executeErrors     map[string]error
 	streamFirstErrors map[string]error
+	refreshCalls      []string
+	refreshedToken    string
 }
 
 func (e *authFallbackExecutor) Identifier() string {
@@ -172,6 +174,11 @@ func (e *authFallbackExecutor) Execute(_ context.Context, auth *Auth, _ cliproxy
 	e.mu.Lock()
 	e.executeCalls = append(e.executeCalls, auth.ID)
 	err := e.executeErrors[auth.ID]
+	if err != nil && e.refreshedToken != "" {
+		if token, _ := auth.Metadata["access_token"].(string); token == e.refreshedToken {
+			err = nil
+		}
+	}
 	e.mu.Unlock()
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
@@ -183,6 +190,11 @@ func (e *authFallbackExecutor) ExecuteStream(_ context.Context, auth *Auth, _ cl
 	e.mu.Lock()
 	e.streamCalls = append(e.streamCalls, auth.ID)
 	err := e.streamFirstErrors[auth.ID]
+	if err != nil && e.refreshedToken != "" {
+		if token, _ := auth.Metadata["access_token"].(string); token == e.refreshedToken {
+			err = nil
+		}
+	}
 	e.mu.Unlock()
 
 	ch := make(chan cliproxyexecutor.StreamChunk, 1)
@@ -197,6 +209,18 @@ func (e *authFallbackExecutor) ExecuteStream(_ context.Context, auth *Auth, _ cl
 }
 
 func (e *authFallbackExecutor) Refresh(_ context.Context, auth *Auth) (*Auth, error) {
+	e.mu.Lock()
+	e.refreshCalls = append(e.refreshCalls, auth.ID)
+	refreshedToken := e.refreshedToken
+	e.mu.Unlock()
+	if refreshedToken != "" {
+		updated := auth.Clone()
+		if updated.Metadata == nil {
+			updated.Metadata = map[string]any{}
+		}
+		updated.Metadata["access_token"] = refreshedToken
+		return updated, nil
+	}
 	return auth, nil
 }
 
@@ -221,6 +245,14 @@ func (e *authFallbackExecutor) StreamCalls() []string {
 	defer e.mu.Unlock()
 	out := make([]string, len(e.streamCalls))
 	copy(out, e.streamCalls)
+	return out
+}
+
+func (e *authFallbackExecutor) RefreshCalls() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := make([]string, len(e.refreshCalls))
+	copy(out, e.refreshCalls)
 	return out
 }
 
@@ -687,6 +719,146 @@ func TestManager_Execute_DisableCooling_DoesNotBlackoutAfter429RetryAfter(t *tes
 	}
 	if !state.NextRetryAfter.IsZero() {
 		t.Fatalf("expected NextRetryAfter to be zero when disable_cooling=true, got %v", state.NextRetryAfter)
+	}
+}
+
+func TestManager_Execute_RefreshesOAuthAfterUnauthorizedBeforeCooling(t *testing.T) {
+	prev := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
+
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id:             "codex",
+		refreshedToken: "fresh-token",
+		executeErrors: map[string]error{
+			"oauth-refreshable": &Error{
+				HTTPStatus: http.StatusUnauthorized,
+				Message:    "token invalidated",
+			},
+		},
+	}
+	m.RegisterExecutor(executor)
+
+	auth := &Auth{
+		ID:       "oauth-refreshable",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token":  "stale-token",
+			"refresh_token": "refresh-token",
+		},
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "gpt-5.5"
+	registerSchedulerModels(t, "codex", model, auth.ID)
+
+	resp, errExecute := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if errExecute != nil {
+		t.Fatalf("execute after request-refresh error = %v", errExecute)
+	}
+	if string(resp.Payload) != auth.ID {
+		t.Fatalf("response payload = %q, want %q", string(resp.Payload), auth.ID)
+	}
+	if calls := executor.ExecuteCalls(); len(calls) != 2 {
+		t.Fatalf("execute calls = %d, want 2 (stale token + refreshed retry), calls=%v", len(calls), calls)
+	}
+	if calls := executor.RefreshCalls(); len(calls) != 1 || calls[0] != auth.ID {
+		t.Fatalf("refresh calls = %v, want [%s]", calls, auth.ID)
+	}
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth %q to remain registered", auth.ID)
+	}
+	if updated.Unavailable {
+		t.Fatalf("refreshed auth must not remain unavailable")
+	}
+	if updated.LastError != nil {
+		t.Fatalf("refreshed auth LastError = %v, want nil", updated.LastError)
+	}
+	if token, _ := updated.Metadata["access_token"].(string); token != "fresh-token" {
+		t.Fatalf("access_token = %q, want fresh-token", token)
+	}
+}
+
+func TestManager_ExecuteStream_RefreshesOAuthAfterUnauthorizedBootstrap(t *testing.T) {
+	prev := quotaCooldownDisabled.Load()
+	quotaCooldownDisabled.Store(false)
+	t.Cleanup(func() { quotaCooldownDisabled.Store(prev) })
+
+	m := NewManager(nil, nil, nil)
+	executor := &authFallbackExecutor{
+		id:             "codex",
+		refreshedToken: "fresh-token",
+		streamFirstErrors: map[string]error{
+			"oauth-stream-refreshable": &Error{
+				HTTPStatus: http.StatusUnauthorized,
+				Message:    "token invalidated",
+			},
+		},
+	}
+	m.RegisterExecutor(executor)
+
+	auth := &Auth{
+		ID:       "oauth-stream-refreshable",
+		Provider: "codex",
+		Metadata: map[string]any{
+			"access_token":  "stale-token",
+			"refresh_token": "refresh-token",
+		},
+	}
+	if _, errRegister := m.Register(context.Background(), auth); errRegister != nil {
+		t.Fatalf("register auth: %v", errRegister)
+	}
+
+	model := "gpt-5.5"
+	registerSchedulerModels(t, "codex", model, auth.ID)
+
+	result, errStream := m.ExecuteStream(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
+	if errStream != nil {
+		t.Fatalf("stream after request-refresh error = %v", errStream)
+	}
+	if result == nil || result.Chunks == nil {
+		t.Fatal("expected stream result with chunks")
+	}
+	var payload string
+	for chunk := range result.Chunks {
+		if chunk.Err != nil {
+			t.Fatalf("unexpected stream chunk error: %v", chunk.Err)
+		}
+		payload += string(chunk.Payload)
+	}
+	if payload != auth.ID {
+		t.Fatalf("stream payload = %q, want %q", payload, auth.ID)
+	}
+	if calls := executor.StreamCalls(); len(calls) != 2 {
+		t.Fatalf("stream calls = %d, want 2 (stale token + refreshed retry), calls=%v", len(calls), calls)
+	}
+	if calls := executor.RefreshCalls(); len(calls) != 1 || calls[0] != auth.ID {
+		t.Fatalf("refresh calls = %v, want [%s]", calls, auth.ID)
+	}
+	updated, ok := m.GetByID(auth.ID)
+	if !ok || updated == nil {
+		t.Fatalf("expected auth %q to remain registered", auth.ID)
+	}
+	if updated.Unavailable {
+		t.Fatalf("refreshed auth must not remain unavailable")
+	}
+	if updated.LastError != nil {
+		t.Fatalf("refreshed auth LastError = %v, want nil", updated.LastError)
+	}
+	if state := updated.ModelStates[model]; state != nil {
+		if state.Unavailable {
+			t.Fatalf("refreshed auth model state remained unavailable: %+v", state)
+		}
+		if state.LastError != nil {
+			t.Fatalf("refreshed auth model state LastError = %v, want nil", state.LastError)
+		}
+		if !state.NextRetryAfter.IsZero() {
+			t.Fatalf("refreshed auth model state NextRetryAfter = %v, want zero", state.NextRetryAfter)
+		}
 	}
 }
 

@@ -437,7 +437,6 @@ pub async fn start_oauth_flow(
 }
 
 /// 完成 OAuth 流程（不打开浏览器）
-
 pub async fn complete_oauth_flow(
     app_handle: tauri::AppHandle,
 ) -> Result<oauth::TokenResponse, String> {

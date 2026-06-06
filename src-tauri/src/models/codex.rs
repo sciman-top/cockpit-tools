@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 fn default_token_source_mode() -> String {
     "managed".to_string()
@@ -10,31 +9,21 @@ fn is_false(value: &bool) -> bool {
 }
 
 /// Codex 认证模式
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum CodexAuthMode {
+    #[default]
     OAuth,
     Apikey,
 }
 
-impl Default for CodexAuthMode {
-    fn default() -> Self {
-        Self::OAuth
-    }
-}
-
 /// Codex API Key 账号的模型提供商模式
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexApiProviderMode {
+    #[default]
     OpenaiBuiltin,
     Custom,
-}
-
-impl Default for CodexApiProviderMode {
-    fn default() -> Self {
-        Self::OpenaiBuiltin
-    }
 }
 
 /// Codex config.toml 快捷配置
@@ -49,17 +38,12 @@ pub struct CodexQuickConfig {
 }
 
 /// Codex 官方 App 推理速度
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexAppSpeed {
+    #[default]
     Standard,
     Fast,
-}
-
-impl Default for CodexAppSpeed {
-    fn default() -> Self {
-        Self::Standard
-    }
 }
 
 /// Codex 官方 App 推理速度配置
@@ -87,14 +71,6 @@ pub struct CodexAccount {
     pub api_provider_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_provider_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub api_model_catalog: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_wire_api: Option<String>,
-    #[serde(default)]
-    pub api_supports_vision: bool,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub api_model_vision_support: HashMap<String, bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_oauth_account_id: Option<String>,
     pub user_id: Option<String>,
@@ -177,6 +153,48 @@ pub struct CodexQuota {
     /// 原始响应数据
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_data: Option<serde_json::Value>,
+}
+
+impl CodexQuota {
+    pub fn normalize_window_slots(&mut self) -> bool {
+        const WEEKLY_WINDOW_MINUTES_THRESHOLD: i64 = 6 * 24 * 60;
+
+        let hourly_looks_weekly = self
+            .hourly_window_minutes
+            .map(|minutes| minutes >= WEEKLY_WINDOW_MINUTES_THRESHOLD)
+            .unwrap_or(false);
+        let hourly_present = self.hourly_window_present.unwrap_or(true);
+        if !hourly_looks_weekly || !hourly_present {
+            return false;
+        }
+
+        let moved_percentage = self.hourly_percentage.clamp(0, 100);
+        let moved_reset_time = self.hourly_reset_time;
+        let moved_window_minutes = self.hourly_window_minutes;
+        let weekly_present = self.weekly_window_present.unwrap_or(false);
+
+        if !weekly_present {
+            self.weekly_percentage = moved_percentage;
+            self.weekly_reset_time = moved_reset_time;
+            self.weekly_window_minutes = moved_window_minutes;
+        } else {
+            let current_weekly = self.weekly_percentage.clamp(0, 100);
+            if moved_percentage < current_weekly {
+                self.weekly_percentage = moved_percentage;
+                self.weekly_reset_time = moved_reset_time.or(self.weekly_reset_time);
+                self.weekly_window_minutes = moved_window_minutes.or(self.weekly_window_minutes);
+            } else if self.weekly_window_minutes.is_none() {
+                self.weekly_window_minutes = moved_window_minutes;
+            }
+        }
+
+        self.weekly_window_present = Some(true);
+        self.hourly_percentage = 100;
+        self.hourly_reset_time = None;
+        self.hourly_window_minutes = None;
+        self.hourly_window_present = Some(false);
+        true
+    }
 }
 
 /// Codex 配额错误信息
@@ -302,10 +320,6 @@ impl CodexAccount {
             api_provider_mode: CodexApiProviderMode::OpenaiBuiltin,
             api_provider_id: None,
             api_provider_name: None,
-            api_model_catalog: Vec::new(),
-            api_wire_api: None,
-            api_supports_vision: false,
-            api_model_vision_support: HashMap::new(),
             bound_oauth_account_id: None,
             user_id: None,
             plan_type: None,
@@ -344,7 +358,6 @@ impl CodexAccount {
         api_base_url: Option<String>,
         api_provider_id: Option<String>,
         api_provider_name: Option<String>,
-        api_model_catalog: Vec<String>,
     ) -> Self {
         let mut account = Self::new(
             id,
@@ -361,10 +374,6 @@ impl CodexAccount {
         account.api_base_url = api_base_url;
         account.api_provider_id = api_provider_id;
         account.api_provider_name = api_provider_name;
-        account.api_model_catalog = api_model_catalog;
-        account.api_wire_api = None;
-        account.api_supports_vision = false;
-        account.api_model_vision_support = HashMap::new();
         account.plan_type = Some("API_KEY".to_string());
         account
     }

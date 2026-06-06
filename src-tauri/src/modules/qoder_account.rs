@@ -179,28 +179,25 @@ fn load_account_index() -> QoderAccountIndex {
         Err(_) => return QoderAccountIndex::new(),
     };
     if !path.exists() {
-        return repair_account_index_from_details("索引文件不存在")
-            .unwrap_or_else(QoderAccountIndex::new);
+        return repair_account_index_from_details("索引文件不存在").unwrap_or_default();
     }
     match fs::read_to_string(&path) {
         Ok(content) if content.trim().is_empty() => {
-            repair_account_index_from_details("索引文件为空").unwrap_or_else(QoderAccountIndex::new)
+            repair_account_index_from_details("索引文件为空").unwrap_or_default()
         }
         Ok(content) => match crate::modules::atomic_write::parse_json_with_auto_restore::<
             QoderAccountIndex,
         >(&path, &content)
         {
             Ok(index) if !index.accounts.is_empty() => index,
-            Ok(_) => repair_account_index_from_details("索引账号列表为空")
-                .unwrap_or_else(QoderAccountIndex::new),
+            Ok(_) => repair_account_index_from_details("索引账号列表为空").unwrap_or_default(),
             Err(err) => {
                 logger::log_warn(&format!(
                     "[Qoder Account] 账号索引解析失败，尝试按详情文件自动修复: path={}, error={}",
                     path.display(),
                     err
                 ));
-                repair_account_index_from_details("索引文件损坏")
-                    .unwrap_or_else(QoderAccountIndex::new)
+                repair_account_index_from_details("索引文件损坏").unwrap_or_default()
             }
         },
         Err(_) => QoderAccountIndex::new(),
@@ -269,7 +266,7 @@ fn repair_account_index_from_details(reason: &str) -> Option<QoderAccountIndex> 
     let accounts_dir = get_accounts_dir().ok()?;
     let mut accounts = crate::modules::account_index_repair::load_accounts_from_details(
         &accounts_dir,
-        |account_id| load_account(account_id),
+        load_account,
     )
     .ok()?;
 
@@ -971,7 +968,7 @@ fn resolve_state_db_path_for_user_data_dir(user_data_dir: &str) -> PathBuf {
 
 pub fn ensure_state_db_path_for_user_data_dir(user_data_dir: &str) -> Result<PathBuf, String> {
     let root = PathBuf::from(user_data_dir);
-    let candidates = vec![
+    let candidates = [
         root.join("User").join("globalStorage").join("state.vscdb"),
         root.join("globalStorage").join("state.vscdb"),
         root.join("state.vscdb"),

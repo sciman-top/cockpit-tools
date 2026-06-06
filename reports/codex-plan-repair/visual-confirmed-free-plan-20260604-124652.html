@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Codex Free Plan Visual Audit</title>
+<style>
+:root { color-scheme: light; font-family: Inter, "Segoe UI", Arial, sans-serif; background: #eef7f7; color: #1f2937; }
+body { margin: 0; padding: 28px; background: linear-gradient(120deg, #eef7f7 0%, #f9fbff 100%); }
+.audit-grid { display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 22px; max-width: 880px; }
+.codex-account-card { min-height: 430px; border: 1px solid rgba(148,163,184,.32); border-radius: 14px; background: rgba(255,255,255,.92); box-shadow: 0 14px 34px rgba(15,23,42,.12); padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.card-top { display: flex; align-items: center; gap: 12px; }
+.checkbox { width: 16px; height: 16px; border: 1px solid #64748b; border-radius: 3px; }
+.account-email { flex: 1; min-width: 0; font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tier-badge { min-width: 58px; text-align: center; border-radius: 999px; padding: 4px 11px; font-size: 12px; line-height: 1; font-weight: 800; letter-spacing: .02em; }
+.tier-badge.free { background: rgba(148, 163, 184, .20); color: #475569; border: 1px solid rgba(148, 163, 184, .45); }
+.account-sub-line { font-size: 13px; color: #475569; }
+.quota-item { margin-top: 12px; padding: 14px 0; border-top: 2px solid #ef4444; border-bottom: 2px solid #ef4444; }
+.quota-header { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #64748b; }
+.quota-label { flex: 1; }
+.quota-pct.high { color: #22c55e; font-weight: 800; }
+.quota-bar-track { height: 6px; border-radius: 999px; background: #dbeafe; overflow: hidden; margin-top: 8px; }
+.quota-bar.high { height: 100%; border-radius: inherit; background: #22c55e; }
+.quota-reset { display: block; text-align: right; font-size: 12px; color: #64748b; margin-top: 8px; }
+.codex-subscription-footer { margin-top: 6px; border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: space-between; font-size: 14px; }
+.codex-subscription-footer.active { background: #f1f5f9; border: 1px solid #cbd5e1; color: #334155; }
+.codex-subscription-footer.warning { background: #fff7ed; border: 1px solid #fed7aa; color: #c2410c; }
+.codex-subscription-footer-main { display: flex; align-items: center; gap: 8px; }
+.codex-subscription-footer-side { font-size: 12px; color: #64748b; }
+.audit-note { margin-top: 18px; max-width: 880px; font-size: 13px; color: #475569; }
+</style>
+</head>
+<body>
+<div class="audit-grid">
+
+  <section class="codex-account-card" data-account-id="codex_d5918a432f646d7a4f7070307400cc61">
+    <div class="card-top">
+      <span class="checkbox"></span>
+      <span class="account-email">sciman.phys@gmail.com</span>
+      <span class="tier-badge free">FREE</span>
+    </div>
+    <div class="account-sub-line">账户类型：个人账户</div>
+    <div class="account-sub-line">使用 Google 登录 | 用户 ID: d78a3337-2b40-4582-80c0-2b39f985785d</div>
+    <div class="codex-quota-section">
+      
+        <div class="quota-item">
+          <div class="quota-header"><span>□</span><span class="quota-label">5 Week</span><span class="quota-pct high">95%</span></div>
+          <div class="quota-bar-track"><div class="quota-bar high" style="width:95%"></div></div>
+          <span class="quota-reset">06/04 20:29</span>
+        </div>
+      
+    </div>
+    <div class="codex-subscription-footer active" title="订阅方案：FREE">
+      <div class="codex-subscription-footer-main"><span>□</span><span>订阅</span><strong>FREE</strong></div>
+      <div class="codex-subscription-footer-side"></div>
+    </div>
+  </section>
+
+  <section class="codex-account-card" data-account-id="codex_c641df4d56baceca12b3ffcd597061b3">
+    <div class="card-top">
+      <span class="checkbox"></span>
+      <span class="account-email">ai.sciman.top@gmail.com</span>
+      <span class="tier-badge free">FREE</span>
+    </div>
+    <div class="account-sub-line">账户类型：个人账户</div>
+    <div class="account-sub-line">使用 Google 登录 | 用户 ID: d23cbc21-b2fb-475f-81e6-82fc669e47aa</div>
+    <div class="codex-quota-section">
+      
+        <div class="quota-item">
+          <div class="quota-header"><span>□</span><span class="quota-label">5 Week</span><span class="quota-pct high">95%</span></div>
+          <div class="quota-bar-track"><div class="quota-bar high" style="width:95%"></div></div>
+          <span class="quota-reset">06/04 20:29</span>
+        </div>
+      
+    </div>
+    <div class="codex-subscription-footer active" title="订阅方案：FREE">
+      <div class="codex-subscription-footer-main"><span>□</span><span>订阅</span><strong>FREE</strong></div>
+      <div class="codex-subscription-footer-side"></div>
+    </div>
+  </section>
+
+</div>
+<div class="audit-note">视觉审查目标：这两个 token/quota 都确认为 free 且 paid 到期已过的账号，不应出现付费徽章或付费订阅文案。</div>
+</body>
+</html>

@@ -39,6 +39,17 @@ fn should_skip_sidecar_build(output: &Path) -> bool {
     std::env::var("COCKPIT_SKIP_CLIPROXY_BUILD").ok().as_deref() == Some("1") && output.exists()
 }
 
+fn require_sidecar_build() -> bool {
+    std::env::var("COCKPIT_REQUIRE_CLIPROXY_BUILD")
+        .ok()
+        .as_deref()
+        == Some("1")
+}
+
+fn go_toolchain_available() -> bool {
+    Command::new("go").arg("version").status().is_ok()
+}
+
 fn emit_sidecar_rerun_inputs(path: &Path) {
     if path.file_name().and_then(|name| name.to_str()) == Some("bin") {
         return;
@@ -68,6 +79,7 @@ fn emit_sidecar_rerun_inputs(path: &Path) {
     }
 }
 
+#[allow(clippy::suspicious_command_arg_space)]
 fn build_go_sidecar(
     sidecar_dir: &Path,
     output_dir: &Path,
@@ -89,6 +101,7 @@ fn build_go_sidecar(
         .arg("build")
         .arg("-trimpath")
         .arg("-ldflags")
+        // Go expects the linker flags as one value after -ldflags.
         .arg("-s -w")
         .arg("-o")
         .arg(&output)
@@ -147,7 +160,22 @@ fn build_cockpit_cliproxy_sidecar() {
     let output_dir = sidecar_dir.join("bin");
 
     println!("cargo:rerun-if-env-changed=COCKPIT_SKIP_CLIPROXY_BUILD");
+    println!("cargo:rerun-if-env-changed=COCKPIT_REQUIRE_CLIPROXY_BUILD");
     emit_sidecar_rerun_inputs(&sidecar_dir);
+    if std::env::var("COCKPIT_SKIP_CLIPROXY_BUILD").ok().as_deref() == Some("1") {
+        println!(
+            "cargo:warning=COCKPIT_SKIP_CLIPROXY_BUILD=1; skipping cockpit-cliproxy sidecar build"
+        );
+        return;
+    }
+    if !go_toolchain_available() {
+        let message = "Go toolchain is not available; skipping cockpit-cliproxy sidecar build";
+        if require_sidecar_build() {
+            panic!("{message}");
+        }
+        println!("cargo:warning={message}");
+        return;
+    }
     std::fs::create_dir_all(&output_dir).expect("failed to create cockpit-cliproxy bin dir");
 
     if cfg!(target_os = "macos") && target == "universal-apple-darwin" {
@@ -156,7 +184,12 @@ fn build_cockpit_cliproxy_sidecar() {
     }
 
     let Some((goos, goarch)) = go_target_from_rust_target(&target) else {
-        panic!("unsupported sidecar build target: {target}");
+        let message = format!("unsupported sidecar build target: {target}");
+        if require_sidecar_build() {
+            panic!("{message}");
+        }
+        println!("cargo:warning={message}; skipping cockpit-cliproxy sidecar build");
+        return;
     };
     build_go_sidecar(&sidecar_dir, &output_dir, &target, goos, goarch);
     if cfg!(target_os = "macos") && target.contains("apple-darwin") {

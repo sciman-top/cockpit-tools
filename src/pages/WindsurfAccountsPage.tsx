@@ -1202,7 +1202,12 @@ export function WindsurfAccountsPage() {
       return (
         <div key={groupKey ? `${groupKey}-${account.id}` : account.id} className={`ghcp-account-card ${isCurrent ? 'current' : ''} ${isSelected ? 'selected' : ''}`}>
           <div className="card-top">
-            <div className="card-select"><input type="checkbox" checked={isSelected} onChange={() => toggleSelect(account.id)} /></div>
+            <label
+              className="card-select"
+              aria-label={t("accounts.selectAccount", "选择账号")}
+            >
+              <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(account.id)} />
+            </label>
             <span className="account-email" title={maskAccountText(emailText)}>{maskAccountText(emailText)}</span>
             {isCurrent && <span className="current-tag">{t('accounts.status.current')}</span>}
             {quotaError && (
@@ -1495,6 +1500,7 @@ export function WindsurfAccountsPage() {
         canGoPrevious={pagination.canGoPrevious}
         canGoNext={pagination.canGoNext}
         onPageSizeChange={pagination.setPageSize}
+        onPageChange={pagination.setCurrentPage}
         onPreviousPage={pagination.goToPreviousPage}
         onNextPage={pagination.goToNextPage}
       />

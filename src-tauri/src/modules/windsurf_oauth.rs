@@ -489,6 +489,11 @@ async fn start_callback_server(
 ) -> Result<(), String> {
     use tiny_http::{Header, Response, Server};
 
+    fn html_content_type_header() -> Result<Header, String> {
+        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
+            .map_err(|_| "构造 OAuth 回调响应头失败".to_string())
+    }
+
     let server = Server::http(format!("127.0.0.1:{}", port))
         .map_err(|e| format!("启动 Windsurf OAuth 本地回调服务失败: {}", e))?;
     let started = std::time::Instant::now();
@@ -550,13 +555,7 @@ async fn start_callback_server(
                 let _ = request.respond(
                     Response::from_string(html)
                         .with_status_code(400)
-                        .with_header(
-                            Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"text/html; charset=utf-8"[..],
-                            )
-                            .unwrap(),
-                        ),
+                        .with_header(html_content_type_header()?),
                 );
                 continue;
             }
@@ -580,13 +579,7 @@ async fn start_callback_server(
                 let _ = request.respond(
                     Response::from_string(html)
                         .with_status_code(400)
-                        .with_header(
-                            Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"text/html; charset=utf-8"[..],
-                            )
-                            .unwrap(),
-                        ),
+                        .with_header(html_content_type_header()?),
                 );
                 continue;
             }
@@ -606,13 +599,7 @@ async fn start_callback_server(
                 let _ = request.respond(
                     Response::from_string(html)
                         .with_status_code(400)
-                        .with_header(
-                            Header::from_bytes(
-                                &b"Content-Type"[..],
-                                &b"text/html; charset=utf-8"[..],
-                            )
-                            .unwrap(),
-                        ),
+                        .with_header(html_content_type_header()?),
                 );
                 continue;
             }
@@ -630,10 +617,7 @@ async fn start_callback_server(
             let _ = request.respond(
                 Response::from_string(oauth_success_html())
                     .with_status_code(200)
-                    .with_header(
-                        Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
-                            .unwrap(),
-                    ),
+                    .with_header(html_content_type_header()?),
             );
             break;
         }

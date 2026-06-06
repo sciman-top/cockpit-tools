@@ -959,6 +959,225 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 	return nil, lastErr
 }
 
+func (m *Manager) executeWithRefreshOnUnauthorized(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, upstreamModel, resultModel string) (cliproxyexecutor.Response, error) {
+	execReq := req
+	execReq.Model = upstreamModel
+	resp, errExec := executor.Execute(ctx, auth, execReq, opts)
+	if !m.shouldRefreshAfterRequestUnauthorized(errExec, auth) {
+		return resp, errExec
+	}
+
+	refreshed, errRefresh := m.refreshAuthForRequestRetry(ctx, executor, auth)
+	if errRefresh != nil {
+		logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("request 401 refresh failed: %v", errRefresh)
+		return resp, errExec
+	}
+	if refreshed == nil {
+		return resp, errExec
+	}
+	retryReq := req
+	retryReq.Model = upstreamModel
+	retryResp, retryErr := executor.Execute(ctx, refreshed, retryReq, opts)
+	if retryErr == nil {
+		return retryResp, nil
+	}
+	if errCtx := ctx.Err(); errCtx != nil {
+		return cliproxyexecutor.Response{}, errCtx
+	}
+	return retryResp, retryErr
+}
+
+func (m *Manager) countWithRefreshOnUnauthorized(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, upstreamModel, resultModel string) (cliproxyexecutor.Response, error) {
+	execReq := req
+	execReq.Model = upstreamModel
+	resp, errExec := executor.CountTokens(ctx, auth, execReq, opts)
+	if !m.shouldRefreshAfterRequestUnauthorized(errExec, auth) {
+		return resp, errExec
+	}
+
+	refreshed, errRefresh := m.refreshAuthForRequestRetry(ctx, executor, auth)
+	if errRefresh != nil {
+		logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("request 401 refresh failed: %v", errRefresh)
+		return resp, errExec
+	}
+	if refreshed == nil {
+		return resp, errExec
+	}
+	retryReq := req
+	retryReq.Model = upstreamModel
+	retryResp, retryErr := executor.CountTokens(ctx, refreshed, retryReq, opts)
+	if retryErr == nil {
+		return retryResp, nil
+	}
+	if errCtx := ctx.Err(); errCtx != nil {
+		return cliproxyexecutor.Response{}, errCtx
+	}
+	return retryResp, retryErr
+}
+
+func (m *Manager) executeStreamWithRefreshOnUnauthorized(ctx context.Context, executor ProviderExecutor, auth *Auth, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, routeModel string, execModels []string, pooled bool) (*cliproxyexecutor.StreamResult, error) {
+	streamResult, errStream := m.executeStreamWithModelPool(ctx, executor, auth, provider, req, opts, routeModel, execModels, pooled)
+	if !m.shouldRefreshAfterRequestUnauthorized(errStream, auth) {
+		return streamResult, errStream
+	}
+
+	refreshed, errRefresh := m.refreshAuthForRequestRetry(ctx, executor, auth)
+	if errRefresh != nil {
+		logEntryWithRequestID(ctx).WithField("auth_id", auth.ID).Warnf("stream request 401 refresh failed: %v", errRefresh)
+		return streamResult, errStream
+	}
+	if refreshed == nil {
+		return streamResult, errStream
+	}
+	return m.executeStreamWithModelPool(ctx, executor, refreshed, provider, req, opts, routeModel, execModels, pooled)
+}
+
+func (m *Manager) shouldRefreshAfterRequestUnauthorized(err error, auth *Auth) bool {
+	if m == nil || auth == nil || err == nil {
+		return false
+	}
+	if statusCodeFromError(err) != http.StatusUnauthorized {
+		return false
+	}
+	if auth.Disabled || auth.Status == StatusDisabled {
+		return false
+	}
+	return authRefreshToken(auth) != ""
+}
+
+func authRefreshToken(auth *Auth) string {
+	if auth == nil || len(auth.Metadata) == 0 {
+		return ""
+	}
+	for _, key := range []string{"refresh_token", "refreshToken"} {
+		if value, ok := auth.Metadata[key].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
+}
+
+func (m *Manager) refreshAuthForRequestRetry(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {
+	if m == nil || executor == nil || auth == nil {
+		return nil, nil
+	}
+	updated, errRefresh := executor.Refresh(ctx, auth.Clone())
+	if errRefresh != nil {
+		return nil, errRefresh
+	}
+	if updated == nil {
+		return nil, nil
+	}
+	if updated.ID == "" {
+		updated.ID = auth.ID
+	}
+	if updated.Provider == "" {
+		updated.Provider = auth.Provider
+	}
+	if updated.Runtime == nil {
+		updated.Runtime = auth.Runtime
+	}
+	now := time.Now()
+	updated.LastRefreshedAt = now
+	updated.NextRefreshAfter = time.Time{}
+	updated.LastError = nil
+	updated.Status = StatusActive
+	updated.StatusMessage = ""
+	updated.Unavailable = false
+	updated.NextRetryAfter = time.Time{}
+	updated.ModelStates = clearUnauthorizedModelStates(updated.ModelStates)
+	updated.UpdatedAt = now
+	if m.shouldRefresh(updated, now) {
+		updated.NextRefreshAfter = now.Add(refreshIneffectiveBackoff)
+	}
+	resumedModels := m.unauthorizedModelKeys(updated.ID)
+	saved, errUpdate := m.updateAfterRequestRefresh(ctx, updated)
+	if errUpdate != nil {
+		return updated, errUpdate
+	}
+	for _, model := range resumedModels {
+		registry.GetGlobalRegistry().ResumeClientModel(updated.ID, model)
+	}
+	if saved != nil {
+		return saved, nil
+	}
+	return updated, nil
+}
+
+func (m *Manager) unauthorizedModelKeys(authID string) []string {
+	if m == nil || authID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	auth := m.auths[authID]
+	if auth == nil || len(auth.ModelStates) == 0 {
+		m.mu.RUnlock()
+		return nil
+	}
+	models := make([]string, 0, len(auth.ModelStates))
+	for model, state := range auth.ModelStates {
+		if state == nil || state.LastError == nil {
+			continue
+		}
+		if state.LastError.StatusCode() == http.StatusUnauthorized {
+			models = append(models, model)
+		}
+	}
+	m.mu.RUnlock()
+	return models
+}
+
+func (m *Manager) updateAfterRequestRefresh(ctx context.Context, auth *Auth) (*Auth, error) {
+	if m == nil || auth == nil || auth.ID == "" {
+		return auth, nil
+	}
+	m.mu.Lock()
+	if existing, ok := m.auths[auth.ID]; ok && existing != nil {
+		if !auth.indexAssigned && auth.Index == "" {
+			auth.Index = existing.Index
+			auth.indexAssigned = existing.indexAssigned
+		}
+		auth.Success = existing.Success
+		auth.Failed = existing.Failed
+		auth.recentRequests = existing.recentRequests
+	}
+	auth.EnsureIndex()
+	authClone := auth.Clone()
+	m.auths[auth.ID] = authClone
+	m.mu.Unlock()
+
+	m.rebuildAPIKeyModelAliasFromRuntimeConfig()
+	if m.scheduler != nil {
+		m.scheduler.upsertAuth(authClone)
+	}
+	m.queueRefreshReschedule(auth.ID)
+	_ = m.persist(ctx, auth)
+	m.hook.OnAuthUpdated(ctx, auth.Clone())
+	return auth.Clone(), nil
+}
+
+func clearUnauthorizedModelStates(states map[string]*ModelState) map[string]*ModelState {
+	if len(states) == 0 {
+		return states
+	}
+	cleaned := make(map[string]*ModelState, len(states))
+	for model, state := range states {
+		if state == nil {
+			continue
+		}
+		if state.LastError != nil && state.LastError.StatusCode() == http.StatusUnauthorized {
+			continue
+		}
+		cleaned[model] = state
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
+}
+
 func (m *Manager) rebuildAPIKeyModelAliasFromRuntimeConfig() {
 	if m == nil {
 		return
@@ -1389,9 +1608,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		var authErr error
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
-			execReq := req
-			execReq.Model = upstreamModel
-			resp, errExec := executor.Execute(execCtx, auth, execReq, opts)
+			resp, errExec := m.executeWithRefreshOnUnauthorized(execCtx, executor, auth, provider, req, opts, upstreamModel, resultModel)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
@@ -1488,9 +1705,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		var authErr error
 		for _, upstreamModel := range models {
 			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
-			execReq := req
-			execReq.Model = upstreamModel
-			resp, errExec := executor.CountTokens(execCtx, auth, execReq, opts)
+			resp, errExec := m.countWithRefreshOnUnauthorized(execCtx, executor, auth, provider, req, opts, upstreamModel, resultModel)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: errExec == nil}
 			if errExec != nil {
 				if errCtx := execCtx.Err(); errCtx != nil {
@@ -1583,7 +1798,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			continue
 		}
 		execReq := sanitizeDownstreamWebsocketFallbackRequest(execCtx, auth, req)
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, opts, routeModel, models, pooled)
+		streamResult, errStream := m.executeStreamWithRefreshOnUnauthorized(execCtx, executor, auth, provider, execReq, opts, routeModel, models, pooled)
 		if errStream != nil {
 			if errCtx := execCtx.Err(); errCtx != nil {
 				return nil, errCtx
@@ -3014,52 +3229,6 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 	return m.selectionModelKeyForAuth(auth, routeModel) != canonicalModelKey(routeModel)
 }
 
-func scopedAccountIDSetFromContext(ctx context.Context) map[string]struct{} {
-	if ctx == nil {
-		return nil
-	}
-	ginCtx, ok := ctx.Value("gin").(interface{ Get(string) (any, bool) })
-	if !ok || ginCtx == nil {
-		return nil
-	}
-	rawMetadata, ok := ginCtx.Get("accessMetadata")
-	if !ok {
-		return nil
-	}
-	var accountIDs string
-	switch v := rawMetadata.(type) {
-	case map[string]string:
-		accountIDs = strings.TrimSpace(v["account_ids"])
-	case map[string]any:
-		accountIDs = contextStringValue(v["account_ids"])
-	}
-	if accountIDs == "" {
-		return nil
-	}
-	out := make(map[string]struct{})
-	for _, item := range strings.Split(accountIDs, ",") {
-		accountID := strings.TrimSpace(item)
-		if accountID != "" {
-			out[accountID] = struct{}{}
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func authAllowedByScope(auth *Auth, scopedAccountIDs map[string]struct{}) bool {
-	if len(scopedAccountIDs) == 0 {
-		return true
-	}
-	if auth == nil {
-		return false
-	}
-	_, ok := scopedAccountIDs[auth.ID]
-	return ok
-}
-
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
@@ -3068,7 +3237,6 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
-	scopedAccountIDs := scopedAccountIDSetFromContext(ctx)
 
 	m.mu.RLock()
 	executor, okExecutor := m.executors[provider]
@@ -3088,9 +3256,6 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate.Provider != provider || candidate.Disabled {
-			continue
-		}
-		if !authAllowedByScope(candidate, scopedAccountIDs) {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -3145,9 +3310,6 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 	}
 
 	if !m.useSchedulerFastPath() {
-		return m.pickNextLegacy(ctx, provider, model, opts, tried)
-	}
-	if len(scopedAccountIDSetFromContext(ctx)) > 0 {
 		return m.pickNextLegacy(ctx, provider, model, opts, tried)
 	}
 	if strings.TrimSpace(model) != "" {
@@ -3210,7 +3372,6 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 
 	pinnedAuthID := pinnedAuthIDFromMetadata(opts.Metadata)
 	disallowFreeAuth := disallowFreeAuthFromMetadata(opts.Metadata)
-	scopedAccountIDs := scopedAccountIDSetFromContext(ctx)
 
 	providerSet := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
@@ -3237,9 +3398,6 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
 	registryRef := registry.GetGlobalRegistry()
 	for _, candidate := range m.auths {
 		if candidate == nil || candidate.Disabled {
-			continue
-		}
-		if !authAllowedByScope(candidate, scopedAccountIDs) {
 			continue
 		}
 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
@@ -3309,9 +3467,6 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
 	}
 
 	if !m.useSchedulerFastPath() {
-		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
-	}
-	if len(scopedAccountIDSetFromContext(ctx)) > 0 {
 		return m.pickNextMixedLegacy(ctx, providers, model, opts, tried)
 	}
 

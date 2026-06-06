@@ -6,11 +6,15 @@ import {
 
 export const CODEX_QUOTA_POOL_PLAN_KEYS = [
   'FREE',
+  'GO',
   'API_KEY',
   'PLUS',
   'PRO',
+  'PROLITE',
   'TEAM',
+  'BUSINESS',
   'ENTERPRISE',
+  'EDU',
 ] as const;
 
 export type CodexQuotaPoolPlanKey = (typeof CODEX_QUOTA_POOL_PLAN_KEYS)[number];

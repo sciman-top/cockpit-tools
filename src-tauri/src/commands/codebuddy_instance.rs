@@ -119,7 +119,7 @@ fn inject_bound_account_for_instance_start(
 
 fn ensure_codebuddy_state_db_path(user_data_dir: &str) -> Result<PathBuf, String> {
     let root = Path::new(user_data_dir);
-    let candidates = vec![
+    let candidates = [
         root.join("User").join("globalStorage").join("state.vscdb"),
         root.join("globalStorage").join("state.vscdb"),
         root.join("state.vscdb"),

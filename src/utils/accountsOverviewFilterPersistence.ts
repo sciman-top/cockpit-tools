@@ -90,15 +90,9 @@ export function readAccountsOverviewFilterField<T>(
   fallback: T,
 ): T {
   const scope = normalizeAccountsOverviewScope(rawScope);
-  try {
-    const raw = localStorage.getItem(getFieldStorageKey(scope, field));
-    if (raw == null) {
-      return fallback;
-    }
-    return JSON.parse(raw) as T;
-  } catch {
-    return fallback;
-  }
+  // 账号筛选字段可能包含 OAuth/账号派生信息；读取时顺手清理旧版本遗留值。
+  removeAccountsOverviewFilterField(scope, field);
+  return fallback;
 }
 
 export function readAccountsOverviewFilterStringArray(
@@ -115,17 +109,13 @@ export function readAccountsOverviewFilterStringArray(
     .filter(Boolean);
 }
 
-export function writeAccountsOverviewFilterField<T>(
+export function writeAccountsOverviewFilterField(
   rawScope: string,
   field: string,
-  value: T,
+  _value: unknown,
 ): void {
   const scope = normalizeAccountsOverviewScope(rawScope);
-  try {
-    localStorage.setItem(getFieldStorageKey(scope, field), JSON.stringify(value));
-  } catch {
-    // ignore persistence failures
-  }
+  removeAccountsOverviewFilterField(scope, field);
 }
 
 export function removeAccountsOverviewFilterField(rawScope: string, field: string): void {

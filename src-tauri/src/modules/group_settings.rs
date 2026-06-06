@@ -30,17 +30,12 @@ const DEPRECATED_GROUP_ID_G3_IMAGE: &str = "g3_image";
 const DEPRECATED_MODEL_ID_GEMINI_3_PRO_IMAGE: &str = "gemini-3-pro-image";
 
 /// 配置来源
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigSource {
     Plugin,
+    #[default]
     Desktop,
-}
-
-impl Default for ConfigSource {
-    fn default() -> Self {
-        ConfigSource::Desktop
-    }
 }
 
 /// 分组配置
@@ -441,14 +436,16 @@ mod tests {
 
     #[test]
     fn test_get_ordered_groups_with_limit() {
-        let mut settings = GroupSettings::default();
-        settings.group_order = vec![
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-            "d".to_string(),
-            "e".to_string(),
-        ];
+        let settings = GroupSettings {
+            group_order: vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+                "e".to_string(),
+            ],
+            ..Default::default()
+        };
 
         let groups = settings.get_ordered_groups(Some(4));
         assert_eq!(groups.len(), 4);

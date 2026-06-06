@@ -5,8 +5,7 @@ import { save, open, confirm } from '@tauri-apps/plugin-dialog';
 import { writeTextFile, readTextFile } from '@tauri-apps/plugin-fs';
 import jsQR from 'jsqr';
 import {
-  MFA_STORAGE_KEY_HISTORY,
-  MFA_STORAGE_KEY_SAVED,
+  clearPersistedMfaRecords,
   createMfaRecordId,
   dedupeMfaRecordsBySecret,
   getMfaOtpToken,
@@ -83,12 +82,9 @@ export function MfaVaultManager() {
   const [timeRemaining, setTimeRemaining] = useState(() => getMfaTimeRemaining());
 
   useEffect(() => {
-    localStorage.setItem(MFA_STORAGE_KEY_SAVED, JSON.stringify(records));
-  }, [records]);
-
-  useEffect(() => {
-    localStorage.setItem(MFA_STORAGE_KEY_HISTORY, JSON.stringify(historyRecords));
-  }, [historyRecords]);
+    // MFA secrets stay session-only unless the user explicitly exports them.
+    clearPersistedMfaRecords();
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => {

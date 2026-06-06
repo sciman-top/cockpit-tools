@@ -231,7 +231,7 @@ pub async fn cursor_start_instance(instance_id: String) -> Result<InstanceProfil
             let _ = modules::cursor_instance::update_default_pid(None)?;
         }
 
-        modules::cursor_instance::close_cursor(&[default_dir_str.clone()], 20)?;
+        modules::cursor_instance::close_cursor(std::slice::from_ref(&default_dir_str), 20)?;
         inject_bound_account_for_instance_start(
             &default_dir_str,
             default_settings.bind_account_id.as_deref(),
@@ -277,7 +277,7 @@ pub async fn cursor_start_instance(instance_id: String) -> Result<InstanceProfil
         let _ = modules::cursor_instance::update_instance_pid(&instance.id, None)?;
     }
 
-    modules::cursor_instance::close_cursor(&[instance.user_data_dir.clone()], 20)?;
+    modules::cursor_instance::close_cursor(std::slice::from_ref(&instance.user_data_dir), 20)?;
     inject_bound_account_for_instance_start(
         &instance.user_data_dir,
         instance.bind_account_id.as_deref(),

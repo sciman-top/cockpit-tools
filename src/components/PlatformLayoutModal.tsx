@@ -35,7 +35,7 @@ import {
   resolveGroupChildName,
   usePlatformLayoutStore,
 } from '../stores/usePlatformLayoutStore';
-import { CLASSIC_SIDEBAR_ENTRY_LIMIT, ORIGINAL_SIDEBAR_ENTRY_LIMIT, useSideNavLayoutStore } from '../stores/useSideNavLayoutStore';
+import { ORIGINAL_SIDEBAR_ENTRY_LIMIT, useSideNavLayoutStore } from '../stores/useSideNavLayoutStore';
 import { getPlatformLabel, renderPlatformIcon } from '../utils/platformMeta';
 import { useEscClose } from '../hooks/useEscClose';
 
@@ -346,9 +346,10 @@ export function PlatformLayoutModal({
   const { t } = useTranslation();
   useEscClose(open, onClose);
   const sideNavLayoutMode = useSideNavLayoutStore((state) => state.mode);
-  const sidebarSelectionLimit = sideNavLayoutMode === 'classic'
-    ? CLASSIC_SIDEBAR_ENTRY_LIMIT
-    : ORIGINAL_SIDEBAR_ENTRY_LIMIT;
+  const isSidebarSelectionLimited = sideNavLayoutMode === 'original';
+  const sidebarSelectionLimit = isSidebarSelectionLimited
+    ? ORIGINAL_SIDEBAR_ENTRY_LIMIT
+    : Number.MAX_SAFE_INTEGER;
   const {
     orderedEntryIds,
     hiddenEntryIds,
@@ -722,7 +723,10 @@ export function PlatformLayoutModal({
     if (!enabled) {
       return;
     }
-    const targetEntries = entries.slice(0, sidebarSelectionLimit);
+    const visibleEntries = entries.filter((entry) => !entry.hidden);
+    const targetEntries = isSidebarSelectionLimited
+      ? visibleEntries.slice(0, sidebarSelectionLimit)
+      : visibleEntries;
     targetEntries.forEach((entry) => setSidebarEntry(entry.id, true));
   };
 
@@ -737,10 +741,12 @@ export function PlatformLayoutModal({
   };
 
   const sidebarVisibleEntries = useMemo(
-    () => entries,
+    () => entries.filter((entry) => !entry.hidden),
     [entries],
   );
-  const sidebarBulkTargetCount = Math.min(sidebarSelectionLimit, sidebarVisibleEntries.length);
+  const sidebarBulkTargetCount = isSidebarSelectionLimited
+    ? Math.min(sidebarSelectionLimit, sidebarVisibleEntries.length)
+    : sidebarVisibleEntries.length;
   const sidebarBulkEnabled = sidebarBulkTargetCount > 0
     && sidebarVisibleEntries.filter((entry) => sidebarSet.has(entry.id)).length >= sidebarBulkTargetCount;
   const dashboardBulkEnabled = entries.length > 0 && entries.every((entry) => !entry.hidden);
@@ -1019,11 +1025,16 @@ export function PlatformLayoutModal({
         <div className="modal-body platform-layout-modal-body">
           <div className="platform-layout-summary">
             <span>
-              {t('platformLayout.sidebarSelected', {
-                count: sidebarEntryIds.length,
-                max: sidebarSelectionLimit,
-                defaultValue: '侧边栏已选择 {{count}}/{{max}}',
-              })}
+              {isSidebarSelectionLimited
+                ? t('platformLayout.sidebarSelected', {
+                  count: sidebarEntryIds.length,
+                  max: sidebarSelectionLimit,
+                  defaultValue: '侧边栏已选择 {{count}}/{{max}}',
+                })
+                : t('platformLayout.sidebarSelectedUnlimited', {
+                  count: sidebarEntryIds.length,
+                  defaultValue: '侧边栏已选择 {{count}}',
+                })}
             </span>
             <div className="platform-layout-summary-actions">
               <button className="btn btn-secondary" onClick={openCreateGroupEditor}>
@@ -1037,11 +1048,15 @@ export function PlatformLayoutModal({
           </div>
 
           <div className="platform-layout-tip">
-            {t(
-              'platformLayout.tipWithGroups',
-              '拖拽可排序；最多选择 {{max}} 个入口显示在侧边栏。分组子级不参与侧边栏/仪表盘开关，仅用于菜单栏与默认平台切换。',
-              { max: sidebarSelectionLimit },
-            )}
+            {isSidebarSelectionLimited
+              ? t(
+                'platformLayout.tipWithGroups',
+                '拖拽可排序；最多选择三个入口显示在侧边栏。分组子级不参与侧边栏/仪表盘开关，仅用于菜单栏与默认平台切换。',
+              )
+              : t(
+                'platformLayout.tipWithGroupsUnlimited',
+                '拖拽可排序；可选择任意数量入口显示在侧边栏。分组子级不参与侧边栏/仪表盘开关，仅用于菜单栏与默认平台切换。',
+              )}
           </div>
 
           <div className="platform-layout-bulk-header">
@@ -1103,8 +1118,8 @@ export function PlatformLayoutModal({
           >
             {entries.map((entry) => {
               const selected = sidebarSet.has(entry.id);
-              const sidebarFull = sidebarEntryIds.length >= sidebarSelectionLimit;
-              const sidebarDisabled = !selected && sidebarFull;
+              const sidebarFull = isSidebarSelectionLimited && sidebarEntryIds.length >= sidebarSelectionLimit;
+              const sidebarDisabled = entry.hidden || (!selected && sidebarFull);
               const isGroup = entry.type === 'group' && !!entry.group;
               const groupId = entry.id;
               const groupExpanded = expandedGroupIds.includes(groupId);

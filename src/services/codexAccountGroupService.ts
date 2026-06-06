@@ -9,6 +9,8 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
+const GROUP_SNAPSHOT_STORAGE_KEY = 'agtools.codex_account_groups.snapshot';
+
 let idCounter = 0;
 function generateId(): string {
   return `cgrp_${Date.now()}_${++idCounter}`;
@@ -32,13 +34,58 @@ function cloneGroups(groups: CodexAccountGroup[]): CodexAccountGroup[] {
   }));
 }
 
+function sortCodexGroups(groups: CodexAccountGroup[]): CodexAccountGroup[] {
+  return [...groups].sort((left, right) => {
+    const sortDiff = left.sortOrder - right.sortOrder;
+    if (sortDiff !== 0) return sortDiff;
+    const createdDiff = left.createdAt - right.createdAt;
+    return createdDiff !== 0 ? createdDiff : left.id.localeCompare(right.id);
+  });
+}
+
+export function readCodexAccountGroupsSnapshot(): CodexAccountGroup[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(GROUP_SNAPSHOT_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? sortCodexGroups(cloneGroups(parsed)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCodexAccountGroupsSnapshot(groups: CodexAccountGroup[]): void {
+  try {
+    if (typeof localStorage === 'undefined') return;
+    localStorage.setItem(
+      GROUP_SNAPSHOT_STORAGE_KEY,
+      JSON.stringify(sortCodexGroups(cloneGroups(groups))),
+    );
+  } catch {
+    // localStorage 只服务首帧展示，磁盘文件仍是权威来源。
+  }
+}
+
+function normalizeCodexGroupAccountIds(accountIds: Iterable<string>): string[] {
+  return Array.from(
+    new Set(
+      Array.from(accountIds)
+        .map((id) => id.trim())
+        .filter(Boolean),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+}
+
 async function loadGroupsFromDisk(): Promise<CodexAccountGroup[]> {
   try {
     const raw: string = await invoke('load_codex_account_groups');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? cloneGroups(parsed) : [];
+    const groups = Array.isArray(parsed) ? cloneGroups(parsed) : [];
+    writeCodexAccountGroupsSnapshot(groups);
+    return groups;
   } catch {
-    return [];
+    return readCodexAccountGroupsSnapshot();
   }
 }
 
@@ -59,14 +106,16 @@ async function loadGroups(): Promise<CodexAccountGroup[]> {
 async function saveGroups(groups: CodexAccountGroup[]): Promise<void> {
   const nextGroups = cloneGroups(groups);
   cachedGroups = nextGroups;
+  writeCodexAccountGroupsSnapshot(nextGroups);
   await saveGroupsToDisk(nextGroups);
 }
 
 // ─── 公开 API ───────────────────────────────────────
 
 export async function getCodexAccountGroups(): Promise<CodexAccountGroup[]> {
-  const groups = await loadGroups();
-  return groups.sort((a, b) => a.sortOrder - b.sortOrder);
+  cachedGroups = await loadGroupsFromDisk();
+  const groups = cloneGroups(cachedGroups);
+  return sortCodexGroups(groups);
 }
 
 export async function createCodexGroup(name: string, sortOrder?: number): Promise<CodexAccountGroup> {
@@ -123,14 +172,11 @@ export async function assignAccountsToCodexGroup(groupId: string, accountIds: st
     currentGroup.accountIds = currentGroup.accountIds.filter((id) => !targetIds.has(id));
   }
 
-  // 添加到目标分组
-  const existing = new Set(group.accountIds);
-  for (const id of accountIds) {
-    if (!existing.has(id)) {
-      group.accountIds.push(id);
-      existing.add(id);
-    }
-  }
+  // 分组只保存去重后的成员集合。
+  group.accountIds = normalizeCodexGroupAccountIds([
+    ...group.accountIds,
+    ...accountIds,
+  ]);
   await saveGroups(groups);
   return group;
 }
@@ -140,7 +186,9 @@ export async function removeAccountsFromCodexGroup(groupId: string, accountIds: 
   const group = groups.find((g) => g.id === groupId);
   if (!group) return null;
   const toRemove = new Set(accountIds);
-  group.accountIds = group.accountIds.filter((id) => !toRemove.has(id));
+  group.accountIds = normalizeCodexGroupAccountIds(
+    group.accountIds.filter((id) => !toRemove.has(id)),
+  );
   await saveGroups(groups);
   return group;
 }
@@ -150,9 +198,11 @@ export async function cleanupDeletedCodexAccounts(existingAccountIds: Set<string
   const groups = await loadGroups();
   let changed = false;
   for (const group of groups) {
-    const before = group.accountIds.length;
-    group.accountIds = group.accountIds.filter((id) => existingAccountIds.has(id));
-    if (group.accountIds.length !== before) changed = true;
+    const before = group.accountIds.join("\u001f");
+    group.accountIds = normalizeCodexGroupAccountIds(
+      group.accountIds.filter((id) => existingAccountIds.has(id)),
+    );
+    if (group.accountIds.join("\u001f") !== before) changed = true;
   }
   if (changed) await saveGroups(groups);
 }

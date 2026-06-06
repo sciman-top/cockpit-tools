@@ -259,3 +259,27 @@ func TestCodexIdentityConfuseKeepsClientBodySeparateFromUpstreamBody(t *testing.
 		t.Fatalf("client prompt_cache_key = %q, want cache-1", gotKey)
 	}
 }
+
+func TestCodexIdentityExposeResponsePayloadRestoresErrorBody(t *testing.T) {
+	state := codexIdentityConfuseState{
+		enabled:                true,
+		authID:                 "auth-1",
+		originalPromptCacheKey: "cache-1",
+		promptCacheKey:         codexIdentityConfuseUUID("auth-1", "prompt-cache", "cache-1"),
+		turnIDs: []codexIdentityReplacement{
+			{
+				original: "turn-1",
+				confused: codexIdentityConfuseUUID("auth-1", "turn", "turn-1"),
+			},
+		},
+	}
+	upstreamBody := []byte(`{"error":{"message":"session ` + state.promptCacheKey + ` turn ` + state.turnIDs[0].confused + `"}}`)
+
+	clientBody := applyCodexIdentityExposeResponsePayload(upstreamBody, state)
+	if got := gjson.GetBytes(clientBody, "error.message").String(); got != "session cache-1 turn turn-1" {
+		t.Fatalf("client error body was not restored: %s", got)
+	}
+	if gjson.GetBytes(clientBody, "error.message").String() == gjson.GetBytes(upstreamBody, "error.message").String() {
+		t.Fatalf("client error message still matches upstream message: %s", clientBody)
+	}
+}

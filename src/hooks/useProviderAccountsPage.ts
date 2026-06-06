@@ -1177,23 +1177,43 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
       setRefreshing(accountId);
       try {
         await refreshToken(accountId);
+        setMessage({
+          text: t('messages.refreshSuccess', '刷新成功'),
+        });
       } catch (e) {
         console.error(e);
+        setMessage({
+          text: t('messages.refreshFailed', {
+            error: String(e).replace(/^Error:\s*/, '') || t('common.failed', 'Failed'),
+          }),
+          tone: 'error',
+        });
+      } finally {
+        setRefreshing(null);
       }
-      setRefreshing(null);
     },
-    [refreshToken],
+    [refreshToken, t],
   );
 
   const handleRefreshAll = useCallback(async () => {
     setRefreshingAll(true);
     try {
       await refreshAllTokens();
+      setMessage({
+        text: t('messages.refreshAllSuccess', '已刷新全部账号'),
+      });
     } catch (e) {
       console.error(e);
+      setMessage({
+        text: t('messages.refreshAllFailed', {
+          error: String(e).replace(/^Error:\s*/, '') || t('common.failed', 'Failed'),
+        }),
+        tone: 'error',
+      });
+    } finally {
+      setRefreshingAll(false);
     }
-    setRefreshingAll(false);
-  }, [refreshAllTokens]);
+  }, [refreshAllTokens, t]);
 
   const handleDelete = useCallback(
     (accountId: string) => {

@@ -427,13 +427,16 @@ export function GitHubCopilotAccountsPage() {
           className={`ghcp-account-card ${isCurrent ? 'current' : ''} ${isSelected ? 'selected' : ''}`}
         >
           <div className="card-top">
-            <div className="card-select">
+            <label
+              className="card-select"
+              aria-label={t("accounts.selectAccount", "选择账号")}
+            >
               <input
                 type="checkbox"
                 checked={isSelected}
                 onChange={() => toggleSelect(account.id)}
               />
-            </div>
+            </label>
             <span className="account-email" title={maskedDisplayEmail}>
               {maskedDisplayEmail}
             </span>
@@ -1124,6 +1127,7 @@ export function GitHubCopilotAccountsPage() {
         canGoPrevious={pagination.canGoPrevious}
         canGoNext={pagination.canGoNext}
         onPageSizeChange={pagination.setPageSize}
+        onPageChange={pagination.setCurrentPage}
         onPreviousPage={pagination.goToPreviousPage}
         onNextPage={pagination.goToNextPage}
       />

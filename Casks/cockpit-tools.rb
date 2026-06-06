@@ -1,12 +1,12 @@
 cask "cockpit-tools" do
-  version "0.25.0"
-  sha256 "c0c6c5861754e6a597fc3d7657c3e1207185cd239ceccdd74ab47849a3f7d1aa"
+  version "0.24.12"
+  sha256 "f07d16d6ab5dde447c08d3846b1e36dd8ae5cb449947bfe5f818be92661dafab"
 
-  url "https://github.com/jlcodes99/cockpit-tools/releases/download/v#{version}/Cockpit.Tools_#{version}_universal.dmg",
-      verified: "github.com/jlcodes99/cockpit-tools/"
-  name "Cockpit Tools"
-  desc "Account manager for AI IDEs (Antigravity and Codex)"
-  homepage "https://github.com/jlcodes99/cockpit-tools"
+  url "https://github.com/sciman-top/cockpit-tools-local/releases/download/v#{version}/Cockpit.Tools_#{version}_universal.dmg",
+      verified: "github.com/sciman-top/cockpit-tools-local/"
+  name "Cockpit Tools Local"
+  desc "Self-use account manager for AI IDEs with local Codex safeguards"
+  homepage "https://github.com/sciman-top/cockpit-tools-local"
 
   auto_updates true
 
@@ -19,10 +19,10 @@ cask "cockpit-tools" do
   app "Cockpit Tools.app"
 
   zap trash: [
-    "~/Library/Application Support/com.jlcodes.cockpit-tools",
-    "~/Library/Caches/com.jlcodes.cockpit-tools",
-    "~/Library/Preferences/com.jlcodes.cockpit-tools.plist",
-    "~/Library/Saved Application State/com.jlcodes.cockpit-tools.savedState",
+    "~/Library/Application Support/com.sciman.cockpit-tools-local",
+    "~/Library/Caches/com.sciman.cockpit-tools-local",
+    "~/Library/Preferences/com.sciman.cockpit-tools-local.plist",
+    "~/Library/Saved Application State/com.sciman.cockpit-tools-local.savedState",
   ]
 
   caveats <<~EOS

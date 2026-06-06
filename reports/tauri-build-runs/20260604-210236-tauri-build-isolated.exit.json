@@ -1,0 +1,8 @@
+{
+    "RunId":  "20260604-210236",
+    "ExitCode":  0,
+    "StartedAt":  "2026-06-04T21:02:37.0729063+08:00",
+    "CompletedAt":  "2026-06-04T21:16:56.0697362+08:00",
+    "Log":  "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\tauri-build-runs\\20260604-210236-tauri-build-isolated.log",
+    "CargoTargetDir":  "D:\\CODE\\external\\Cockpit-Tools-Local\\target-codex-tauri-release"
+}

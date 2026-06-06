@@ -15,7 +15,9 @@ pub mod windsurf;
 pub mod workbuddy;
 pub mod zed;
 
-pub use account::{Account, AccountIndex, AccountSummary, QuotaErrorInfo};
+pub use account::{
+    Account, AccountIndex, AccountSummary, DeviceProfile, DeviceProfileVersion, QuotaErrorInfo,
+};
 pub use instance::{
     DefaultInstanceSettings, InstanceLaunchMode, InstanceProfile, InstanceProfileView,
     InstanceStore,

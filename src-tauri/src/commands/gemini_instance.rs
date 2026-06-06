@@ -107,7 +107,7 @@ fn build_launch_command(context: &GeminiLaunchContext) -> String {
             }
         }
         command_parts.push(gemini_cmd);
-        return command_parts.join(" && ");
+        command_parts.join(" && ")
     }
 
     #[cfg(not(target_os = "windows"))]

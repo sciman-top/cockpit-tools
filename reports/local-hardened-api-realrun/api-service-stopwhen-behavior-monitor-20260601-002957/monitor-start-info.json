@@ -1,0 +1,34 @@
+{
+  "createdAt": "2026-06-01T00:29:57.3111728+08:00",
+  "pid": 37192,
+  "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File D:\\CODE\\external\\Cockpit-Tools-Local\\scripts\\monitor-live-codex-app-cockpit-acceptance.ps1 -DurationSeconds 43200 -PollIntervalSeconds 15 -CheckpointIntervalSeconds 60 -AuditPath C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl -AuditSinceTimestampMs 1780244987284 -IncludeExistingAudit -RequireQuotaFallback -RequireStreamCompletion -RequireAppStable -RequireApiServiceRuntimeAvailable -RequirePostQuotaReplacementSuccess -RequiredFallbackCycles 1 -RequiredDistinctHealthyAccounts 1 -RequiredCompletedStreams 2 -StopWhenSatisfied -WriteReport -CaptureCliConfigProjectionSummary -ReportDir D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957 -CheckpointPath D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957\\monitor-checkpoint.json -ExitCodeFile D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957\\monitor-exit-code.txt -StopSignalFile D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957\\monitor-stop.signal",
+  "reportDir": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957",
+  "auditPath": "C:\\Users\\sciman\\.antigravity_cockpit\\codex_local_access_audit.jsonl",
+  "auditSinceTimestampMs": 1780244987284,
+  "checkpointPath": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957\\monitor-checkpoint.json",
+  "exitCodeFile": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957\\monitor-exit-code.txt",
+  "stopSignalFile": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957\\monitor-stop.signal",
+  "stdoutPath": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957\\monitor-stdout.log",
+  "stderrPath": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-behavior-monitor-20260601-002957\\monitor-stderr.log",
+  "mode": "Long StopWhenSatisfied behavior-focused monitor; records CLI projection summary but does not fail overall on equivalent config hash rewrites",
+  "durationSeconds": 43200,
+  "pollIntervalSeconds": 15,
+  "checkpointIntervalSeconds": 60,
+  "readOnly": true,
+  "stopContract": "create only this monitor-stop.signal file or stop this exact pid after verifying command line",
+  "requirements": {
+    "requireQuotaFallback": true,
+    "requireStreamCompletion": true,
+    "requiredCompletedStreams": 2,
+    "requirePostQuotaReplacementSuccess": true,
+    "requireCliConfigUntouched": false,
+    "captureCliConfigProjectionSummary": true,
+    "requireAppStable": true,
+    "requireApiServiceRuntimeAvailable": true
+  },
+  "predecessor": {
+    "pid": 43260,
+    "reportDir": "D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\local-hardened-api-realrun\\api-service-stopwhen-long-monitor-20260601-001338",
+    "reason": "behavior-focused rotation because equivalent config.toml hash rewrites permanently fail strict host guard while projection remains unchanged"
+  }
+}

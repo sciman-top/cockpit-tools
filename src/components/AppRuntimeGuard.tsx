@@ -45,12 +45,15 @@ function isLikelyChunkLoadFailure(value: string): boolean {
     normalized.includes('loading chunk') ||
     normalized.includes('failed to fetch dynamically imported module') ||
     normalized.includes('importing a module script failed') ||
-    normalized.includes('dynamic import')
+    normalized.includes('dynamic import') ||
+    normalized.includes("reading 'metadata'") ||
+    normalized.includes('tauri') ||
+    normalized.includes('__tauri')
   );
 }
 
 function createFallbackMessage(rawMessage: string): string {
-  const action = i18n.t('common.appName', 'Cockpit Tools');
+  const action = i18n.t('common.appName', { defaultValue: 'Cockpit Tools' });
   return i18n.t('messages.actionFailed', {
     action,
     error: rawMessage || 'error',

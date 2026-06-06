@@ -13,19 +13,50 @@ function logTitle(title) {
   console.log(`\n=== ${title} ===`);
 }
 
+function resolveCommand(command) {
+  if (command === 'node') {
+    return { command: process.execPath, argsPrefix: [] };
+  }
+
+  if (command === 'npm' && process.env.npm_execpath) {
+    return { command: process.execPath, argsPrefix: [process.env.npm_execpath] };
+  }
+
+  if (command === 'npm' && process.platform === 'win32') {
+    return {
+      command: process.env.ComSpec || 'cmd.exe',
+      argsPrefix: ['/d', '/s', '/c', 'npm'],
+    };
+  }
+
+  if (process.platform !== 'win32') {
+    return { command, argsPrefix: [] };
+  }
+
+  const commandMap = new Map([
+    ['cargo', 'cargo.exe'],
+    ['go', 'go.exe'],
+    ['pwsh', 'pwsh.exe'],
+  ]);
+  return { command: commandMap.get(command) || command, argsPrefix: [] };
+}
+
 function runStep(step) {
   const cmd = step.command;
-  const args = step.args;
+  const resolved = resolveCommand(cmd);
+  const executable = resolved.command;
+  const args = [...resolved.argsPrefix, ...step.args];
+  const displayArgs = step.args;
   const cwd = step.cwd || process.cwd();
 
   logTitle(step.name);
-  console.log(`$ ${cmd} ${args.join(' ')}`);
+  console.log(`$ ${cmd} ${displayArgs.join(' ')}`);
   console.log(`cwd: ${cwd}`);
 
-  const result = spawnSync(cmd, args, {
+  const result = spawnSync(executable, args, {
     cwd,
     stdio: 'inherit',
-    shell: process.platform === 'win32',
+    shell: false,
     env: process.env,
   });
 
@@ -48,11 +79,61 @@ function runStep(step) {
 
 const steps = [];
 
+if (!hasFlag('--skip-merge-conflict-check')) {
+  steps.push({
+    name: 'Merge conflict marker check',
+    command: 'pwsh',
+    args: [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      'scripts/check-merge-conflict-markers.ps1',
+    ],
+  });
+}
+
 if (!hasFlag('--skip-locales')) {
   steps.push({
     name: 'Locale completeness check',
     command: 'node',
     args: ['scripts/check_locales.cjs'],
+  });
+}
+
+if (!hasFlag('--skip-local-hardened-api-guards')) {
+  steps.push({
+    name: 'Local hardened API live-risk guard',
+    command: 'pwsh',
+    args: [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      'scripts/test-local-hardened-api-live-risk-guard.ps1',
+    ],
+  });
+}
+
+if (!hasFlag('--skip-refresh-risk-guard')) {
+  steps.push({
+    name: 'Refresh-risk guard',
+    command: 'node',
+    args: ['scripts/test-refresh-risk-guard.cjs'],
+  });
+}
+
+if (!hasFlag('--skip-codex-api-service-continuity')) {
+  steps.push({
+    name: 'Codex API service continuity focus',
+    command: 'pwsh',
+    args: [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      'scripts/test-codex-api-service-continuity-focus.ps1',
+    ],
   });
 }
 
@@ -82,6 +163,51 @@ if (!hasFlag('--skip-cargo')) {
 }
 
 if (!hasFlag('--skip-cargo-test')) {
+  steps.push({
+    name: 'Sidecar Go tests',
+    command: 'go',
+    args: ['test', './...'],
+    cwd: path.join(process.cwd(), 'sidecars', 'cockpit-cliproxy'),
+  });
+
+  steps.push({
+    name: 'Rust cargo test (cockpit-core lib)',
+    command: 'cargo',
+    args: ['test', '-p', 'cockpit-core', '--lib'],
+  });
+
+  steps.push({
+    name: 'Rust targeted clippy hygiene',
+    command: 'cargo',
+    args: [
+      'clippy',
+      '--lib',
+      '--tests',
+      '--',
+      '-A',
+      'warnings',
+      '-D',
+      'clippy::await_holding_lock',
+      '-D',
+      'clippy::derivable_impls',
+      '-D',
+      'clippy::field_reassign_with_default',
+      '-D',
+      'clippy::manual_pattern_char_comparison',
+      '-D',
+      'clippy::cloned_ref_to_slice_refs',
+      '-D',
+      'clippy::map_identity',
+      '-D',
+      'clippy::unnecessary_cast',
+      '-D',
+      'clippy::unwrap_or_default',
+      '-D',
+      'clippy::redundant_closure',
+    ],
+    cwd: path.join(process.cwd(), 'src-tauri'),
+  });
+
   steps.push({
     name: 'Rust cargo test (lib)',
     command: 'cargo',

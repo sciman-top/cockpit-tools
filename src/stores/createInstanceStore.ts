@@ -6,6 +6,7 @@ import {
   InstanceProfile,
 } from "../types/instance";
 import type { CodexAppSpeed } from "../types/codex";
+import { loadJsonFromLocalStorage } from "../utils/storageJson";
 
 export type InstanceStoreState = {
   instances: InstanceProfile[];
@@ -81,14 +82,13 @@ export function createInstanceStore(
   cacheKey: string,
 ) {
   const loadCachedInstances = () => {
-    try {
-      const raw = localStorage.getItem(cacheKey);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as InstanceProfile[]) : [];
-    } catch {
+    const parsed = loadJsonFromLocalStorage<unknown>(cacheKey, (error) => {
+      console.warn(`[InstanceStore] 清理损坏的实例缓存: ${cacheKey}`, error);
+    });
+    if (!Array.isArray(parsed)) {
       return [];
     }
+    return parsed as InstanceProfile[];
   };
 
   const persistInstancesCache = (instances: InstanceProfile[]) => {

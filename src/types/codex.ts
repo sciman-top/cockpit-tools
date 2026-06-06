@@ -1,5 +1,4 @@
 export type CodexApiProviderMode = "openai_builtin" | "custom";
-export type CodexProviderWireApi = "responses" | "chat_completions";
 
 export interface CodexQuickConfig {
   context_window_1m: boolean;
@@ -25,10 +24,6 @@ export interface CodexAccount {
   api_provider_mode?: CodexApiProviderMode;
   api_provider_id?: string;
   api_provider_name?: string;
-  api_model_catalog?: string[];
-  api_wire_api?: CodexProviderWireApi | null;
-  api_supports_vision?: boolean;
-  api_model_vision_support?: Record<string, boolean>;
   bound_oauth_account_id?: string | null;
   user_id?: string;
   plan_type?: string;
@@ -48,6 +43,11 @@ export interface CodexAccount {
   reauth_reason?: string;
   quota?: CodexQuota;
   quota_error?: CodexQuotaErrorInfo;
+  usage_updated_at?: number;
+  subscription_query_last_attempt_at?: number;
+  subscription_query_last_success_at?: number;
+  subscription_query_next_retry_at?: number;
+  subscription_query_last_error?: string;
   tags?: string[];
   created_at: number;
   last_used: number;
@@ -57,6 +57,233 @@ export interface CodexQuotaErrorInfo {
   code?: string;
   message: string;
   timestamp: number;
+}
+
+const CODEX_ACCOUNT_QUOTA_LIMIT_ERROR_CODES = new Set([
+  "insufficient_quota",
+  "quota_exhausted",
+  "credits_depleted",
+  "workspace_owner_usage_limit_reached",
+  "workspace_member_usage_limit_reached",
+  "workspace_owner_credits_depleted",
+  "workspace_member_credits_depleted",
+]);
+
+const CODEX_QUOTA_COOLDOWN_ERROR_CODES = new Set([
+  "usage_limit_reached",
+  "rate_limit_exceeded",
+  "rate_limit_reached",
+  "model_cap_reached",
+  "model_cap_exceeded",
+  "model_capacity",
+  "upstream_rate_limit",
+]);
+
+const CODEX_KNOWN_QUOTA_ERROR_CODES = new Set([
+  ...CODEX_ACCOUNT_QUOTA_LIMIT_ERROR_CODES,
+  ...CODEX_QUOTA_COOLDOWN_ERROR_CODES,
+]);
+
+export type CodexQuotaIssueKind =
+  | "none"
+  | "refresh"
+  | "limited"
+  | "cooldown"
+  | "error";
+
+export interface CodexQuotaIssueInfo {
+  kind: CodexQuotaIssueKind;
+  statusCode: string;
+  errorCode: string;
+  displayCode: string;
+  rawMessage: string;
+  isRefreshRequestFailure: boolean;
+  isQuotaLimitError: boolean;
+  isQuotaCooldownError: boolean;
+}
+
+export function normalizeCodexQuotaErrorCode(value?: string | null): string {
+  return (value || "").trim().toLowerCase();
+}
+
+function readCodexQuotaErrorCodeFromJson(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed.startsWith("{")) return "";
+
+  const root = toJsonRecord(parseJsonValue(trimmed));
+  if (!root) return "";
+
+  const candidates = [
+    toJsonRecord(root.error)?.type,
+    toJsonRecord(root.error)?.code,
+    toJsonRecord(root.detail)?.type,
+    toJsonRecord(root.detail)?.code,
+    root.type,
+    root.code,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return "";
+}
+
+function parseJsonValue(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+export function extractCodexQuotaErrorCode(message: string): string {
+  const rawMessage = message.trim();
+  const jsonCode = readCodexQuotaErrorCodeFromJson(rawMessage);
+  if (jsonCode) return jsonCode;
+
+  const normalizedRawMessage = normalizeCodexQuotaErrorCode(rawMessage);
+  if (CODEX_KNOWN_QUOTA_ERROR_CODES.has(normalizedRawMessage)) {
+    return normalizedRawMessage;
+  }
+
+  return (
+    rawMessage.match(/\[error_code:([^\]]+)\]/)?.[1] ||
+    rawMessage.match(/error_code[=:]\s*([^,\]\s]+)/i)?.[1] ||
+    rawMessage.match(/error_type[=:]\s*([^,\]\s]+)/i)?.[1] ||
+    rawMessage.match(/provider_code[=:]\s*([^,\]\s]+)/i)?.[1] ||
+    ""
+  );
+}
+
+export function extractCodexQuotaErrorStatusCode(message: string): string {
+  return (
+    message.match(/API 返回错误\s+(\d{3})/i)?.[1] ||
+    message.match(/status[=: ]+(\d{3})/i)?.[1] ||
+    ""
+  );
+}
+
+export function isCodexQuotaLimitError(
+  error?: CodexQuotaErrorInfo | null,
+): boolean {
+  if (!error) return false;
+  const rawMessage = (error.message || "").trim();
+  const lowerMessage = rawMessage.toLowerCase();
+  const errorCode = normalizeCodexQuotaErrorCode(
+    error.code || extractCodexQuotaErrorCode(rawMessage),
+  );
+
+  if (CODEX_ACCOUNT_QUOTA_LIMIT_ERROR_CODES.has(errorCode)) return true;
+  if (!rawMessage) return false;
+
+  if (
+    errorCode === "usage_limit_reached" ||
+    errorCode === "rate_limit_reached"
+  ) {
+    return (
+      lowerMessage.includes("quota exhausted") ||
+      lowerMessage.includes("quota exhaustion") ||
+      lowerMessage.includes("weekly quota exhaustion") ||
+      lowerMessage.includes("upstream quota exhausted") ||
+      lowerMessage.includes("账号额度耗尽") ||
+      (lowerMessage.includes("工作区") && lowerMessage.includes("额度耗尽"))
+    );
+  }
+
+  return (
+    lowerMessage.includes("credits_depleted") ||
+    lowerMessage.includes("quota_exhausted") ||
+    lowerMessage.includes("insufficient_quota") ||
+    (lowerMessage.includes("quota") &&
+      (lowerMessage.includes("exceed") ||
+        lowerMessage.includes("depleted") ||
+        lowerMessage.includes("exhaust")))
+  );
+}
+
+export function isCodexQuotaCooldownError(
+  error?: CodexQuotaErrorInfo | null,
+): boolean {
+  if (!error || isCodexQuotaLimitError(error)) return false;
+  const rawMessage = (error.message || "").trim();
+  const lowerMessage = rawMessage.toLowerCase();
+  const statusCode = extractCodexQuotaErrorStatusCode(rawMessage);
+  const errorCode = normalizeCodexQuotaErrorCode(
+    error.code || extractCodexQuotaErrorCode(rawMessage),
+  );
+
+  if (CODEX_QUOTA_COOLDOWN_ERROR_CODES.has(errorCode)) return true;
+  if (!rawMessage) return false;
+
+  return (
+    statusCode === "429" ||
+    lowerMessage.includes("too many requests") ||
+    lowerMessage.includes("rate_limit") ||
+    lowerMessage.includes("rate limit") ||
+    lowerMessage.includes("limit_reached") ||
+    lowerMessage.includes("usage_limit") ||
+    lowerMessage.includes("usage limit") ||
+    lowerMessage.includes("model_cap") ||
+    lowerMessage.includes("cooling down") ||
+    lowerMessage.includes("冷却")
+  );
+}
+
+export function getCodexQuotaIssueInfo(
+  error?: CodexQuotaErrorInfo | null,
+): CodexQuotaIssueInfo {
+  const rawMessage = (error?.message || "").trim();
+  const statusCode = rawMessage
+    ? extractCodexQuotaErrorStatusCode(rawMessage)
+    : "";
+  const errorCode = normalizeCodexQuotaErrorCode(
+    error?.code || (rawMessage ? extractCodexQuotaErrorCode(rawMessage) : ""),
+  );
+  const displayCode = errorCode || statusCode;
+  const isRefreshRequestFailure =
+    rawMessage.toLowerCase().includes("error sending request") &&
+    !statusCode &&
+    !errorCode;
+  const isQuotaLimitError = isCodexQuotaLimitError(error);
+  const isQuotaCooldownError = isCodexQuotaCooldownError(error);
+  const kind: CodexQuotaIssueKind =
+    !rawMessage && !errorCode
+      ? "none"
+      : isRefreshRequestFailure
+        ? "refresh"
+        : isQuotaLimitError
+          ? "limited"
+          : isQuotaCooldownError
+            ? "cooldown"
+          : "error";
+
+  return {
+    kind,
+    statusCode,
+    errorCode,
+    displayCode,
+    rawMessage,
+    isRefreshRequestFailure,
+    isQuotaLimitError,
+    isQuotaCooldownError,
+  };
+}
+
+export function shouldShowCodexQuotaIssueNotice(
+  error?: CodexQuotaErrorInfo | null,
+): boolean {
+  const issueInfo = getCodexQuotaIssueInfo(error);
+  return issueInfo.kind !== "none" && issueInfo.kind !== "limited";
+}
+
+export function isCodexAccountErrorState(account: CodexAccount): boolean {
+  return Boolean(
+    account.requires_reauth ||
+      (account.quota_error &&
+        !isCodexQuotaLimitError(account.quota_error) &&
+        !isCodexQuotaCooldownError(account.quota_error)),
+  );
 }
 
 /** Codex Token 数据 */
@@ -159,7 +386,6 @@ export interface CodexSessionVisibilityRepairItem {
   targetProvider: string;
   changedRolloutFileCount: number;
   updatedSqliteRowCount: number;
-  addedSessionIndexEntryCount: number;
   skippedSqliteFile: boolean;
   backupDir?: string | null;
   running: boolean;
@@ -170,7 +396,6 @@ export interface CodexSessionVisibilityRepairSummary {
   mutatedInstanceCount: number;
   changedRolloutFileCount: number;
   updatedSqliteRowCount: number;
-  addedSessionIndexEntryCount: number;
   skippedSqliteFileCount: number;
   items: CodexSessionVisibilityRepairItem[];
   backupDirs: string[];
@@ -274,9 +499,19 @@ function toBoolValue(value: unknown): boolean | undefined {
 }
 
 function toFiniteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function normalizeCodexUnixSeconds(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return value > 1_000_000_000_000 ? Math.floor(value / 1000) : value;
 }
 
 function decodeJwtPayload(token: string | undefined): JsonRecord | null {
@@ -390,7 +625,7 @@ function normalizeCodeReviewWindow(
     limitWindowSeconds !== undefined && limitWindowSeconds > 0
       ? Math.ceil(limitWindowSeconds / 60)
       : undefined;
-  const resetAt = toFiniteNumber(window.reset_at);
+  const resetAt = normalizeCodexUnixSeconds(toFiniteNumber(window.reset_at));
   const resetAfterSeconds = toFiniteNumber(window.reset_after_seconds);
   const resetTime =
     resetAt ??
@@ -445,27 +680,49 @@ export function isCodexNewApiAccount(account: CodexAccount): boolean {
 /** 获取订阅类型显示名称 */
 export function getCodexPlanDisplayName(planType?: string): string {
   if (!planType) return "FREE";
-  const upper = planType.toUpperCase();
+  const normalized = (planType || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
+  const upper = normalized.toUpperCase();
+  if (normalized === "self_serve_business_usage_based") return "TEAM";
+  if (normalized === "enterprise_cbp_usage_based") return "BUSINESS";
+  if (normalized === "prolite" || normalized === "pro_lite") return "PRO 5x";
+  if (normalized === "education" || normalized === "edu") return "EDU";
   if (upper.includes("TEAM")) return "TEAM";
+  if (upper.includes("BUSINESS")) return "BUSINESS";
   if (upper.includes("ENTERPRISE")) return "ENTERPRISE";
   if (upper.includes("PLUS")) return "PLUS";
   if (upper.includes("PRO")) return "PRO";
+  if (normalized === "go") return "GO";
   return upper;
 }
 
-function normalizeCodexPlanKey(planType?: string): string {
-  const normalized = (planType || "").trim().toLowerCase();
+export function normalizeCodexPlanKey(planType?: string): string {
+  const normalized = (planType || "").trim().toLowerCase().replace(/[-\s]+/g, "_");
   if (!normalized) return "free";
   if (normalized.includes("api")) return "api_key";
+  if (normalized === "enterprise_cbp_usage_based") return "business";
   if (normalized.includes("enterprise")) return "enterprise";
+  if (normalized === "self_serve_business_usage_based") return "team";
   if (normalized.includes("business")) return "business";
   if (normalized.includes("team")) return "team";
-  if (normalized.includes("edu")) return "edu";
-  if (normalized.includes("go")) return "go";
+  if (normalized.includes("edu") || normalized.includes("education")) return "edu";
+  if (normalized === "go") return "go";
   if (normalized.includes("plus")) return "plus";
+  if (normalized === "prolite" || normalized === "pro_lite") return "prolite";
   if (normalized.includes("pro")) return "pro";
   if (normalized.includes("free")) return "free";
   return normalized;
+}
+
+export function isCodexPaidPlanType(planType?: string): boolean {
+  return [
+    "plus",
+    "pro",
+    "prolite",
+    "team",
+    "business",
+    "enterprise",
+    "edu",
+  ].includes(normalizeCodexPlanKey(planType));
 }
 
 export function isCodexExplicitFreePlanType(planType?: string): boolean {
@@ -474,9 +731,44 @@ export function isCodexExplicitFreePlanType(planType?: string): boolean {
   return normalizeCodexPlanKey(planType) === "free";
 }
 
-function normalizeCodexAuthFilePlanType(
+function isCodexSubscriptionActiveInFuture(value?: string): boolean {
+  const date = parseCodexSubscriptionDate(value);
+  return Boolean(date && date.getTime() > Date.now());
+}
+
+function getCodexQuotaRawPlanType(account: Pick<CodexAccount, "quota">): string {
+  const raw = toJsonRecord(account.quota?.raw_data);
+  return (toStringValue(raw?.plan_type) || "").trim().toLowerCase();
+}
+
+export function shouldTreatCodexAccountAsFreePlan(
+  account: Pick<
+    CodexAccount,
+    "auth_mode" | "plan_type" | "subscription_active_until" | "quota"
+  >,
+): boolean {
+  const rawPlan = (account.plan_type || "").trim();
+  if (!rawPlan || !isCodexPaidPlanType(rawPlan)) return false;
+  if ((account.auth_mode || "").trim().toLowerCase() === "apikey") return false;
+  if (getCodexQuotaRawPlanType(account) !== "free") return false;
+  return !isCodexSubscriptionActiveInFuture(account.subscription_active_until);
+}
+
+export function getCodexEffectivePlanTypeForPresentation(
+  account: Pick<
+    CodexAccount,
+    "auth_mode" | "plan_type" | "subscription_active_until" | "quota"
+  >,
+): string | undefined {
+  return shouldTreatCodexAccountAsFreePlan(account) ? "free" : account.plan_type;
+}
+
+type CodexProTier = "prolite" | "promax";
+
+function normalizeCodexProTierMarker(
   value?: string,
-): "prolite" | "promax" | undefined {
+  genericProTier?: CodexProTier,
+): CodexProTier | undefined {
   const normalized = (value || "")
     .trim()
     .toLowerCase()
@@ -497,26 +789,54 @@ function normalizeCodexAuthFilePlanType(
   ) {
     return "promax";
   }
+  if (
+    genericProTier &&
+    (normalized === "pro" ||
+      normalized === "chatgpt-pro" ||
+      normalized === "codex-pro")
+  ) {
+    return genericProTier;
+  }
   return undefined;
+}
+
+function getCodexProTierForPresentation(account: CodexAccount): CodexProTier | undefined {
+  const effectivePlanType = getCodexEffectivePlanTypeForPresentation(account);
+  const effectivePlanTier = normalizeCodexProTierMarker(effectivePlanType);
+  if (effectivePlanTier) return effectivePlanTier;
+
+  const rawQuotaPlanType = getCodexQuotaRawPlanType(account);
+  const quotaPlanTier =
+    normalizeCodexProTierMarker(rawQuotaPlanType) ??
+    normalizeCodexProTierMarker(rawQuotaPlanType, "promax");
+  if (quotaPlanTier) return quotaPlanTier;
+
+  if (normalizeCodexPlanKey(effectivePlanType) === "pro") {
+    return "promax";
+  }
+
+  return normalizeCodexProTierMarker(account.auth_file_plan_type);
 }
 
 function getCodexPlanBadgeLabel(account: CodexAccount): string {
   if (isCodexNewApiAccount(account)) {
     return account.plan_type?.trim() || "Cockpit Api";
   }
-  const baseLabel = getCodexPlanDisplayName(account.plan_type);
-  if (normalizeCodexPlanKey(account.plan_type) !== "pro") {
+  const effectivePlanType = getCodexEffectivePlanTypeForPresentation(account);
+  const baseLabel = getCodexPlanDisplayName(effectivePlanType);
+  const planKey = normalizeCodexPlanKey(effectivePlanType);
+  const proTier = getCodexProTierForPresentation(account);
+  if (planKey === "prolite") {
+    return baseLabel;
+  }
+  if (planKey !== "pro") {
     return baseLabel;
   }
 
-  const authFilePlanType =
-    normalizeCodexAuthFilePlanType(account.auth_file_plan_type) ??
-    normalizeCodexAuthFilePlanType(account.plan_type);
-  if (authFilePlanType === "prolite") {
-    return `${baseLabel} 5x`;
+  if (proTier === "prolite") {
+    return "PRO 5x";
   }
-  // CPA 对齐：plan_type='pro' 默认视为 20x（Pro Max），
-  // 只有显式声明 prolite/pro-lite/pro_lite 才是 5x
+  // CPA 对齐：动态 plan/quota 证据优先；auth_file_plan_type 只作弱 fallback。
   return `${baseLabel} 20x`;
 }
 
@@ -524,18 +844,20 @@ function getCodexPlanBadgeClass(account: CodexAccount): string {
   if (isCodexNewApiAccount(account)) {
     return "api-key new-api-exclusive";
   }
-  const baseClass = normalizeCodexPlanKey(account.plan_type);
+  const effectivePlanType = getCodexEffectivePlanTypeForPresentation(account);
+  const baseClass = normalizeCodexPlanKey(effectivePlanType);
+  const proTier = getCodexProTierForPresentation(account);
   if (baseClass === "plus") {
     return "plus codex-plus";
+  }
+  if (baseClass === "prolite") {
+    return "pro codex-pro-lite";
   }
   if (baseClass !== "pro") {
     return baseClass;
   }
 
-  const authFilePlanType =
-    normalizeCodexAuthFilePlanType(account.auth_file_plan_type) ??
-    normalizeCodexAuthFilePlanType(account.plan_type);
-  if (authFilePlanType === "prolite") {
+  if (proTier === "prolite") {
     return "pro codex-pro-lite";
   }
   // CPA 对齐：plan_type='pro' 默认视为 promax (20x)
@@ -557,17 +879,14 @@ export function getCodexPlanBadgePresentation(
 }
 
 export function getCodexPlanFilterKey(account: CodexAccount): string {
-  return normalizeCodexPlanKey(account.plan_type).toUpperCase();
+  return normalizeCodexPlanKey(
+    getCodexEffectivePlanTypeForPresentation(account),
+  ).toUpperCase();
 }
 
 export function isCodexTeamLikePlan(planType?: string): boolean {
-  if (!planType) return false;
-  const upper = planType.toUpperCase();
-  return (
-    upper.includes("TEAM") ||
-    upper.includes("BUSINESS") ||
-    upper.includes("ENTERPRISE") ||
-    upper.includes("EDU")
+  return ["team", "business", "enterprise", "edu"].includes(
+    normalizeCodexPlanKey(planType),
   );
 }
 
@@ -600,6 +919,7 @@ const HOUR_IN_MS = 60 * 60 * 1000;
 
 export type CodexSubscriptionExpiryBucket =
   | "missing"
+  | "known_plan"
   | "expired"
   | "within_24h"
   | "within_7d"
@@ -613,6 +933,7 @@ export interface CodexSubscriptionPresentation {
   detailText: string;
   titleText: string;
   timestampMs: number | null;
+  refreshable?: boolean;
 }
 
 export function parseCodexSubscriptionDate(value?: string): Date | null {
@@ -715,10 +1036,89 @@ export function getCodexSubscriptionPresentation(
   };
 }
 
+export function getCodexAccountSubscriptionPresentation(
+  account: Pick<
+    CodexAccount,
+    "plan_type" | "subscription_active_until" | "auth_mode" | "quota"
+  >,
+  t: Translate,
+): CodexSubscriptionPresentation {
+  const rawPlan = (getCodexEffectivePlanTypeForPresentation(account) || "").trim();
+  const normalizedPlanKey = normalizeCodexPlanKey(rawPlan);
+  const isApiKeyAuth = (account.auth_mode || "").trim().toLowerCase() === "apikey";
+
+  // FREE/未知非付费账号不应该把历史残留的 subscription_active_until 渲染成“有效期已过期”。
+  // 这些时间戳更多是旧探针/旧投影残留，不代表 free 配额本身存在订阅到期语义。
+  if (!isApiKeyAuth && normalizedPlanKey !== "api_key" && !isCodexPaidPlanType(rawPlan)) {
+    const planLabel = getCodexPlanDisplayName(rawPlan);
+    return {
+      bucket: "known_plan",
+      tone: "active",
+      valueText: planLabel,
+      detailText: "",
+      titleText: t("codex.subscription.titleKnownPlan", {
+        defaultValue: `订阅方案：${planLabel}`,
+      }),
+      timestampMs: null,
+    };
+  }
+
+  const byExpiry = getCodexSubscriptionPresentation(
+    account.subscription_active_until,
+    t,
+  );
+  if (
+    !isApiKeyAuth &&
+    rawPlan &&
+    isCodexPaidPlanType(rawPlan) &&
+    byExpiry.bucket === "expired"
+  ) {
+    const planLabel = getCodexPlanDisplayName(rawPlan);
+    return {
+      bucket: "known_plan",
+      tone: "warning",
+      valueText: planLabel,
+      detailText: "",
+      titleText: t("codex.subscription.titleKnownPaidPlanWithStaleExpiry", {
+        defaultValue: `订阅方案：${planLabel}；历史有效期 ${byExpiry.detailText} 已过期，请刷新订阅信息确认。`,
+        plan: planLabel,
+        date: byExpiry.detailText,
+      }),
+      timestampMs: null,
+      refreshable: true,
+    };
+  }
+  if (
+    byExpiry.bucket !== "missing" ||
+    isApiKeyAuth
+  ) {
+    return byExpiry;
+  }
+
+  if (!rawPlan) {
+    return byExpiry;
+  }
+
+  const planLabel = getCodexPlanDisplayName(rawPlan);
+
+  return {
+    bucket: "known_plan",
+    tone: "active",
+    valueText: planLabel,
+    detailText: "",
+    titleText: t("codex.subscription.titleKnownPlan", {
+      defaultValue: `订阅方案：${planLabel}`,
+    }),
+    timestampMs: null,
+  };
+}
+
 export interface CodexQuotaWindow {
   id: "primary" | "secondary";
   label: string;
   percentage: number;
+  rawPercentage?: number;
+  serverBaselineAdjusted?: boolean;
   resetTime?: number;
   windowMinutes?: number;
 }
@@ -736,23 +1136,166 @@ function clampCodexQuotaPercentage(value: number | null | undefined): number {
   return Math.round(value);
 }
 
-function isCodexQuotaWindowPresent(
+const CODEX_WEEK_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+const CODEX_WEEK_WINDOW_MINUTES = 7 * 24 * 60;
+const CODEX_WEEKLY_WINDOW_MINUTES_THRESHOLD = 6 * 24 * 60;
+const CODEX_FIVE_HOUR_WINDOW_SECONDS = 5 * 60 * 60;
+const CODEX_FREE_BASELINE_USED_PERCENT_MAX = 3;
+const CODEX_FREE_BASELINE_RESET_GRACE_SECONDS = 5 * 60;
+const CODEX_SERVER_INITIAL_BASELINE_REMAINING_PERCENTAGE = 97;
+
+interface CodexNormalizedQuotaWindowSlot {
+  percentage: number;
+  resetTime?: number;
+  windowMinutes?: number;
+  present: boolean;
+}
+
+interface CodexNormalizedQuotaWindowSlots {
+  hourly: CodexNormalizedQuotaWindowSlot;
+  weekly: CodexNormalizedQuotaWindowSlot;
+}
+
+function isCodexWeeklyWindowMinutes(windowMinutes: number | undefined): boolean {
+  return (
+    typeof windowMinutes === "number" &&
+    Number.isFinite(windowMinutes) &&
+    windowMinutes >= CODEX_WEEKLY_WINDOW_MINUTES_THRESHOLD
+  );
+}
+
+function getCodexNormalizedQuotaWindowSlots(
   quota: CodexQuota,
-  window: "hourly" | "weekly",
-): boolean {
+): CodexNormalizedQuotaWindowSlots {
   const hasPresenceFlags =
     quota.hourly_window_present !== undefined ||
     quota.weekly_window_present !== undefined;
-  if (!hasPresenceFlags) return true;
-  if (
+  const bothFlagsFalse =
     quota.hourly_window_present === false &&
-    quota.weekly_window_present === false
-  ) {
-    return window === "hourly";
+    quota.weekly_window_present === false;
+
+  let hourly: CodexNormalizedQuotaWindowSlot = {
+    percentage: clampCodexQuotaPercentage(quota.hourly_percentage),
+    resetTime: quota.hourly_reset_time,
+    windowMinutes: quota.hourly_window_minutes,
+    present:
+      !hasPresenceFlags || quota.hourly_window_present === true || bothFlagsFalse,
+  };
+  let weekly: CodexNormalizedQuotaWindowSlot = {
+    percentage: clampCodexQuotaPercentage(quota.weekly_percentage),
+    resetTime: quota.weekly_reset_time,
+    windowMinutes: quota.weekly_window_minutes,
+    present: !hasPresenceFlags || quota.weekly_window_present === true,
+  };
+
+  if (hourly.present && isCodexWeeklyWindowMinutes(hourly.windowMinutes)) {
+    if (!weekly.present || hourly.percentage < weekly.percentage) {
+      weekly = {
+        percentage: hourly.percentage,
+        resetTime: hourly.resetTime ?? weekly.resetTime,
+        windowMinutes: hourly.windowMinutes ?? weekly.windowMinutes,
+        present: true,
+      };
+    } else {
+      weekly = {
+        ...weekly,
+        windowMinutes: weekly.windowMinutes ?? hourly.windowMinutes,
+        present: true,
+      };
+    }
+
+    hourly = {
+      percentage: 100,
+      resetTime: undefined,
+      windowMinutes: undefined,
+      present: false,
+    };
   }
-  return window === "hourly"
-    ? quota.hourly_window_present === true
-    : quota.weekly_window_present === true;
+
+  return { hourly, weekly };
+}
+
+function getCodexQuotaRawRateLimitWindow(
+  quota: CodexQuota | undefined,
+  window: "hourly" | "weekly",
+): JsonRecord | null {
+  const raw = toJsonRecord(quota?.raw_data);
+  const rateLimit = toJsonRecord(raw?.rate_limit);
+  return toJsonRecord(
+    window === "hourly"
+      ? rateLimit?.primary_window
+      : rateLimit?.secondary_window,
+  );
+}
+
+function isInitialQuotaWindow(
+  window: JsonRecord | null,
+  expectedWindowSeconds: number,
+): boolean {
+  if (!window) return false;
+
+  const usedPercent = toFiniteNumber(window.used_percent) ?? 0;
+  const windowSeconds = toFiniteNumber(window.limit_window_seconds);
+  const resetAfterSeconds = toFiniteNumber(window.reset_after_seconds);
+  if (windowSeconds === undefined || resetAfterSeconds === undefined) {
+    return false;
+  }
+
+  return (
+    usedPercent >= 0 &&
+    usedPercent <= CODEX_FREE_BASELINE_USED_PERCENT_MAX &&
+    windowSeconds >= expectedWindowSeconds - CODEX_FREE_BASELINE_RESET_GRACE_SECONDS &&
+    resetAfterSeconds >= windowSeconds - CODEX_FREE_BASELINE_RESET_GRACE_SECONDS
+  );
+}
+
+export function isCodexFreeWeeklyServerBaseline(
+  quota: CodexQuota | undefined,
+): boolean {
+  const raw = toJsonRecord(quota?.raw_data);
+  const planType = toStringValue(raw?.plan_type)?.toLowerCase();
+  if (planType !== "free") return false;
+
+  const primaryWindow = getCodexQuotaRawRateLimitWindow(quota, "hourly");
+  const rateLimit = toJsonRecord(raw?.rate_limit);
+  if (!primaryWindow || toJsonRecord(rateLimit?.secondary_window)) return false;
+
+  return isInitialQuotaWindow(primaryWindow, CODEX_WEEK_WINDOW_SECONDS);
+}
+
+function isCodexPlusFiveHourServerBaseline(
+  quota: CodexQuota | undefined,
+): boolean {
+  const raw = toJsonRecord(quota?.raw_data);
+  const planType = toStringValue(raw?.plan_type)?.toLowerCase();
+  if (planType !== "plus") return false;
+
+  return isInitialQuotaWindow(
+    getCodexQuotaRawRateLimitWindow(quota, "hourly"),
+    CODEX_FIVE_HOUR_WINDOW_SECONDS,
+  );
+}
+
+function isCodexServerInitialBaseline(
+  quota: CodexQuota,
+  window: "hourly" | "weekly",
+): boolean {
+  return (
+    (window === "hourly" && isCodexFreeWeeklyServerBaseline(quota)) ||
+    (window === "hourly" && isCodexPlusFiveHourServerBaseline(quota))
+  );
+}
+
+function applyCodexServerBaselineAdjustment(
+  quota: CodexQuota,
+  window: "hourly" | "weekly",
+  percentage: number | null,
+): number | null {
+  if (percentage == null) return null;
+  if (isCodexServerInitialBaseline(quota, window)) {
+    return Math.min(percentage, CODEX_SERVER_INITIAL_BASELINE_REMAINING_PERCENTAGE);
+  }
+  return percentage;
 }
 
 export function getCodexEffectiveQuotaPercentages(
@@ -762,11 +1305,20 @@ export function getCodexEffectiveQuotaPercentages(
     return { hourly: null, weekly: null, weeklyBlocksHourly: false };
   }
 
-  const hourly = isCodexQuotaWindowPresent(quota, "hourly")
-    ? clampCodexQuotaPercentage(quota.hourly_percentage)
+  const slots = getCodexNormalizedQuotaWindowSlots(quota);
+  const hourly = slots.hourly.present
+    ? applyCodexServerBaselineAdjustment(
+        quota,
+        "hourly",
+        slots.hourly.percentage,
+      )
     : null;
-  const weekly = isCodexQuotaWindowPresent(quota, "weekly")
-    ? clampCodexQuotaPercentage(quota.weekly_percentage)
+  const weekly = slots.weekly.present
+    ? applyCodexServerBaselineAdjustment(
+        quota,
+        "weekly",
+        slots.weekly.percentage,
+      )
     : null;
   const weeklyBlocksHourly = weekly === 0 && hourly != null;
 
@@ -783,7 +1335,6 @@ export function getCodexQuotaWindowLabel(
 ): string {
   const HOUR_MINUTES = 60;
   const DAY_MINUTES = 24 * HOUR_MINUTES;
-  const WEEK_MINUTES = 7 * DAY_MINUTES;
   const safeMinutes =
     typeof windowMinutes === "number" &&
     Number.isFinite(windowMinutes) &&
@@ -795,9 +1346,16 @@ export function getCodexQuotaWindowLabel(
     return fallback === "weekly" ? "Weekly" : "5h";
   }
 
-  if (safeMinutes >= WEEK_MINUTES - 1) {
-    const weeks = Math.ceil(safeMinutes / WEEK_MINUTES);
+  if (safeMinutes >= CODEX_WEEK_WINDOW_MINUTES - 1) {
+    const weeks = Math.ceil(safeMinutes / CODEX_WEEK_WINDOW_MINUTES);
     return weeks <= 1 ? "Weekly" : `${weeks} Week`;
+  }
+
+  if (
+    fallback === "weekly" &&
+    safeMinutes >= CODEX_WEEKLY_WINDOW_MINUTES_THRESHOLD
+  ) {
+    return "Weekly";
   }
 
   if (safeMinutes >= DAY_MINUTES - 1) {
@@ -818,32 +1376,35 @@ export function getCodexQuotaWindows(
 
   const windows: CodexQuotaWindow[] = [];
   const effective = getCodexEffectiveQuotaPercentages(quota);
-  const hasPresenceFlags =
-    quota.hourly_window_present !== undefined ||
-    quota.weekly_window_present !== undefined;
-
-  const appendPrimary =
-    !hasPresenceFlags || quota.hourly_window_present === true;
-  const appendSecondary =
-    !hasPresenceFlags || quota.weekly_window_present === true;
+  const slots = getCodexNormalizedQuotaWindowSlots(quota);
+  const appendPrimary = slots.hourly.present;
+  const appendSecondary = slots.weekly.present;
 
   if (appendPrimary) {
+    const rawPercentage = slots.hourly.percentage;
     windows.push({
       id: "primary",
-      label: getCodexQuotaWindowLabel(quota.hourly_window_minutes, "hourly"),
+      label: getCodexQuotaWindowLabel(slots.hourly.windowMinutes, "hourly"),
       percentage: effective.hourly ?? 0,
-      resetTime: quota.hourly_reset_time,
-      windowMinutes: quota.hourly_window_minutes,
+      rawPercentage,
+      serverBaselineAdjusted:
+        isCodexServerInitialBaseline(quota, "hourly") &&
+        effective.hourly != null &&
+        effective.hourly !== rawPercentage,
+      resetTime: slots.hourly.resetTime,
+      windowMinutes: slots.hourly.windowMinutes,
     });
   }
 
   if (appendSecondary) {
+    const rawPercentage = slots.weekly.percentage;
     windows.push({
       id: "secondary",
-      label: getCodexQuotaWindowLabel(quota.weekly_window_minutes, "weekly"),
+      label: getCodexQuotaWindowLabel(slots.weekly.windowMinutes, "weekly"),
       percentage: effective.weekly ?? 0,
-      resetTime: quota.weekly_reset_time,
-      windowMinutes: quota.weekly_window_minutes,
+      rawPercentage,
+      resetTime: slots.weekly.resetTime,
+      windowMinutes: slots.weekly.windowMinutes,
     });
   }
 
@@ -854,10 +1415,10 @@ export function getCodexQuotaWindows(
   return [
     {
       id: "primary",
-      label: getCodexQuotaWindowLabel(quota.hourly_window_minutes, "hourly"),
+      label: getCodexQuotaWindowLabel(slots.hourly.windowMinutes, "hourly"),
       percentage: effective.hourly ?? 0,
-      resetTime: quota.hourly_reset_time,
-      windowMinutes: quota.hourly_window_minutes,
+      resetTime: slots.hourly.resetTime,
+      windowMinutes: slots.hourly.windowMinutes,
     },
   ];
 }
@@ -865,14 +1426,16 @@ export function getCodexQuotaWindows(
 /** 格式化重置时间显示（相对时间 + 绝对时间） */
 export function formatCodexResetTime(
   resetTime: number | undefined,
-  t: Translate,
+  _t: Translate,
 ): string {
-  if (!resetTime) return "";
+  const normalizedResetTime = normalizeCodexUnixSeconds(resetTime);
+  if (!normalizedResetTime) return "";
 
   const now = Math.floor(Date.now() / 1000);
-  const diff = resetTime - now;
+  const diff = normalizedResetTime - now;
+  const absolute = formatCodexResetTimeAbsolute(normalizedResetTime);
 
-  if (diff <= 0) return t("common.shared.quota.resetDone");
+  if (diff <= 0) return absolute;
 
   const totalMinutes = Math.floor(diff / 60);
   const days = Math.floor(totalMinutes / (60 * 24));
@@ -885,17 +1448,16 @@ export function formatCodexResetTime(
   if (minutes > 0) parts.push(`${minutes}m`);
 
   const relative = parts.length > 0 ? parts.join(" ") : "<1m";
-  const absolute = formatCodexResetTimeAbsolute(resetTime);
-
   return `${relative} (${absolute})`;
 }
 
 export function formatCodexResetTimeAbsolute(
   resetTime: number | undefined,
 ): string {
-  if (!resetTime) return "";
+  const normalizedResetTime = normalizeCodexUnixSeconds(resetTime);
+  if (!normalizedResetTime) return "";
 
-  const resetDate = new Date(resetTime * 1000);
+  const resetDate = new Date(normalizedResetTime * 1000);
 
   const pad = (value: number) => String(value).padStart(2, "0");
   const month = pad(resetDate.getMonth() + 1);

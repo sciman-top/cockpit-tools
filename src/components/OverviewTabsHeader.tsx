@@ -1,10 +1,9 @@
 import { ReactNode, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlarmClock, Layers, ShieldCheck } from 'lucide-react';
+import { AlarmClock, Fingerprint, Layers, ShieldCheck } from 'lucide-react';
 import { Page } from '../types/navigation';
 import { RobotIcon } from './icons/RobotIcon';
 import { ManualHelpIconButton } from './ManualHelpIconButton';
-import { TopCenterPromoBanner } from './TopCenterPromoBanner';
 import { AntigravityInstalledVersionBadge } from './AntigravityInstalledVersionBadge';
 import { PlatformId } from '../types/platform';
 import {
@@ -78,6 +77,11 @@ export function OverviewTabsHeader({
       icon: <Layers className="tab-icon" />,
     },
     {
+      key: 'fingerprints',
+      label: t('fingerprints.title'),
+      icon: <Fingerprint className="tab-icon" />,
+    },
+    {
       key: 'wakeup',
       label: t('wakeup.title'),
       icon: <AlarmClock className="tab-icon" />,
@@ -98,7 +102,6 @@ export function OverviewTabsHeader({
           </span>
           <ManualHelpIconButton className="platform-header-help" onClick={onOpenManual} />
         </div>
-        <TopCenterPromoBanner />
         <div className="page-top-strip-right">
           <AntigravityInstalledVersionBadge />
         </div>

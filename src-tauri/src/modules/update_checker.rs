@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const SELF_BUILD_UPDATES_DISABLED: bool = true;
 const DEFAULT_CHECK_INTERVAL_HOURS: u64 = 1;
 const LEGACY_DEFAULT_CHECK_INTERVAL_HOURS: u64 = 24;
 const LEGACY_PREVIOUS_DEFAULT_CHECK_INTERVAL_HOURS: u64 = 6;
@@ -31,18 +32,25 @@ fn default_check_interval() -> u64 {
 }
 
 fn default_remind_on_update() -> bool {
-    true
+    false
+}
+
+fn current_unix_timestamp_secs() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|e| format!("系统时间早于 Unix epoch，无法计算更新时间戳: {}", e))
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
         Self {
-            auto_check: true,
+            auto_check: false,
             last_check_time: 0,
             check_interval_hours: DEFAULT_CHECK_INTERVAL_HOURS,
             auto_install: false,
             last_run_version: String::new(),
-            remind_on_update: true,
+            remind_on_update: false,
             skipped_version: String::new(),
         }
     }
@@ -110,14 +118,17 @@ fn compare_versions(latest: &str, current: &str) -> bool {
 
 /// Check if enough time has passed since last check
 pub fn should_check_for_updates(settings: &UpdateSettings) -> bool {
+    if SELF_BUILD_UPDATES_DISABLED {
+        return false;
+    }
     if !settings.auto_check {
         return false;
     }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let Ok(now) = current_unix_timestamp_secs() else {
+        logger::log_warn("系统时间异常，跳过本次自动更新检查");
+        return false;
+    };
 
     let elapsed_hours = now.saturating_sub(settings.last_check_time) / 3600;
     let interval = if settings.check_interval_hours > 0 {
@@ -384,6 +395,14 @@ pub fn load_update_settings() -> Result<UpdateSettings, String> {
     };
 
     let mut should_persist = false;
+    if SELF_BUILD_UPDATES_DISABLED {
+        if settings.auto_check || settings.auto_install || settings.remind_on_update {
+            settings.auto_check = false;
+            settings.auto_install = false;
+            settings.remind_on_update = false;
+            should_persist = true;
+        }
+    }
     if settings.check_interval_hours == 0
         || settings.check_interval_hours == LEGACY_DEFAULT_CHECK_INTERVAL_HOURS
         || settings.check_interval_hours == LEGACY_PREVIOUS_DEFAULT_CHECK_INTERVAL_HOURS
@@ -404,8 +423,14 @@ pub fn save_update_settings(settings: &UpdateSettings) -> Result<(), String> {
     let data_dir = ensure_data_dir()?;
 
     let settings_path = data_dir.join("update_settings.json");
+    let mut settings = settings.clone();
+    if SELF_BUILD_UPDATES_DISABLED {
+        settings.auto_check = false;
+        settings.auto_install = false;
+        settings.remind_on_update = false;
+    }
 
-    let content = serde_json::to_string_pretty(settings)
+    let content = serde_json::to_string_pretty(&settings)
         .map_err(|e| format!("Failed to serialize settings: {}", e))?;
 
     crate::modules::atomic_write::write_string_atomic(&settings_path, &content)
@@ -415,10 +440,7 @@ pub fn save_update_settings(settings: &UpdateSettings) -> Result<(), String> {
 /// Update last check time
 pub fn update_last_check_time() -> Result<(), String> {
     let mut settings = load_update_settings()?;
-    settings.last_check_time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    settings.last_check_time = current_unix_timestamp_secs()?;
     save_update_settings(&settings)
 }
 
@@ -495,8 +517,9 @@ mod tests {
     #[test]
     fn test_should_check_for_updates() {
         let mut settings = UpdateSettings::default();
-        assert!(should_check_for_updates(&settings));
+        assert!(!should_check_for_updates(&settings));
 
+        settings.auto_check = true;
         settings.last_check_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

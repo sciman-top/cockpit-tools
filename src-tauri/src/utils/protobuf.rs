@@ -84,7 +84,7 @@ pub fn create_oauth_info(access_token: &str, refresh_token: &str, expiry: i64) -
     let field3 = encode_string_field(3, refresh_token);
 
     // Field 4: expiry (嵌套的 Timestamp 消息, wire_type = 2)
-    let timestamp_tag = (1 << 3) | 0;
+    let timestamp_tag = 1 << 3;
     let mut timestamp_msg = encode_varint(timestamp_tag);
     timestamp_msg.extend(encode_varint(expiry as u64));
 

@@ -756,12 +756,11 @@ async fn post_gateway_json(
         .unwrap_or_default();
     if !status.is_success() {
         crate::modules::logger::log_error(&format!(
-            "[Wakeup] 网关 {} 返回错误: url={}, status={}, body_len={}, body={}",
+            "[Wakeup] 网关 {} 返回错误: url={}, status={}, body_len={}",
             op_name,
             url,
             status,
-            summarize_body_len(&text),
-            truncate_log_text(&text, 512)
+            summarize_body_len(&text)
         ));
         return Err(format!(
             "网关 {} 返回错误: status={}, body_len={}",

@@ -20,6 +20,13 @@ static CODEX_TOKEN_REFRESH_LOCKS: std::sync::LazyLock<
     Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 static CODEX_AUTO_SWITCH_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 const CODEX_QUOTA_ALERT_COOLDOWN_SECONDS: i64 = 300;
 const ACCOUNT_CHECK_URL: &str = "https://chatgpt.com/backend-api/wham/accounts/check";
 const API_KEY_LOGIN_PLAN_TYPE: &str = "API_KEY";
@@ -934,11 +941,7 @@ fn migrate_codex_data_if_needed(new_data_dir: &PathBuf) {
 
 /// 获取我们的多账号存储路径（统一使用 ~/.antigravity_cockpit/）
 fn get_accounts_storage_path() -> PathBuf {
-    let data_dir = account::get_data_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .expect("无法获取用户目录")
-            .join(".antigravity_cockpit")
-    });
+    let data_dir = get_codex_accounts_data_dir();
     fs::create_dir_all(&data_dir).ok();
     migrate_codex_data_if_needed(&data_dir);
     data_dir.join("codex_accounts.json")
@@ -946,14 +949,30 @@ fn get_accounts_storage_path() -> PathBuf {
 
 /// 获取账号详情存储目录（统一使用 ~/.antigravity_cockpit/codex_accounts/）
 fn get_accounts_dir() -> PathBuf {
-    let data_dir = account::get_data_dir().unwrap_or_else(|_| {
-        dirs::home_dir()
-            .expect("无法获取用户目录")
-            .join(".antigravity_cockpit")
-    });
+    let data_dir = get_codex_accounts_data_dir();
     let accounts_dir = data_dir.join("codex_accounts");
     fs::create_dir_all(&accounts_dir).ok();
     accounts_dir
+}
+
+fn get_codex_accounts_data_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(from_test) =
+        TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE.with(|value| value.borrow().clone())
+    {
+        return from_test;
+    }
+
+    #[cfg(test)]
+    if let Ok(path) = std::env::var("COCKPIT_TOOLS_TEST_DATA_DIR") {
+        return PathBuf::from(path);
+    }
+
+    account::get_data_dir().unwrap_or_else(|_| {
+        dirs::home_dir()
+            .expect("无法获取用户目录")
+            .join(".antigravity_cockpit")
+    })
 }
 
 /// 解析 JWT Token 的 payload
@@ -1019,6 +1038,108 @@ fn first_json_string(value: &serde_json::Value, paths: &[&[&str]]) -> Option<Str
     })
 }
 
+fn normalize_codex_plan_type(value: Option<&str>) -> Option<String> {
+    normalize_optional_ref(value)
+}
+
+fn is_paid_codex_plan_type(plan_type: Option<&str>) -> bool {
+    let Some(plan_type) = normalize_codex_plan_type(plan_type) else {
+        return false;
+    };
+    !plan_type.eq_ignore_ascii_case("free")
+        && !plan_type.eq_ignore_ascii_case(API_KEY_LOGIN_PLAN_TYPE)
+}
+
+fn raw_quota_plan_type(account: &CodexAccount) -> Option<String> {
+    account
+        .quota
+        .as_ref()
+        .and_then(|quota| quota.raw_data.as_ref())
+        .and_then(|raw_data| raw_data.get("plan_type"))
+        .and_then(|value| value.as_str())
+        .and_then(|value| normalize_codex_plan_type(Some(value)))
+}
+
+fn read_backup_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    let raw = keys
+        .iter()
+        .find_map(|key| value.get(*key).and_then(|item| item.as_str()))?;
+    normalize_optional_ref(Some(raw))
+}
+
+fn backup_paid_plan_type(account: &CodexAccount) -> Option<String> {
+    let path = get_accounts_dir().join(format!("{}.json.bak", account.id));
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+
+    if let Some(backup_email) = read_backup_string(&value, &["email", "account_email"]) {
+        if !account.email.trim().is_empty() && !account.email.eq_ignore_ascii_case(&backup_email) {
+            return None;
+        }
+    }
+    if let Some(backup_account_id) = read_backup_string(&value, &["account_id", "accountId"]) {
+        if normalize_optional_ref(account.account_id.as_deref()).as_deref()
+            != Some(backup_account_id.as_str())
+        {
+            return None;
+        }
+    }
+
+    read_backup_string(&value, &["plan_type", "planType"])
+        .filter(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+}
+
+pub(crate) fn resolve_observed_plan_type(
+    account: &CodexAccount,
+    observed_plan_type: Option<String>,
+) -> Option<String> {
+    let observed_plan_type = normalize_optional_value(observed_plan_type);
+    let quota_plan_type = raw_quota_plan_type(account);
+    let existing_plan_type = normalize_optional_ref(account.plan_type.as_deref());
+
+    if observed_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+    {
+        return observed_plan_type;
+    }
+
+    if quota_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+    {
+        return quota_plan_type;
+    }
+
+    if observed_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| plan_type.eq_ignore_ascii_case("free"))
+    {
+        if existing_plan_type
+            .as_deref()
+            .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+        {
+            return existing_plan_type;
+        }
+        if let Some(backup_plan_type) = backup_paid_plan_type(account) {
+            return Some(backup_plan_type);
+        }
+        return observed_plan_type;
+    }
+
+    if existing_plan_type
+        .as_deref()
+        .is_some_and(|plan_type| is_paid_codex_plan_type(Some(plan_type)))
+    {
+        return existing_plan_type;
+    }
+    if let Some(backup_plan_type) = backup_paid_plan_type(account) {
+        return Some(backup_plan_type);
+    }
+
+    quota_plan_type.or(existing_plan_type).or(observed_plan_type)
+}
+
 fn now_timestamp() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -1049,7 +1170,7 @@ fn sync_identity_from_tokens(account: &mut CodexAccount) {
             account.email = email;
         }
         account.user_id = user_id;
-        account.plan_type = plan_type;
+        account.plan_type = resolve_observed_plan_type(account, plan_type);
         account.account_id = normalize_optional_value(
             extract_chatgpt_account_id_from_access_token(&account.tokens.access_token)
                 .or(id_token_account_id)
@@ -1744,7 +1865,7 @@ fn upsert_account_with_hints(
         acc.api_provider_id = None;
         acc.api_provider_name = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
         acc.update_last_used();
@@ -1760,7 +1881,7 @@ fn upsert_account_with_hints(
         acc.api_provider_id = None;
         acc.api_provider_name = None;
         acc.user_id = user_id;
-        acc.plan_type = plan_type.clone();
+        acc.plan_type = resolve_observed_plan_type(&acc, plan_type.clone());
         acc.account_id = account_id.clone();
         acc.organization_id = organization_id.clone();
 
@@ -1768,7 +1889,7 @@ fn upsert_account_with_hints(
         index.accounts.push(CodexAccountSummary {
             id: existing_id.clone(),
             email: email.clone(),
-            plan_type: plan_type.clone(),
+            plan_type: acc.plan_type.clone(),
             created_at: acc.created_at,
             last_used: acc.last_used,
         });
@@ -3308,10 +3429,11 @@ mod tests {
         build_account_storage_id, build_auth_file_value, decode_jwt_payload_value,
         ensure_managed_account_fresh, extract_codex_import_candidate_from_value,
         extract_codex_tokens_from_value, force_refresh_managed_account, get_accounts_dir,
-        get_accounts_storage_path, get_current_account, list_accounts_checked, load_account,
-        load_account_index, looks_like_sub2api_export, read_api_provider_from_config_toml,
-        read_quick_config_from_config_toml, resolve_api_provider_config, save_account,
-        save_account_index, sync_account_from_auth_dir, sync_managed_projection_from_auth_dir,
+        get_accounts_storage_path, get_codex_accounts_data_dir, get_current_account,
+        list_accounts_checked, load_account, load_account_index, looks_like_sub2api_export,
+        read_api_provider_from_config_toml, read_quick_config_from_config_toml,
+        resolve_api_provider_config, resolve_observed_plan_type, save_account, save_account_index,
+        sync_account_from_auth_dir, sync_managed_projection_from_auth_dir,
         upsert_account_from_access_token, upsert_account_from_auth_tokens,
         validate_api_key_credentials, write_account_bundle_to_dir,
         write_api_key_provider_to_config_toml, write_api_provider_to_config_toml,
@@ -3319,7 +3441,7 @@ mod tests {
         CodexAccountSummary, CodexAuthFile, CodexAuthTokens, CodexJsonImportCandidate,
         CODEX_AUTO_COMPACT_DEFAULT_LIMIT, CODEX_CONTEXT_WINDOW_1M_VALUE,
     };
-    use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexTokens};
+    use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexQuota, CodexTokens};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
     use std::fs;
     use std::sync::{LazyLock, Mutex};
@@ -3351,12 +3473,17 @@ mod tests {
         fn new(prefix: &str) -> Self {
             let home_dir = make_temp_dir(prefix);
             let codex_home = home_dir.join(".codex");
+            let accounts_data_dir = home_dir.join(".antigravity_cockpit");
             fs::create_dir_all(&codex_home).expect("create codex home");
+            fs::create_dir_all(&accounts_data_dir).expect("create accounts data dir");
 
             let previous_home = std::env::var("HOME").ok();
             let previous_codex_home = std::env::var("CODEX_HOME").ok();
             std::env::set_var("HOME", &home_dir);
             std::env::set_var("CODEX_HOME", &codex_home);
+            super::TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE.with(|value| {
+                *value.borrow_mut() = Some(accounts_data_dir);
+            });
 
             Self {
                 home_dir,
@@ -3368,10 +3495,17 @@ mod tests {
         fn codex_home(&self) -> std::path::PathBuf {
             self.home_dir.join(".codex")
         }
+
+        fn accounts_data_dir(&self) -> std::path::PathBuf {
+            self.home_dir.join(".antigravity_cockpit")
+        }
     }
 
     impl Drop for TestEnvGuard {
         fn drop(&mut self) {
+            super::TEST_CODEX_ACCOUNTS_DATA_DIR_OVERRIDE.with(|value| {
+                *value.borrow_mut() = None;
+            });
             match self.previous_home.as_ref() {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
@@ -3427,6 +3561,66 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resolve_observed_plan_type_prefers_paid_observation_over_stale_free_quota_raw_plan() {
+        let mut account = CodexAccount::new(
+            "codex_paid_observation_stale_free_quota".to_string(),
+            "demo@example.com".to_string(),
+            CodexTokens {
+                id_token: "id".to_string(),
+                access_token: "access".to_string(),
+                refresh_token: None,
+            },
+        );
+        account.plan_type = Some("free".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: None,
+            hourly_window_present: Some(false),
+            weekly_percentage: 100,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(10080),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "free" })),
+        });
+
+        assert_eq!(
+            resolve_observed_plan_type(&account, Some("pro".to_string())).as_deref(),
+            Some("pro")
+        );
+    }
+
+    #[test]
+    fn resolve_observed_plan_type_preserves_existing_paid_plan_over_stale_free_quota_raw_plan() {
+        let mut account = CodexAccount::new(
+            "codex_existing_plus_stale_free_quota".to_string(),
+            "demo@example.com".to_string(),
+            CodexTokens {
+                id_token: "id".to_string(),
+                access_token: "access".to_string(),
+                refresh_token: None,
+            },
+        );
+        account.plan_type = Some("plus".to_string());
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 100,
+            hourly_reset_time: None,
+            hourly_window_minutes: Some(300),
+            hourly_window_present: Some(true),
+            weekly_percentage: 69,
+            weekly_reset_time: Some(1_780_000_000),
+            weekly_window_minutes: Some(10080),
+            weekly_window_present: Some(true),
+            raw_data: Some(serde_json::json!({ "plan_type": "free" })),
+        });
+
+        assert_eq!(
+            resolve_observed_plan_type(&account, None).as_deref(),
+            Some("plus")
+        );
+    }
+
     fn seed_oauth_account(tokens: CodexTokens) -> CodexAccount {
         let email = "demo@example.com";
         let account_id = "acc-current";
@@ -3452,6 +3646,20 @@ mod tests {
         save_account_index(&index).expect("save index");
 
         account
+    }
+
+    #[test]
+    fn codex_account_storage_uses_test_data_dir_override() {
+        let _lock = TEST_ENV_LOCK.lock().expect("test env lock");
+        let env = TestEnvGuard::new("codex-account-storage-isolation-test");
+        let expected_data_dir = env.accounts_data_dir();
+
+        assert_eq!(get_codex_accounts_data_dir(), expected_data_dir);
+        assert_eq!(
+            get_accounts_storage_path(),
+            expected_data_dir.join("codex_accounts.json")
+        );
+        assert_eq!(get_accounts_dir(), expected_data_dir.join("codex_accounts"));
     }
 
     fn write_oauth_auth_file(base_dir: &std::path::Path, tokens: &CodexTokens, account_id: &str) {

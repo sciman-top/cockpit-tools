@@ -5,65 +5,24 @@ use crate::models::codex::{
 use crate::models::codex_local_access::{
     CodexLocalAccessAccountModelRule, CodexLocalAccessChatMessage, CodexLocalAccessChatResult,
     CodexLocalAccessClientBaseUrlHost, CodexLocalAccessCustomRoutingRule,
-    CodexLocalAccessGatewayMode, CodexLocalAccessModelAlias, CodexLocalAccessModelPricing,
-    CodexLocalAccessPortCleanupResult, CodexLocalAccessRequestKind,
+    CodexLocalAccessGatewayMode, CodexLocalAccessLightState, CodexLocalAccessModelAlias,
+    CodexLocalAccessModelPricing, CodexLocalAccessPortCleanupResult, CodexLocalAccessRequestKind,
     CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessState,
-    CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessTimeoutPreset,
-    CodexLocalAccessTimeouts, CodexLocalAccessUsageEventPage,
+    CodexLocalAccessTestResult, CodexLocalAccessTimeoutPreset, CodexLocalAccessTimeouts,
+    CodexLocalAccessUsageEventPage, CodexLocalApiSafetyPresetId, CodexRuntimeIntegrationMode,
+    CodexRuntimeModeState,
 };
 use crate::modules::{
-    account, codex_account, codex_local_access, codex_oauth, codex_quota,
-    codex_session_visibility, codex_speed, codex_wakeup, codex_wakeup_scheduler, config, logger,
-    openclaw_auth, opencode_auth, process,
+    account, codex_account, codex_local_access, codex_oauth, codex_quota, codex_session_visibility,
+    codex_speed, codex_wakeup, codex_wakeup_scheduler, config, logger, openclaw_auth,
+    opencode_auth, process,
 };
-use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri::Emitter;
 use tauri_plugin_opener::OpenerExt;
 
 static CODEX_POST_REFRESH_CHECK_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-
-fn codex_launch_credential_kind_for_provider(provider: &str) -> &'static str {
-    if provider == "openai" {
-        "account"
-    } else {
-        "api"
-    }
-}
-
-fn repair_codex_session_visibility_after_provider_change(
-    context: &str,
-    before_provider: Option<String>,
-    after_provider: Option<String>,
-) -> Result<(), String> {
-    let (Some(before), Some(after)) = (before_provider, after_provider) else {
-        return Ok(());
-    };
-    if before == after {
-        return Ok(());
-    }
-    if codex_launch_credential_kind_for_provider(&before)
-        == codex_launch_credential_kind_for_provider(&after)
-    {
-        return Ok(());
-    }
-
-    let started = Instant::now();
-    let summary = codex_session_visibility::repair_session_visibility_across_instances()?;
-    logger::log_info(&format!(
-        "[Codex Session Visibility] {}: repaired after account switch, from_provider={}, to_provider={}, mutated_instances={}, rollout_files={}, sqlite_rows={}, elapsed_ms={}",
-        context,
-        before,
-        after,
-        summary.mutated_instance_count,
-        summary.changed_rollout_file_count,
-        summary.updated_sqlite_row_count,
-        started.elapsed().as_millis()
-    ));
-    Ok(())
-}
 
 fn restart_codex_specified_app_if_enabled(user_config: &config::UserConfig) {
     if !user_config.codex_restart_specified_app_on_switch {
@@ -87,10 +46,120 @@ fn restart_codex_specified_app_if_enabled(user_config: &config::UserConfig) {
     }
 }
 
+fn read_default_codex_history_provider_for_switch() -> Option<String> {
+    let codex_home = codex_account::get_codex_home();
+    match codex_session_visibility::read_history_visibility_provider_for_dir(&codex_home) {
+        Ok(provider) => Some(provider),
+        Err(error) => {
+            logger::log_warn(&format!(
+                "[Codex切号] 读取切号前后会话 provider 失败: dir={}, error={}",
+                codex_home.display(),
+                error
+            ));
+            None
+        }
+    }
+}
+
+fn codex_history_provider_changed(
+    previous_provider: Option<&str>,
+    next_provider: Option<&str>,
+) -> bool {
+    match (previous_provider, next_provider) {
+        (Some(previous), Some(next)) => previous != next,
+        _ => false,
+    }
+}
+
+fn should_close_default_codex_before_switch_repair(user_config: &config::UserConfig) -> bool {
+    if !user_config.codex_launch_on_switch {
+        return false;
+    }
+
+    let default_settings = match crate::modules::codex_instance::load_default_settings() {
+        Ok(settings) => settings,
+        Err(error) => {
+            logger::log_warn(&format!(
+                "[Codex切号] 会话可见性修复前读取默认实例设置失败，跳过提前关闭默认实例: {}",
+                error
+            ));
+            return false;
+        }
+    };
+
+    if default_settings.launch_mode == crate::models::InstanceLaunchMode::Cli {
+        return true;
+    }
+
+    match process::ensure_codex_launch_path_configured() {
+        Ok(()) => true,
+        Err(error) => {
+            logger::log_warn(&format!(
+                "[Codex切号] Codex 启动路径未就绪，跳过会话可见性修复前的提前关闭: {}",
+                error
+            ));
+            false
+        }
+    }
+}
+
+fn repair_codex_session_visibility_after_provider_change(
+    previous_provider: Option<String>,
+    next_provider: Option<String>,
+    user_config: &config::UserConfig,
+) {
+    if !codex_history_provider_changed(previous_provider.as_deref(), next_provider.as_deref()) {
+        return;
+    }
+
+    let previous_label = previous_provider.as_deref().unwrap_or("<unknown>");
+    let next_label = next_provider.as_deref().unwrap_or("<unknown>");
+    logger::log_info(&format!(
+        "[Codex切号] 检测到会话 provider 变化，准备修复历史会话可见性: {} -> {}",
+        previous_label, next_label
+    ));
+
+    if should_close_default_codex_before_switch_repair(user_config) {
+        match process::close_codex_default(20) {
+            Ok(()) => logger::log_info("[Codex切号] 已在会话可见性修复前关闭默认 Codex 实例"),
+            Err(error) => logger::log_warn(&format!(
+                "[Codex切号] 会话可见性修复前关闭默认 Codex 实例失败，继续尝试修复: {}",
+                error
+            )),
+        }
+    }
+
+    match codex_session_visibility::repair_session_visibility_across_instances() {
+        Ok(summary) => {
+            logger::log_info(&format!(
+                "[Codex切号] 会话可见性修复完成: mutated_instances={}, rollout_files={}, official_rebuild=true, message={}",
+                summary.mutated_instance_count,
+                summary.changed_rollout_file_count,
+                summary.message
+            ));
+        }
+        Err(error) => {
+            logger::log_warn(&format!(
+                "[Codex切号] 会话可见性自动修复失败，切号已完成，可稍后在会话管理中手动重试: {}",
+                error
+            ));
+        }
+    }
+}
+
 /// 列出所有 Codex 账号
 #[tauri::command]
 pub fn list_codex_accounts() -> Result<Vec<CodexAccount>, String> {
     codex_account::list_accounts_checked()
+}
+
+#[tauri::command]
+pub fn sync_codex_local_quota_observations(app: AppHandle) -> Result<i32, String> {
+    let repaired = codex_account::sync_local_quota_observations()?;
+    if repaired > 0 {
+        let _ = crate::modules::tray::update_tray_menu(&app);
+    }
+    Ok(repaired as i32)
 }
 
 /// 获取当前激活的 Codex 账号
@@ -202,41 +271,58 @@ pub async fn refresh_codex_account_profile(account_id: String) -> Result<CodexAc
 pub async fn switch_codex_account(
     app: AppHandle,
     account_id: String,
+    force: Option<bool>,
 ) -> Result<CodexAccount, String> {
-    let codex_home = codex_account::get_codex_home();
-    let previous_provider =
-        codex_session_visibility::read_history_visibility_provider_for_dir(&codex_home).ok();
-
-    // 切换账号（写入 auth.json）
-    let account = codex_account::switch_account_managed(&account_id).await?;
-    repair_codex_session_visibility_after_provider_change(
-        "switch-codex-account",
-        previous_provider,
-        codex_session_visibility::read_history_visibility_provider_for_dir(&codex_home).ok(),
-    )?;
+    let force = force.unwrap_or(false);
+    let runtime_mode = codex_local_access::load_runtime_mode_state()
+        .map(|state| state.mode)
+        .unwrap_or(CodexRuntimeIntegrationMode::DirectProjection);
+    let current_account_id = codex_account::load_account_index().current_account_id;
+    let previous_history_provider = read_default_codex_history_provider_for_switch();
+    let account = match runtime_mode {
+        CodexRuntimeIntegrationMode::CockpitApiService => {
+            codex_account::switch_account_index_only(&account_id)?
+        }
+        CodexRuntimeIntegrationMode::DirectProjection => {
+            if current_account_id.as_deref() != Some(account_id.as_str()) {
+                codex_local_access::ensure_codex_auth_projection_change_allowed(
+                    "codex_account_switch",
+                    force,
+                )?;
+            }
+            codex_account::switch_account_managed(&account_id).await?
+        }
+    };
+    let next_history_provider = read_default_codex_history_provider_for_switch();
     let account_speed = account.app_speed.clone();
     codex_speed::write_official_app_speed(account_speed.clone())?;
 
-    // 同步更新 Codex 默认实例的绑定账号（不同步到 Antigravity，因为账号体系不同）
-    if let Err(e) = crate::modules::codex_instance::update_default_settings(
-        Some(Some(account_id.clone())),
-        None,
-        Some(false),
-        None,
-        None,
-    ) {
-        logger::log_warn(&format!("更新 Codex 默认实例绑定账号失败: {}", e));
+    // 默认实例始终跟随当前账号，具体 direct/API Service 投影由 runtime mode 决定。
+    if let Err(e) =
+        crate::modules::codex_instance::update_default_settings(None, None, Some(true), None, None)
+    {
+        logger::log_warn(&format!("更新 Codex 默认实例跟随当前账号失败: {}", e));
     } else {
-        logger::log_info(&format!(
-            "已同步更新 Codex 默认实例绑定账号: {}",
-            account_id
-        ));
+        logger::log_info("已同步更新 Codex 默认实例为跟随当前账号");
     }
     if let Err(e) = crate::modules::codex_instance::update_default_app_speed(account_speed) {
         logger::log_warn(&format!("更新 Codex 默认实例速度失败: {}", e));
     }
 
     let user_config = config::get_user_config();
+    if let Err(e) =
+        codex_local_access::sync_runtime_projection_after_account_switch(&account_id).await
+    {
+        logger::log_warn(&format!(
+            "同步 Codex runtime mode 投影失败，已保留账号切换结果: {}",
+            e
+        ));
+    }
+    repair_codex_session_visibility_after_provider_change(
+        previous_history_provider,
+        next_history_provider,
+        &user_config,
+    );
 
     let mut opencode_updated = false;
     if user_config.opencode_auth_overwrite_on_switch {
@@ -323,7 +409,7 @@ async fn run_codex_post_refresh_checks(app: &AppHandle) {
     match codex_account::pick_auto_switch_target_if_needed() {
         Ok(Some(target)) => {
             let target_id = target.id.clone();
-            match switch_codex_account(app.clone(), target_id.clone()).await {
+            match switch_codex_account(app.clone(), target_id.clone(), None).await {
                 Ok(switched_account) => {
                     logger::log_info(&format!(
                         "[AutoSwitch][Codex] 自动切号完成: target_id={}, email={}",
@@ -356,58 +442,28 @@ async fn run_codex_post_refresh_checks(app: &AppHandle) {
 
 /// 删除 Codex 账号
 #[tauri::command]
-pub async fn delete_codex_account(account_id: String) -> Result<(), String> {
-    codex_account::remove_account(&account_id)?;
-    codex_local_access::remove_local_access_accounts(&[account_id]).await?;
-    Ok(())
+pub fn delete_codex_account(account_id: String) -> Result<(), String> {
+    codex_account::remove_account(&account_id)
 }
 
 /// 批量删除 Codex 账号
 #[tauri::command]
-pub async fn delete_codex_accounts(account_ids: Vec<String>) -> Result<(), String> {
-    codex_account::remove_accounts(&account_ids)?;
-    codex_local_access::remove_local_access_accounts(&account_ids).await?;
-    Ok(())
+pub fn delete_codex_accounts(account_ids: Vec<String>) -> Result<(), String> {
+    codex_account::remove_accounts(&account_ids)
 }
 
 async fn refresh_imported_codex_accounts(
     app: &AppHandle,
     accounts: Vec<CodexAccount>,
 ) -> Vec<CodexAccount> {
-    let mut result = Vec::with_capacity(accounts.len());
-    let mut success_count = 0;
-    let mut attempted = false;
-
-    for account in accounts {
-        if account.is_api_key_auth() {
-            result.push(account);
-            continue;
-        }
-
-        attempted = true;
-        match codex_quota::refresh_account_quota(&account.id).await {
-            Ok(_) => {
-                success_count += 1;
-            }
-            Err(error) => {
-                logger::log_warn(&format!(
-                    "Codex 导入后刷新配额失败: account_id={}, email={}, error={}",
-                    account.id, account.email, error
-                ));
-            }
-        }
-
-        result.push(codex_account::load_account(&account.id).unwrap_or(account));
-    }
-
-    if success_count > 0 {
-        run_codex_post_refresh_checks(app).await;
-    }
-    if attempted || !result.is_empty() {
+    if !accounts.is_empty() {
+        logger::log_info(&format!(
+            "Codex 自用版导入账号后跳过自动配额刷新: count={}",
+            accounts.len()
+        ));
         let _ = crate::modules::tray::update_tray_menu(app);
     }
-
-    result
+    accounts
 }
 
 /// 从本地 auth.json 导入账号
@@ -452,8 +508,19 @@ pub async fn import_codex_from_files(
 
 /// 刷新单个账号配额
 #[tauri::command]
-pub async fn refresh_codex_quota(app: AppHandle, account_id: String) -> Result<CodexQuota, String> {
-    let result = codex_quota::refresh_account_quota(&account_id).await;
+pub async fn refresh_codex_quota(
+    app: AppHandle,
+    account_id: String,
+    force: Option<bool>,
+) -> Result<CodexQuota, String> {
+    let result = codex_quota::refresh_account_quota_with_options(
+        &account_id,
+        codex_quota::RefreshQuotaOptions {
+            force_live_refresh: force.unwrap_or(false),
+            ..Default::default()
+        },
+    )
+    .await;
     if result.is_ok() {
         run_codex_post_refresh_checks(&app).await;
         let _ = crate::modules::tray::update_tray_menu(&app);
@@ -465,8 +532,10 @@ pub async fn refresh_codex_quota(app: AppHandle, account_id: String) -> Result<C
 pub async fn refresh_codex_subscription_info(
     app: AppHandle,
     account_id: String,
+    force: Option<bool>,
 ) -> Result<CodexAccount, String> {
-    let result = codex_quota::refresh_account_subscription_info(&account_id, true).await;
+    let result =
+        codex_quota::refresh_account_subscription_info(&account_id, force.unwrap_or(false)).await;
     if result.is_ok() {
         let _ = crate::modules::tray::update_tray_menu(&app);
     }
@@ -482,7 +551,11 @@ pub async fn refresh_current_codex_quota(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let result = codex_quota::refresh_account_quota(&account.id).await;
+    let result = codex_quota::refresh_account_quota_with_options(
+        &account.id,
+        codex_quota::RefreshQuotaOptions::default(),
+    )
+    .await;
     if result.is_ok() {
         run_codex_post_refresh_checks(&app).await;
         let _ = crate::modules::tray::update_tray_menu(&app);
@@ -577,7 +650,7 @@ pub fn codex_oauth_login_cancel(login_id: Option<String>) -> Result<(), String> 
     let result = codex_oauth::cancel_oauth_flow_for(login_id.as_deref());
     logger::log_info(&format!(
         "Codex OAuth cancel 命令返回: {:?}",
-        result.as_ref().map(|_| "ok").map_err(|e| e)
+        result.as_ref().map(|_| "ok")
     ));
     result
 }
@@ -611,12 +684,11 @@ pub async fn add_codex_account_with_token(
 
     let account = codex_account::upsert_account(tokens)?;
 
-    // 刷新配额
-    if let Err(e) = codex_quota::refresh_account_quota(&account.id).await {
-        logger::log_error(&format!("刷新配额失败: {}", e));
-    }
-
-    codex_account::load_account(&account.id).ok_or_else(|| "账号保存后无法读取".to_string())
+    logger::log_info(&format!(
+        "Codex 自用版添加 Token 账号后跳过自动配额刷新: account_id={}",
+        account.id
+    ));
+    Ok(account)
 }
 
 /// 通过 API Key 添加账号
@@ -627,11 +699,6 @@ pub fn add_codex_account_with_api_key(
     api_provider_mode: Option<CodexApiProviderMode>,
     api_provider_id: Option<String>,
     api_provider_name: Option<String>,
-    api_model_catalog: Option<Vec<String>>,
-    api_wire_api: Option<String>,
-    api_supports_vision: Option<bool>,
-    api_model_vision_support: Option<std::collections::HashMap<String, bool>>,
-    account_name: Option<String>,
 ) -> Result<CodexAccount, String> {
     let account = codex_account::upsert_api_key_account(
         api_key,
@@ -639,11 +706,6 @@ pub fn add_codex_account_with_api_key(
         api_provider_mode,
         api_provider_id,
         api_provider_name,
-        api_model_catalog.unwrap_or_default(),
-        api_wire_api,
-        api_supports_vision.unwrap_or(false),
-        api_model_vision_support.unwrap_or_default(),
-        account_name,
     )?;
     codex_account::load_account(&account.id).ok_or_else(|| "账号保存后无法读取".to_string())
 }
@@ -661,10 +723,6 @@ pub fn update_codex_api_key_credentials(
     api_provider_mode: Option<CodexApiProviderMode>,
     api_provider_id: Option<String>,
     api_provider_name: Option<String>,
-    api_model_catalog: Option<Vec<String>>,
-    api_wire_api: Option<String>,
-    api_supports_vision: Option<bool>,
-    api_model_vision_support: Option<std::collections::HashMap<String, bool>>,
 ) -> Result<CodexAccount, String> {
     codex_account::update_api_key_credentials(
         &account_id,
@@ -673,10 +731,6 @@ pub fn update_codex_api_key_credentials(
         api_provider_mode,
         api_provider_id,
         api_provider_name,
-        api_model_catalog.unwrap_or_default(),
-        api_wire_api,
-        api_supports_vision.unwrap_or(false),
-        api_model_vision_support.unwrap_or_default(),
     )
 }
 
@@ -834,7 +888,6 @@ pub async fn codex_wakeup_run_enabled_tasks(
 
 const CODEX_GROUPS_FILE: &str = "codex_account_groups.json";
 const CODEX_MODEL_PROVIDERS_FILE: &str = "codex_model_providers.json";
-const CODEX_MODEL_PROVIDER_TEST_TIMEOUT_SECS: u64 = 20;
 
 #[tauri::command]
 pub async fn load_codex_account_groups() -> Result<String, String> {
@@ -875,706 +928,14 @@ pub async fn save_codex_model_providers(data: String) -> Result<(), String> {
     std::fs::write(&path, data).map_err(|e| format!("Failed to write codex model providers: {}", e))
 }
 
-fn codex_model_provider_models_url(base_url: &str) -> Result<String, String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Err("PROVIDER_BASE_URL_INVALID".to_string());
-    }
-    let mut url =
-        reqwest::Url::parse(trimmed).map_err(|_| "PROVIDER_BASE_URL_INVALID".to_string())?;
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return Err("PROVIDER_BASE_URL_INVALID".to_string()),
-    }
-    let next_path = if url.path().is_empty() || url.path() == "/" {
-        "/models".to_string()
-    } else {
-        format!("{}/models", url.path().trim_end_matches('/'))
-    };
-    url.set_path(&next_path);
-    url.set_query(None);
-    Ok(url.to_string())
-}
-
-fn codex_model_provider_usage_url(base_url: &str) -> Result<String, String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Err("PROVIDER_BASE_URL_INVALID".to_string());
-    }
-    let mut url =
-        reqwest::Url::parse(trimmed).map_err(|_| "PROVIDER_BASE_URL_INVALID".to_string())?;
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return Err("PROVIDER_BASE_URL_INVALID".to_string()),
-    }
-    let next_path = if url.path().is_empty() || url.path() == "/" {
-        "/usage".to_string()
-    } else {
-        format!("{}/usage", url.path().trim_end_matches('/'))
-    };
-    url.set_path(&next_path);
-    url.set_query(None);
-    Ok(url.to_string())
-}
-
-fn codex_model_provider_new_api_billing_url(
-    base_url: &str,
-    endpoint: &str,
-) -> Result<String, String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Err("PROVIDER_BASE_URL_INVALID".to_string());
-    }
-    let mut url =
-        reqwest::Url::parse(trimmed).map_err(|_| "PROVIDER_BASE_URL_INVALID".to_string())?;
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return Err("PROVIDER_BASE_URL_INVALID".to_string()),
-    }
-    let base_path = url.path().trim_end_matches('/');
-    let next_path = if base_path.is_empty() {
-        format!("/{}", endpoint.trim_start_matches('/'))
-    } else {
-        format!("{}/{}", base_path, endpoint.trim_start_matches('/'))
-    };
-    url.set_path(&next_path);
-    url.set_query(None);
-    Ok(url.to_string())
-}
-
-fn codex_model_provider_new_api_api_url(base_url: &str, endpoint: &str) -> Result<String, String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        return Err("PROVIDER_BASE_URL_INVALID".to_string());
-    }
-    let mut url =
-        reqwest::Url::parse(trimmed).map_err(|_| "PROVIDER_BASE_URL_INVALID".to_string())?;
-    match url.scheme() {
-        "http" | "https" => {}
-        _ => return Err("PROVIDER_BASE_URL_INVALID".to_string()),
-    }
-    let mut base_path = url.path().trim_end_matches('/').to_string();
-    if base_path == "/v1" {
-        base_path.clear();
-    }
-    let next_path = if base_path.is_empty() {
-        format!("/{}", endpoint.trim_start_matches('/'))
-    } else {
-        format!("{}/{}", base_path, endpoint.trim_start_matches('/'))
-    };
-    url.set_path(&next_path);
-    url.set_query(None);
-    Ok(url.to_string())
-}
-
-fn codex_model_provider_failure(
-    title: &str,
-    stage: &str,
-    cause: String,
-    suggestion: &str,
-    status: Option<u16>,
-    detail: Option<String>,
-) -> CodexLocalAccessTestResult {
-    CodexLocalAccessTestResult {
-        model_id: None,
-        latency_ms: None,
-        output: None,
-        failure: Some(CodexLocalAccessTestFailure {
-            title: title.to_string(),
-            stage: stage.to_string(),
-            cause,
-            suggestion: suggestion.to_string(),
-            status,
-            model_id: None,
-            detail,
-            gateway_output: None,
-        }),
-    }
-}
-
-fn summarize_model_provider_models(body: &serde_json::Value) -> (Option<String>, Option<String>) {
-    let ids: Vec<String> = body
-        .get("data")
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| item.get("id").and_then(|id| id.as_str()))
-                .take(8)
-                .map(|id| id.to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-    let first = ids.first().cloned();
-    let output = if ids.is_empty() {
-        None
-    } else {
-        Some(ids.join(", "))
-    };
-    (first, output)
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexModelProviderUsageDetail {
-    pub key: String,
-    pub label: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodexModelProviderUsageSummary {
-    pub mode: Option<String>,
-    pub is_valid: Option<bool>,
-    pub status: Option<String>,
-    pub plan_name: Option<String>,
-    pub remaining: Option<f64>,
-    pub balance: Option<f64>,
-    pub unit: Option<String>,
-    pub quota_unlimited: Option<bool>,
-    pub quota_limit: Option<f64>,
-    pub quota_used: Option<f64>,
-    pub quota_remaining: Option<f64>,
-    pub today_requests: Option<i64>,
-    pub today_total_tokens: Option<i64>,
-    pub today_cost: Option<f64>,
-    pub total_requests: Option<i64>,
-    pub total_total_tokens: Option<i64>,
-    pub total_cost: Option<f64>,
-    pub model_stats_count: usize,
-    pub latency_ms: u64,
-    pub details: Vec<CodexModelProviderUsageDetail>,
-}
-
-fn json_f64_at(value: &serde_json::Value, path: &[&str]) -> Option<f64> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_f64()
-}
-
-fn json_i64_at(value: &serde_json::Value, path: &[&str]) -> Option<i64> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_i64()
-}
-
-fn json_string_at(value: &serde_json::Value, path: &[&str]) -> Option<String> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_str().map(|item| item.to_string())
-}
-
-fn json_bool_at(value: &serde_json::Value, path: &[&str]) -> Option<bool> {
-    let mut current = value;
-    for key in path {
-        current = current.get(*key)?;
-    }
-    current.as_bool()
-}
-
-fn summarize_model_provider_usage(
-    body: &serde_json::Value,
-    latency_ms: u64,
-) -> CodexModelProviderUsageSummary {
-    let model_stats_count = body
-        .get("model_stats")
-        .and_then(|value| value.as_array())
-        .map(|items| items.len())
-        .unwrap_or(0);
-    let mut details = Vec::new();
-    push_usage_detail(
-        &mut details,
-        "mode",
-        "Mode",
-        json_string_at(body, &["mode"]),
-    );
-    push_usage_detail(
-        &mut details,
-        "status",
-        "Status",
-        json_string_at(body, &["status"]),
-    );
-    push_usage_detail(
-        &mut details,
-        "planName",
-        "Plan",
-        json_string_at(body, &["planName"]),
-    );
-    push_usage_detail(
-        &mut details,
-        "remaining",
-        "Remaining",
-        json_f64_at(body, &["remaining"]).map(format_usage_number),
-    );
-    push_usage_detail(
-        &mut details,
-        "balance",
-        "Balance",
-        json_f64_at(body, &["balance"]).map(format_usage_number),
-    );
-    push_usage_detail(
-        &mut details,
-        "todayRequests",
-        "Today Requests",
-        json_i64_at(body, &["usage", "today", "requests"]).map(|value| value.to_string()),
-    );
-    push_usage_detail(
-        &mut details,
-        "todayTokens",
-        "Today Tokens",
-        json_i64_at(body, &["usage", "today", "total_tokens"]).map(|value| value.to_string()),
-    );
-    push_usage_detail(
-        &mut details,
-        "todayCost",
-        "Today Cost",
-        json_f64_at(body, &["usage", "today", "cost"]).map(format_usage_number),
-    );
-    push_usage_detail(
-        &mut details,
-        "totalRequests",
-        "Total Requests",
-        json_i64_at(body, &["usage", "total", "requests"]).map(|value| value.to_string()),
-    );
-    push_usage_detail(
-        &mut details,
-        "totalTokens",
-        "Total Tokens",
-        json_i64_at(body, &["usage", "total", "total_tokens"]).map(|value| value.to_string()),
-    );
-    push_usage_detail(
-        &mut details,
-        "totalCost",
-        "Total Cost",
-        json_f64_at(body, &["usage", "total", "cost"]).map(format_usage_number),
-    );
-
-    CodexModelProviderUsageSummary {
-        mode: json_string_at(body, &["mode"]),
-        is_valid: json_bool_at(body, &["isValid"]),
-        status: json_string_at(body, &["status"]),
-        plan_name: json_string_at(body, &["planName"]),
-        remaining: json_f64_at(body, &["remaining"]),
-        balance: json_f64_at(body, &["balance"]),
-        unit: json_string_at(body, &["unit"]).or_else(|| json_string_at(body, &["quota", "unit"])),
-        quota_unlimited: json_bool_at(body, &["quota", "unlimited"]),
-        quota_limit: json_f64_at(body, &["quota", "limit"]),
-        quota_used: json_f64_at(body, &["quota", "used"]),
-        quota_remaining: json_f64_at(body, &["quota", "remaining"]),
-        today_requests: json_i64_at(body, &["usage", "today", "requests"]),
-        today_total_tokens: json_i64_at(body, &["usage", "today", "total_tokens"]),
-        today_cost: json_f64_at(body, &["usage", "today", "cost"]),
-        total_requests: json_i64_at(body, &["usage", "total", "requests"]),
-        total_total_tokens: json_i64_at(body, &["usage", "total", "total_tokens"]),
-        total_cost: json_f64_at(body, &["usage", "total", "cost"]),
-        model_stats_count,
-        latency_ms,
-        details,
-    }
-}
-
-fn format_usage_number(value: f64) -> String {
-    if value.fract().abs() < f64::EPSILON {
-        format!("{:.0}", value)
-    } else {
-        format!("{:.4}", value)
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_string()
-    }
-}
-
-fn push_usage_detail(
-    details: &mut Vec<CodexModelProviderUsageDetail>,
-    key: &str,
-    label: &str,
-    value: Option<String>,
-) {
-    let Some(value) = value else {
-        return;
-    };
-    if value.trim().is_empty() {
-        return;
-    }
-    details.push(CodexModelProviderUsageDetail {
-        key: key.to_string(),
-        label: label.to_string(),
-        value,
-    });
-}
-
-fn summarize_new_api_model_provider_usage(
-    subscription: &serde_json::Value,
-    usage: &serde_json::Value,
-    token_usage: Option<&serde_json::Value>,
-    latency_ms: u64,
-) -> CodexModelProviderUsageSummary {
-    let raw_quota_limit = json_f64_at(subscription, &["hard_limit_usd"])
-        .or_else(|| json_f64_at(subscription, &["soft_limit_usd"]))
-        .or_else(|| json_f64_at(subscription, &["system_hard_limit_usd"]));
-    let quota_used = json_f64_at(usage, &["total_usage"]).map(|value| value / 100.0);
-    let token_data = token_usage.and_then(|value| value.get("data"));
-    let quota_unlimited = token_data
-        .and_then(|value| json_bool_at(value, &["unlimited_quota"]))
-        .unwrap_or_else(|| {
-            let hard = json_f64_at(subscription, &["hard_limit_usd"]);
-            let soft = json_f64_at(subscription, &["soft_limit_usd"]);
-            let system = json_f64_at(subscription, &["system_hard_limit_usd"]);
-            matches!(
-                (hard, soft, system),
-                (Some(h), Some(s), Some(sys))
-                    if (h - 100_000_000.0).abs() < f64::EPSILON
-                        && (s - 100_000_000.0).abs() < f64::EPSILON
-                        && (sys - 100_000_000.0).abs() < f64::EPSILON
-            )
-        });
-    let quota_limit = if quota_unlimited {
-        None
-    } else {
-        raw_quota_limit
-    };
-    let quota_remaining = match (quota_limit, quota_used) {
-        (Some(limit), Some(used)) => Some((limit - used).max(0.0)),
-        _ => None,
-    };
-    let mut details = Vec::new();
-    push_usage_detail(
-        &mut details,
-        "hardLimitUsd",
-        "Hard Limit USD",
-        json_f64_at(subscription, &["hard_limit_usd"]).map(format_usage_number),
-    );
-    push_usage_detail(
-        &mut details,
-        "softLimitUsd",
-        "Soft Limit USD",
-        json_f64_at(subscription, &["soft_limit_usd"]).map(format_usage_number),
-    );
-    push_usage_detail(
-        &mut details,
-        "systemHardLimitUsd",
-        "System Hard Limit USD",
-        json_f64_at(subscription, &["system_hard_limit_usd"]).map(format_usage_number),
-    );
-    push_usage_detail(
-        &mut details,
-        "accessUntil",
-        "Access Until",
-        json_i64_at(subscription, &["access_until"]).map(|value| value.to_string()),
-    );
-    push_usage_detail(
-        &mut details,
-        "quotaUnlimited",
-        "Unlimited Quota",
-        Some(quota_unlimited.to_string()),
-    );
-    if let Some(token_data) = token_data {
-        push_usage_detail(
-            &mut details,
-            "totalGranted",
-            "Total Granted",
-            json_f64_at(token_data, &["total_granted"]).map(format_usage_number),
-        );
-        push_usage_detail(
-            &mut details,
-            "totalAvailable",
-            "Total Available",
-            json_f64_at(token_data, &["total_available"]).map(format_usage_number),
-        );
-        push_usage_detail(
-            &mut details,
-            "expiresAt",
-            "Expires At",
-            json_i64_at(token_data, &["expires_at"]).map(|value| value.to_string()),
-        );
-        push_usage_detail(
-            &mut details,
-            "modelLimitsEnabled",
-            "Model Limits",
-            json_bool_at(token_data, &["model_limits_enabled"]).map(|value| value.to_string()),
-        );
-    }
-    push_usage_detail(
-        &mut details,
-        "totalUsage",
-        "Total Usage",
-        json_f64_at(usage, &["total_usage"]).map(format_usage_number),
-    );
-
-    CodexModelProviderUsageSummary {
-        mode: Some("new_api".to_string()),
-        is_valid: None,
-        status: None,
-        plan_name: None,
-        remaining: quota_remaining,
-        balance: None,
-        unit: Some("USD".to_string()),
-        quota_unlimited: Some(quota_unlimited),
-        quota_limit,
-        quota_used,
-        quota_remaining,
-        today_requests: None,
-        today_total_tokens: None,
-        today_cost: None,
-        total_requests: None,
-        total_total_tokens: None,
-        total_cost: quota_used,
-        model_stats_count: 0,
-        latency_ms,
-        details,
-    }
-}
-
-#[tauri::command]
-pub async fn codex_test_model_provider_connection(
-    base_url: String,
-    api_key: String,
-    wire_api: Option<String>,
-) -> Result<CodexLocalAccessTestResult, String> {
-    let key = api_key.trim();
-    if key.is_empty() {
-        return Ok(codex_model_provider_failure(
-            "missing_api_key",
-            "credential",
-            "MISSING_API_KEY".to_string(),
-            "add_api_key",
-            None,
-            None,
-        ));
-    }
-
-    let url = match codex_model_provider_models_url(&base_url) {
-        Ok(url) => url,
-        Err(error) => {
-            return Ok(codex_model_provider_failure(
-                "invalid_base_url",
-                "url",
-                error,
-                "check_base_url",
-                None,
-                None,
-            ));
-        }
-    };
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(CODEX_MODEL_PROVIDER_TEST_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| format!("CREATE_HTTP_CLIENT_FAILED: {}", e))?;
-    let started = Instant::now();
-    let response = match client
-        .get(&url)
-        .bearer_auth(key)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(error) => {
-            return Ok(codex_model_provider_failure(
-                "network_failed",
-                "network",
-                error.to_string(),
-                "check_network",
-                None,
-                Some(format!("GET {}", url)),
-            ));
-        }
-    };
-    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        let suggestion = if status == reqwest::StatusCode::UNAUTHORIZED
-            || status == reqwest::StatusCode::FORBIDDEN
-        {
-            "check_api_key"
-        } else if status == reqwest::StatusCode::NOT_FOUND {
-            "check_base_url"
-        } else {
-            "check_provider_status"
-        };
-        return Ok(codex_model_provider_failure(
-            "provider_http_failed",
-            "models",
-            "HTTP_STATUS".to_string(),
-            suggestion,
-            Some(status.as_u16()),
-            Some(text.chars().take(1000).collect()),
-        ));
-    }
-
-    let parsed = match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(value) => value,
-        Err(error) => {
-            return Ok(codex_model_provider_failure(
-                "response_parse_failed",
-                "parse",
-                error.to_string(),
-                "check_openai_compatible_models",
-                Some(status.as_u16()),
-                Some(text.chars().take(1000).collect()),
-            ));
-        }
-    };
-    let (model_id, output) = summarize_model_provider_models(&parsed);
-    let protocol = wire_api.unwrap_or_else(|| "auto".to_string());
-    Ok(CodexLocalAccessTestResult {
-        model_id,
-        latency_ms: Some(latency_ms),
-        output: output.or_else(|| Some(format!("{} connection ok", protocol))),
-        failure: None,
-    })
-}
-
-#[tauri::command]
-pub async fn codex_query_model_provider_usage(
-    base_url: String,
-    api_key: String,
-    integration_type: Option<String>,
-) -> Result<CodexModelProviderUsageSummary, String> {
-    let key = api_key.trim();
-    if key.is_empty() {
-        return Err("MISSING_API_KEY".to_string());
-    }
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(CODEX_MODEL_PROVIDER_TEST_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| format!("CREATE_HTTP_CLIENT_FAILED: {}", e))?;
-
-    let requested_type = integration_type
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    match requested_type {
-        Some("new_api") => query_new_api_model_provider_usage(&client, &base_url, key).await,
-        Some("sub2api") => query_sub2api_model_provider_usage(&client, &base_url, key).await,
-        Some(value) => Err(format!("PROVIDER_USAGE_TYPE_UNSUPPORTED: {}", value)),
-        None => {
-            let new_api_error =
-                match query_new_api_model_provider_usage(&client, &base_url, key).await {
-                    Ok(summary) => return Ok(summary),
-                    Err(error) => error,
-                };
-            match query_sub2api_model_provider_usage(&client, &base_url, key).await {
-                Ok(summary) => Ok(summary),
-                Err(sub2api_error) => Err(format!(
-                    "PROVIDER_USAGE_DETECT_FAILED: new_api: {}; sub2api: {}",
-                    new_api_error, sub2api_error
-                )),
-            }
-        }
-    }
-}
-
-async fn query_new_api_model_provider_usage(
-    client: &reqwest::Client,
-    base_url: &str,
-    key: &str,
-) -> Result<CodexModelProviderUsageSummary, String> {
-    let subscription_url =
-        codex_model_provider_new_api_billing_url(base_url, "dashboard/billing/subscription")?;
-    let usage_url = codex_model_provider_new_api_billing_url(base_url, "dashboard/billing/usage")?;
-    let token_usage_url = codex_model_provider_new_api_api_url(base_url, "api/usage/token/")?;
-    let started = Instant::now();
-    let subscription_response = client
-        .get(&subscription_url)
-        .bearer_auth(key)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await
-        .map_err(|e| format!("PROVIDER_USAGE_NETWORK_FAILED: {}", e))?;
-    let subscription_status = subscription_response.status();
-    let subscription_text = subscription_response.text().await.unwrap_or_default();
-    if !subscription_status.is_success() {
-        return Err(format!(
-            "PROVIDER_USAGE_HTTP_{}: {}",
-            subscription_status.as_u16(),
-            subscription_text.chars().take(300).collect::<String>()
-        ));
-    }
-    let usage_response = client
-        .get(&usage_url)
-        .bearer_auth(key)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await
-        .map_err(|e| format!("PROVIDER_USAGE_NETWORK_FAILED: {}", e))?;
-    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-    let usage_status = usage_response.status();
-    let usage_text = usage_response.text().await.unwrap_or_default();
-    if !usage_status.is_success() {
-        return Err(format!(
-            "PROVIDER_USAGE_HTTP_{}: {}",
-            usage_status.as_u16(),
-            usage_text.chars().take(300).collect::<String>()
-        ));
-    }
-    let subscription = serde_json::from_str::<serde_json::Value>(&subscription_text)
-        .map_err(|e| format!("PROVIDER_USAGE_PARSE_FAILED: {}", e))?;
-    let usage = serde_json::from_str::<serde_json::Value>(&usage_text)
-        .map_err(|e| format!("PROVIDER_USAGE_PARSE_FAILED: {}", e))?;
-    let token_usage = match client
-        .get(&token_usage_url)
-        .bearer_auth(key)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await
-    {
-        Ok(response) if response.status().is_success() => {
-            let text = response.text().await.unwrap_or_default();
-            serde_json::from_str::<serde_json::Value>(&text).ok()
-        }
-        _ => None,
-    };
-    Ok(summarize_new_api_model_provider_usage(
-        &subscription,
-        &usage,
-        token_usage.as_ref(),
-        latency_ms,
-    ))
-}
-
-async fn query_sub2api_model_provider_usage(
-    client: &reqwest::Client,
-    base_url: &str,
-    key: &str,
-) -> Result<CodexModelProviderUsageSummary, String> {
-    let url = codex_model_provider_usage_url(base_url)?;
-    let started = Instant::now();
-    let response = client
-        .get(&url)
-        .bearer_auth(key)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .await
-        .map_err(|e| format!("PROVIDER_USAGE_NETWORK_FAILED: {}", e))?;
-    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-    let status = response.status();
-    let text = response.text().await.unwrap_or_default();
-    if !status.is_success() {
-        return Err(format!(
-            "PROVIDER_USAGE_HTTP_{}: {}",
-            status.as_u16(),
-            text.chars().take(300).collect::<String>()
-        ));
-    }
-    let parsed = serde_json::from_str::<serde_json::Value>(&text)
-        .map_err(|e| format!("PROVIDER_USAGE_PARSE_FAILED: {}", e))?;
-    Ok(summarize_model_provider_usage(&parsed, latency_ms))
-}
-
 #[tauri::command]
 pub async fn codex_local_access_get_state() -> Result<CodexLocalAccessState, String> {
     codex_local_access::get_local_access_state().await
+}
+
+#[tauri::command]
+pub async fn codex_local_access_get_light_state() -> Result<CodexLocalAccessLightState, String> {
+    codex_local_access::get_local_access_light_state().await
 }
 
 #[tauri::command]
@@ -1584,7 +945,7 @@ pub async fn codex_local_access_save_accounts(
 ) -> Result<CodexLocalAccessState, String> {
     codex_local_access::save_local_access_accounts(
         account_ids,
-        restrict_free_accounts.unwrap_or(true),
+        restrict_free_accounts.unwrap_or(false),
     )
     .await
 }
@@ -1611,6 +972,21 @@ pub async fn codex_local_access_update_bound_oauth_account(
 #[tauri::command]
 pub async fn codex_local_access_clear_stats() -> Result<CodexLocalAccessState, String> {
     codex_local_access::clear_local_access_stats().await
+}
+
+#[tauri::command]
+pub async fn codex_local_access_recover_health(
+    account_id: String,
+    model: Option<String>,
+) -> Result<CodexLocalAccessState, String> {
+    codex_local_access::recover_local_access_health(&account_id, model.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn codex_local_access_pause_health(
+    account_id: String,
+) -> Result<CodexLocalAccessState, String> {
+    codex_local_access::pause_local_access_health(&account_id).await
 }
 
 #[tauri::command]
@@ -1661,6 +1037,13 @@ pub async fn codex_local_access_update_routing_strategy(
     strategy: CodexLocalAccessRoutingStrategy,
 ) -> Result<CodexLocalAccessState, String> {
     codex_local_access::update_local_access_routing_strategy(strategy).await
+}
+
+#[tauri::command]
+pub async fn codex_local_access_apply_safety_preset(
+    preset: CodexLocalApiSafetyPresetId,
+) -> Result<CodexLocalAccessState, String> {
+    codex_local_access::apply_local_access_safety_preset(preset).await
 }
 
 #[tauri::command]
@@ -1815,40 +1198,93 @@ pub async fn codex_local_access_delete_api_key(
 
 #[tauri::command]
 pub async fn codex_local_access_set_enabled(
+    app: AppHandle,
     enabled: bool,
+    force: Option<bool>,
 ) -> Result<CodexLocalAccessState, String> {
-    codex_local_access::set_local_access_enabled(enabled).await
+    let force = force.unwrap_or(false);
+    if enabled {
+        return activate_codex_local_access_with_source(
+            &app,
+            "tauri_local_access_set_enabled",
+            force,
+        )
+        .await;
+    }
+
+    codex_local_access::set_runtime_integration_mode_with_options(
+        CodexRuntimeIntegrationMode::DirectProjection,
+        codex_local_access::RuntimeProjectionChangeOptions::new(
+            "tauri_local_access_set_disabled",
+            force,
+        ),
+    )
+    .await?;
+    codex_local_access::get_local_access_state().await
 }
 
 #[tauri::command]
-pub async fn codex_local_access_activate(app: AppHandle) -> Result<CodexLocalAccessState, String> {
-    let codex_home = codex_account::get_codex_home();
-    let state = codex_local_access::activate_local_access_for_dir(&codex_home).await?;
+pub fn codex_runtime_mode_get() -> Result<CodexRuntimeModeState, String> {
+    codex_local_access::load_runtime_mode_state()
+}
+
+#[tauri::command]
+pub async fn codex_runtime_mode_set(
+    mode: CodexRuntimeIntegrationMode,
+    force: Option<bool>,
+) -> Result<CodexRuntimeModeState, String> {
+    codex_local_access::set_runtime_integration_mode_with_options(
+        mode,
+        codex_local_access::RuntimeProjectionChangeOptions::new(
+            "tauri_runtime_mode_set",
+            force.unwrap_or(false),
+        ),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn codex_local_access_activate(
+    app: AppHandle,
+    force: Option<bool>,
+) -> Result<CodexLocalAccessState, String> {
+    activate_codex_local_access_with_source(
+        &app,
+        "codex_local_access_activate",
+        force.unwrap_or(false),
+    )
+    .await
+}
+
+async fn activate_codex_local_access_with_source(
+    app: &AppHandle,
+    source: &'static str,
+    force: bool,
+) -> Result<CodexLocalAccessState, String> {
+    let previous_history_provider = read_default_codex_history_provider_for_switch();
+    codex_local_access::set_runtime_integration_mode_with_options(
+        CodexRuntimeIntegrationMode::CockpitApiService,
+        codex_local_access::RuntimeProjectionChangeOptions::new(source, force),
+    )
+    .await?;
+    let state = codex_local_access::get_local_access_state().await?;
+    let next_history_provider = read_default_codex_history_provider_for_switch();
     let api_service_speed = codex_speed::get_api_service_app_speed_config()?.speed;
     codex_speed::write_official_app_speed(api_service_speed.clone())?;
 
-    let mut index = codex_account::load_account_index();
-    index.current_account_id = None;
-    codex_account::save_account_index(&index)?;
-
-    if let Err(e) = crate::modules::codex_instance::update_default_settings(
-        Some(Some(
-            crate::modules::codex_instance::CODEX_API_SERVICE_BIND_ACCOUNT_ID.to_string(),
-        )),
-        None,
-        Some(false),
-        None,
-        None,
-    ) {
-        logger::log_warn(&format!("更新 Codex 默认实例为 API 服务模式失败: {}", e));
-    } else {
-        logger::log_info("已同步更新 Codex 默认实例为 API 服务模式");
-    }
+    logger::log_info(
+        "API 服务启动模式下保留当前 Codex 账号与默认实例绑定，由本地 gateway/profile 管理",
+    );
     if let Err(e) = crate::modules::codex_instance::update_default_app_speed(api_service_speed) {
         logger::log_warn(&format!("更新 Codex 默认实例 API 服务速度失败: {}", e));
     }
 
     let user_config = config::get_user_config();
+    repair_codex_session_visibility_after_provider_change(
+        previous_history_provider,
+        next_history_provider,
+        &user_config,
+    );
 
     logger::log_info("API 服务启动模式下跳过 OpenCode / OpenClaw OAuth 同步");
 

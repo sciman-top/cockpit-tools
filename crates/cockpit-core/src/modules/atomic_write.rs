@@ -1,8 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 fn format_io_error(action: &str, path: &Path, err: &std::io::Error) -> String {
     format!("{}失败: path={}, error={}", action, path.display(), err)
@@ -22,14 +25,16 @@ fn build_temp_file_path(parent: &Path, target: &Path, suffix: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     parent.join(format!(
-        ".{}.tmp.{}.{}.{}",
+        ".{}.tmp.{}.{}.{}.{}",
         target
             .file_name()
             .and_then(|item| item.to_str())
             .unwrap_or("file"),
         std::process::id(),
         unique,
+        sequence,
         suffix
     ))
 }
@@ -136,5 +141,21 @@ pub fn parse_json_with_auto_restore<T: DeserializeOwned>(
             }
             Err(original_err)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_temp_file_path;
+
+    #[test]
+    fn build_temp_file_path_is_unique_for_same_target() {
+        let parent = std::env::temp_dir();
+        let target = parent.join("state.json");
+
+        let first = build_temp_file_path(&parent, &target, "atomic");
+        let second = build_temp_file_path(&parent, &target, "atomic");
+
+        assert_ne!(first, second);
     }
 }

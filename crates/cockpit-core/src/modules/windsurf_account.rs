@@ -526,7 +526,9 @@ fn deduplicate_accounts_by_identity_with_index(index: WindsurfAccountIndex) -> R
     let mut merged_duplicate_count = 0usize;
     for group in groups {
         if group.len() == 1 {
-            merged_accounts.push(group.into_iter().next().unwrap());
+            if let Some(account) = group.into_iter().next() {
+                merged_accounts.push(account);
+            }
             continue;
         }
         merged_duplicate_count += group.len() - 1;

@@ -985,10 +985,7 @@ fn handle_quota_reset_task(app: &AppHandle, task: &WakeupTask, now: DateTime<Loc
 
     let models_to_trigger = {
         let mut state_guard = lock_or_recover(state(), "wakeup state lock");
-        let reset_state = state_guard
-            .reset_states
-            .entry(task.id.clone())
-            .or_insert_with(ResetState::default);
+        let reset_state = state_guard.reset_states.entry(task.id.clone()).or_default();
 
         let mut models_to_trigger: HashSet<String> = HashSet::new();
         for model_id in &task.schedule.selected_models {

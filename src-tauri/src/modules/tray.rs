@@ -96,7 +96,9 @@ fn macos_tray_icon_for_style<'a, R: Runtime>(
         TrayIconStyle::Template => Ok((build_macos_template_tray_icon()?, true)),
         TrayIconStyle::Color => Ok((
             app.default_window_icon()
-                .expect("default window icon should exist")
+                .ok_or_else(|| {
+                    tauri::Error::Anyhow(anyhow::anyhow!("default window icon is missing"))
+                })?
                 .clone(),
             false,
         )),
@@ -398,7 +400,10 @@ pub fn create_tray_skeleton<R: Runtime>(
         tray_icon_as_template
     );
     #[cfg(not(target_os = "macos"))]
-    let tray_icon = app.default_window_icon().unwrap().clone();
+    let tray_icon = app
+        .default_window_icon()
+        .ok_or_else(|| tauri::Error::Anyhow(anyhow::anyhow!("default window icon is missing")))?
+        .clone();
 
     let builder = TrayIconBuilder::with_id(TRAY_ID)
         .icon(tray_icon)
@@ -3389,8 +3394,34 @@ fn handle_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: tauri::menu::
             }
         }
         menu_ids::QUIT => {
-            info!("[Tray] 用户选择退出应用");
-            app.exit(0);
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                match crate::modules::codex_local_access::prepare_runtime_projection_for_app_exit()
+                    .await
+                {
+                    Ok(restored) => {
+                        if restored {
+                            info!("[Tray] 退出前已恢复 Codex Direct Projection");
+                        }
+                        info!("[Tray] 用户选择退出应用");
+                        app_handle.exit(0);
+                    }
+                    Err(err) => {
+                        crate::modules::logger::log_error(&format!(
+                            "[Tray] 退出前恢复 Codex Direct Projection 失败，已取消退出: {}",
+                            err
+                        ));
+                        if let Err(show_err) =
+                            crate::modules::floating_card_window::show_main_window(&app_handle)
+                        {
+                            crate::modules::logger::log_warn(&format!(
+                                "[Tray] 恢复主窗口失败: {}",
+                                show_err
+                            ));
+                        }
+                    }
+                }
+            });
         }
         _ => {
             if let Some(platform) = parse_platform_from_menu_id(id) {

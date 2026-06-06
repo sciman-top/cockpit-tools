@@ -23,6 +23,72 @@ pub fn get_app_handle() -> Option<&'static tauri::AppHandle> {
     APP_HANDLE.get()
 }
 
+/// Narrow public surface for repo-owned HLA smoke tooling.
+///
+/// This lets an external short-lived binary exercise the same local access
+/// gateway code path without switching the live Codex provider.
+pub mod local_hardened_api_smoke {
+    fn summarize_state(
+        state: &crate::models::codex_local_access::CodexLocalAccessState,
+    ) -> serde_json::Value {
+        let collection = state.collection.as_ref();
+        let safety = collection.map(|item| &item.safety_config);
+
+        serde_json::json!({
+            "running": state.running,
+            "baseUrl": state.base_url,
+            "lastError": state.last_error,
+            "memberCount": state.member_count,
+            "effectiveAccountCount": state.effective_account_ids.len(),
+            "modelCount": state.model_ids.len(),
+            "collection": collection.map(|item| serde_json::json!({
+                "enabled": item.enabled,
+                "port": item.port,
+                "accountCount": item.account_ids.len(),
+                "routingStrategy": item.routing_strategy,
+                "restrictFreeAccounts": item.restrict_free_accounts,
+                "followCurrentAccount": item.follow_current_account,
+            })),
+            "safetyConfig": safety.map(|item| serde_json::json!({
+                "schemaVersion": item.schema_version,
+                "hardenedLocalMode": item.hardened_local_mode,
+                "maxConcurrentRequests": item.max_concurrent_requests,
+                "minRequestIntervalSeconds": item.min_request_interval_seconds,
+                "maxQueueWaitSeconds": item.max_queue_wait_seconds,
+                "requestTimeoutSeconds": item.request_timeout_seconds,
+                "maxRequestBodyMb": item.max_request_body_mb,
+                "maxRetries": item.max_retries,
+                "maxRetryAccounts": item.max_retry_accounts,
+                "fallbackMode": item.fallback_mode,
+            })),
+            "health": {
+                "scope": "current_pool",
+                "unavailable": state.health.unavailable,
+                "healthyCount": state.health.healthy_count,
+                "coolingCount": state.health.cooling_count,
+                "exhaustedCount": state.health.exhausted_count,
+                "authSuspectCount": state.health.auth_suspect_count,
+                "manualRequiredCount": state.health.manual_required_count,
+                "activeModelCooldownCount": state.health.active_model_cooldown_count,
+                "lastErrorType": state.health.last_error_type,
+                "lastStatus": state.health.last_status,
+            },
+        })
+    }
+
+    pub async fn enable_gateway() -> Result<String, String> {
+        let state = crate::modules::codex_local_access::set_local_access_enabled(true).await?;
+        serde_json::to_string(&summarize_state(&state))
+            .map_err(|e| format!("序列化 API 服务状态失败: {}", e))
+    }
+
+    pub async fn disable_gateway() -> Result<String, String> {
+        let state = crate::modules::codex_local_access::set_local_access_enabled(false).await?;
+        serde_json::to_string(&summarize_state(&state))
+            .map_err(|e| format!("序列化 API 服务状态失败: {}", e))
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn apply_macos_activation_policy(app: &tauri::AppHandle) {
     let config = modules::config::get_user_config();
@@ -165,6 +231,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async {
                 modules::codex_local_access::restore_local_access_gateway().await;
             });
+            modules::codex_account::schedule_startup_quota_consistency_scan();
 
             {
                 let app_handle = app.handle().clone();
@@ -225,7 +292,7 @@ pub fn run() {
                         args
                     ));
                     let handled = modules::external_import::handle_external_import_args(
-                        &app.handle(),
+                        app.handle(),
                         &args,
                         "deep-link-current",
                     );
@@ -270,7 +337,7 @@ pub fn run() {
             });
 
             if let Err(err) =
-                modules::floating_card_window::show_floating_card_window_on_startup(&app.handle())
+                modules::floating_card_window::show_floating_card_window_on_startup(app.handle())
             {
                 logger::log_warn(&format!("[FloatingCard] 启动时显示悬浮卡片失败: {}", err));
             }
@@ -279,7 +346,7 @@ pub fn run() {
             logger::log_info(&format!("[Startup] 启动参数数量: {}", startup_args.len()));
             let startup_external_import_handled =
                 modules::external_import::handle_external_import_args(
-                    &app.handle(),
+                    app.handle(),
                     &startup_args,
                     "startup",
                 );
@@ -304,8 +371,35 @@ pub fn run() {
                         info!("[Window] 窗口已最小化到托盘");
                     }
                     CloseWindowBehavior::Quit => {
-                        info!("[Window] 用户选择退出应用");
-                        window.app_handle().exit(0);
+                        api.prevent_close();
+                        let app_handle = window.app_handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            match modules::codex_local_access::prepare_runtime_projection_for_app_exit()
+                                .await
+                            {
+                                Ok(restored) => {
+                                    if restored {
+                                        info!("[Window] 退出前已恢复 Codex Direct Projection");
+                                    }
+                                    info!("[Window] 用户选择退出应用");
+                                    app_handle.exit(0);
+                                }
+                                Err(err) => {
+                                    logger::log_error(&format!(
+                                        "[Window] 退出前恢复 Codex Direct Projection 失败，已取消退出: {}",
+                                        err
+                                    ));
+                                    if let Err(show_err) =
+                                        modules::floating_card_window::show_main_window(&app_handle)
+                                    {
+                                        logger::log_warn(&format!(
+                                            "[Window] 恢复主窗口失败: {}",
+                                            show_err
+                                        ));
+                                    }
+                                }
+                            }
+                        });
                     }
                     CloseWindowBehavior::Ask => {
                         api.prevent_close();
@@ -331,6 +425,8 @@ pub fn run() {
             commands::account::switch_account,
             commands::account::load_antigravity_switch_history,
             commands::account::clear_antigravity_switch_history,
+            commands::account::bind_account_fingerprint,
+            commands::account::get_bound_accounts,
             commands::account::update_account_tags,
             commands::account::update_account_notes,
             commands::account::load_account_groups,
@@ -338,6 +434,27 @@ pub fn run() {
             commands::account::sync_current_from_client,
             commands::account::sync_from_extension,
             // Device Commands
+            commands::device::get_device_profiles,
+            commands::device::bind_device_profile,
+            commands::device::bind_device_profile_with_profile,
+            commands::device::list_device_versions,
+            commands::device::restore_device_version,
+            commands::device::delete_device_version,
+            commands::device::restore_original_device,
+            commands::device::open_device_folder,
+            commands::device::preview_generate_profile,
+            commands::device::preview_current_profile,
+            // Fingerprint Commands
+            commands::device::list_fingerprints,
+            commands::device::get_fingerprint,
+            commands::device::generate_new_fingerprint,
+            commands::device::capture_current_fingerprint,
+            commands::device::create_fingerprint_with_profile,
+            commands::device::apply_fingerprint,
+            commands::device::delete_fingerprint,
+            commands::device::delete_unbound_fingerprints,
+            commands::device::rename_fingerprint,
+            commands::device::get_current_fingerprint_id,
             // OAuth Commands
             commands::oauth::start_oauth_login,
             commands::oauth::prepare_oauth_url,
@@ -346,6 +463,8 @@ pub fn run() {
             commands::oauth::cancel_oauth_login,
             // Import/Export Commands
             commands::import::import_from_old_tools,
+            commands::import::import_fingerprints_from_old_tools,
+            commands::import::import_fingerprints_from_json,
             commands::import::import_from_local,
             commands::import::import_from_json,
             commands::import::import_from_files,
@@ -369,13 +488,6 @@ pub fn run() {
             commands::system::delete_auto_backup_file,
             commands::system::cleanup_auto_backup_files,
             commands::system::open_auto_backup_dir,
-            commands::system::get_webdav_sync_settings,
-            commands::system::save_webdav_sync_settings,
-            commands::system::test_webdav_sync_connection,
-            commands::system::upload_auto_backup_to_webdav,
-            commands::system::list_webdav_backup_files,
-            commands::system::read_webdav_backup_file,
-            commands::system::delete_webdav_backup_file,
             commands::system::get_network_config,
             commands::system::save_network_config,
             commands::system::get_general_config,
@@ -441,8 +553,6 @@ pub fn run() {
             commands::announcement::announcement_mark_all_as_read,
             commands::announcement::announcement_force_refresh,
             commands::announcement::announcement_get_top_right_ad,
-            commands::announcement::announcement_get_sponsor_module,
-            commands::announcement::announcement_force_refresh_sponsor_module,
             // Group Commands
             commands::group::get_group_settings,
             commands::group::save_group_settings,
@@ -454,6 +564,7 @@ pub fn run() {
             commands::group::get_display_groups,
             // Codex Commands
             commands::codex::list_codex_accounts,
+            commands::codex::sync_codex_local_quota_observations,
             commands::codex::get_current_codex_account,
             commands::codex::get_codex_config_toml_path,
             commands::codex::open_codex_config_toml,
@@ -505,19 +616,21 @@ pub fn run() {
             commands::codex::save_codex_account_groups,
             commands::codex::load_codex_model_providers,
             commands::codex::save_codex_model_providers,
-            commands::codex::codex_test_model_provider_connection,
-            commands::codex::codex_query_model_provider_usage,
             commands::codex::codex_local_access_get_state,
+            commands::codex::codex_local_access_get_light_state,
             commands::codex::codex_local_access_save_accounts,
             commands::codex::codex_local_access_remove_account,
             commands::codex::codex_local_access_rotate_api_key,
             commands::codex::codex_local_access_update_bound_oauth_account,
             commands::codex::codex_local_access_clear_stats,
+            commands::codex::codex_local_access_recover_health,
+            commands::codex::codex_local_access_pause_health,
             commands::codex::codex_local_access_query_request_logs,
             commands::codex::codex_local_access_prepare_restart,
             commands::codex::codex_local_access_kill_port,
             commands::codex::codex_local_access_update_port,
             commands::codex::codex_local_access_update_routing_strategy,
+            commands::codex::codex_local_access_apply_safety_preset,
             commands::codex::codex_local_access_update_custom_routing,
             commands::codex::codex_local_access_update_account_model_rules,
             commands::codex::codex_local_access_update_model_rules,
@@ -536,6 +649,8 @@ pub fn run() {
             commands::codex::codex_local_access_rotate_named_api_key,
             commands::codex::codex_local_access_delete_api_key,
             commands::codex::codex_local_access_set_enabled,
+            commands::codex::codex_runtime_mode_get,
+            commands::codex::codex_runtime_mode_set,
             commands::codex::codex_local_access_activate,
             commands::codex::codex_local_access_test,
             commands::codex::codex_local_access_chat_test,

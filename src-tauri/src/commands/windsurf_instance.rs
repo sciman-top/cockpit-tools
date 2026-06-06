@@ -253,7 +253,7 @@ pub async fn windsurf_start_instance(instance_id: String) -> Result<InstanceProf
         let default_dir = modules::windsurf_instance::get_default_windsurf_user_data_dir()?;
         let default_dir_str = default_dir.to_string_lossy().to_string();
         let default_settings = modules::windsurf_instance::load_default_settings()?;
-        modules::windsurf_instance::close_windsurf(&[default_dir_str.clone()], 20)?;
+        modules::windsurf_instance::close_windsurf(std::slice::from_ref(&default_dir_str), 20)?;
         let _ = modules::windsurf_instance::update_default_pid(None)?;
         inject_bound_account_for_instance_start(
             &default_dir_str,
@@ -291,7 +291,7 @@ pub async fn windsurf_start_instance(instance_id: String) -> Result<InstanceProf
         .find(|item| item.id == instance_id)
         .ok_or("实例不存在")?;
 
-    modules::windsurf_instance::close_windsurf(&[instance.user_data_dir.clone()], 20)?;
+    modules::windsurf_instance::close_windsurf(std::slice::from_ref(&instance.user_data_dir), 20)?;
     let _ = modules::windsurf_instance::update_instance_pid(&instance.id, None)?;
     inject_bound_account_for_instance_start(
         &instance.user_data_dir,
@@ -322,7 +322,7 @@ pub async fn windsurf_stop_instance(instance_id: String) -> Result<InstanceProfi
         let default_dir = modules::windsurf_instance::get_default_windsurf_user_data_dir()?;
         let default_dir_str = default_dir.to_string_lossy().to_string();
         let default_settings = modules::windsurf_instance::load_default_settings()?;
-        modules::windsurf_instance::close_windsurf(&[default_dir_str.clone()], 20)?;
+        modules::windsurf_instance::close_windsurf(std::slice::from_ref(&default_dir_str), 20)?;
         let _ = modules::windsurf_instance::update_default_pid(None)?;
         return Ok(InstanceProfileView {
             id: DEFAULT_INSTANCE_ID.to_string(),
@@ -348,7 +348,7 @@ pub async fn windsurf_stop_instance(instance_id: String) -> Result<InstanceProfi
         .find(|item| item.id == instance_id)
         .ok_or("实例不存在")?;
 
-    modules::windsurf_instance::close_windsurf(&[instance.user_data_dir.clone()], 20)?;
+    modules::windsurf_instance::close_windsurf(std::slice::from_ref(&instance.user_data_dir), 20)?;
     let updated = modules::windsurf_instance::update_instance_pid(&instance.id, None)?;
     let initialized = is_profile_initialized(&updated.user_data_dir);
     Ok(InstanceProfileView::from_profile(

@@ -1,0 +1,66 @@
+{
+  "url": "file:///D:/CODE/external/Cockpit-Tools-Local/dist/index.html",
+  "found": true,
+  "bodyTextStart": "仪表盘\nAntigravity\nCodex\n更多平台\n设置\n切换到经典布局\n账号\nCodex\n账号总览\n模型供应商\n唤醒任务\n多开实例\n会话管理\n全部 (2)\n标签筛选\n默认排序\n全选\nAPI 服务-旧\n已停用\n本机\nhttp://127.0.0.1:54140/v1\n密钥\nagt_codex_••••••••••••\nOAuth 绑定：未绑定\n绑定\n将账号添加到 API 服务，点击启动即可，无需其他配置\n添加账号\n监听范围：仅本机\n标准\nstale.plus.one@example.test\n当前\nPLUS\n账户类型：个人账户\n加备注\n使用 未知方式 登录 | 用户 ID: visual-plus-stale-1-acct\n5h\n95%\n1h 59m (06/04 21:57)\nWeekly\n95%\n4d 23h 59m (06/09 19:57)\n订阅\nPLUS\n刷新\n2026/05/28 19:57\n标准\nstale.plus.two@example.test\nPLUS\n账户类型：个人账户\n加备注\n使用 未知方式 登录 | 用户 ID: visual-plus-stale-2-acct\n5h\n88%\n1h 59m (06/04 21:57)\nWeekly\n92%\n4d 23h 59m (06/09 19:57)\n订阅\nPLUS\n刷新\n2026/05/28 19:57\n标准\n显示 1 - 2 条，共 2 条\n20 条/页\n上一页\nPage\n1\n/ 1\n下一页",
+  "bodyHasAccounts": true,
+  "bodyIncludesExpired": false,
+  "bodyIncludesPlanPlus": true,
+  "bodyIncludesPlus": true,
+  "cardCount": 2,
+  "cards": [
+    {
+      "text": "stale.plus.one@example.test当前PLUS账户类型：个人账户加备注使用 未知方式 登录 | 用户 ID: visual-plus-stale-1-acct5h95%1h 59m (06/04 21:57)Weekly95%4d 23h 59m (06/09 19:57)订阅PLUS刷新2026/05/28 19:57标准",
+      "className": "codex-account-card current    ",
+      "footerText": "订阅PLUS刷新",
+      "footerClass": "codex-subscription-footer warning",
+      "refreshButtons": 1,
+      "plusBadges": [
+        "tier-badge plus codex-plus",
+        "STRONG"
+      ]
+    },
+    {
+      "text": "stale.plus.two@example.testPLUS账户类型：个人账户加备注使用 未知方式 登录 | 用户 ID: visual-plus-stale-2-acct5h88%1h 59m (06/04 21:57)Weekly92%4d 23h 59m (06/09 19:57)订阅PLUS刷新2026/05/28 19:57标准",
+      "className": "codex-account-card     ",
+      "footerText": "订阅PLUS刷新",
+      "footerClass": "codex-subscription-footer warning",
+      "refreshButtons": 1,
+      "plusBadges": [
+        "tier-badge plus codex-plus",
+        "STRONG"
+      ]
+    }
+  ],
+  "visibleExpiredSubscriptionMarkers": [],
+  "cdpEvents": [
+    {
+      "method": "Runtime.consoleAPICalled",
+      "text": "[ExternalImport][Utils] 消费队列: 当前为空 Object"
+    },
+    {
+      "method": "Runtime.consoleAPICalled",
+      "text": "[ExternalImport][Utils] 消费队列: 当前为空 Object"
+    },
+    {
+      "method": "Runtime.consoleAPICalled",
+      "text": "[ExternalImport][Utils] 消费队列: 当前为空 Object"
+    },
+    {
+      "method": "Runtime.consoleAPICalled",
+      "text": "[ExternalImport][Utils] 消费队列: 当前为空 Object"
+    },
+    {
+      "method": "Runtime.consoleAPICalled",
+      "text": "[ExternalImport][Utils] 消费队列: 当前为空 Object"
+    },
+    {
+      "method": "Runtime.consoleAPICalled",
+      "text": "[ExternalImport][Utils] 消费队列: 当前为空 Object"
+    },
+    {
+      "method": "Runtime.consoleAPICalled",
+      "text": "[ExternalImport][Utils] 消费队列: 当前为空 Object"
+    }
+  ],
+  "chromeStderr": "\r\nDevTools listening on ws://127.0.0.1:49329/devtools/browser/be442b0e-c456-454c-aa7b-5005eb368181\r\n"
+}

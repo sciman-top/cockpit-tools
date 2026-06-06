@@ -1,19 +1,26 @@
-use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexAuthMode};
+use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexQuota, CodexQuotaErrorInfo};
 use crate::models::codex_local_access::{
     CodexLocalAccessAccountCooldown, CodexLocalAccessAccountHealth,
-    CodexLocalAccessAccountModelRule, CodexLocalAccessAccountStats, CodexLocalAccessApiKey,
-    CodexLocalAccessApiKeyStats, CodexLocalAccessChatMessage, CodexLocalAccessChatResult,
-    CodexLocalAccessClientBaseUrlHost, CodexLocalAccessCollection,
-    CodexLocalAccessCustomRoutingRule, CodexLocalAccessGatewayMode,
+    CodexLocalAccessAccountHealthStatus, CodexLocalAccessAccountHealthView,
+    CodexLocalAccessAccountModelRule, CodexLocalAccessAccountServiceHealth,
+    CodexLocalAccessAccountStats, CodexLocalAccessApiKey, CodexLocalAccessApiKeyStats,
+    CodexLocalAccessChatMessage, CodexLocalAccessChatResult, CodexLocalAccessClientBaseUrlHost,
+    CodexLocalAccessCollection, CodexLocalAccessConcurrencyDiagnostics,
+    CodexLocalAccessCustomRoutingRule, CodexLocalAccessGatewayMode, CodexLocalAccessGlobalError,
+    CodexLocalAccessHealthRegistry, CodexLocalAccessHealthSummary,
     CodexLocalAccessImageGenerationMode, CodexLocalAccessImageGenerationStatus,
-    CodexLocalAccessModelAlias, CodexLocalAccessModelPricing, CodexLocalAccessModelStats,
-    CodexLocalAccessPortCleanupResult, CodexLocalAccessProfileAttachment,
-    CodexLocalAccessProviderGateway, CodexLocalAccessProviderGatewayModelCapability,
-    CodexLocalAccessRequestKind, CodexLocalAccessRoutingStrategy, CodexLocalAccessScope,
-    CodexLocalAccessState, CodexLocalAccessStats, CodexLocalAccessStatsWindow,
+    CodexLocalAccessLightConcurrencyDiagnostics, CodexLocalAccessLightState,
+    CodexLocalAccessModelAlias, CodexLocalAccessModelCooldown, CodexLocalAccessModelPricing,
+    CodexLocalAccessModelStats, CodexLocalAccessPortCleanupResult,
+    CodexLocalAccessProfileAttachment, CodexLocalAccessRequestKind,
+    CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessState,
+    CodexLocalAccessStats, CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding,
     CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessTimeoutPreset,
     CodexLocalAccessTimeouts, CodexLocalAccessUsageEvent, CodexLocalAccessUsageEventPage,
-    CodexLocalAccessUsageStats,
+    CodexLocalAccessUsageStats, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
+    CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
+    CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
+    CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
 };
 use crate::modules::atomic_write::write_string_atomic;
 use crate::modules::{
@@ -22,22 +29,26 @@ use crate::modules::{
 use base64::{engine::general_purpose, Engine as _};
 use futures_util::{SinkExt, StreamExt};
 use rand::{distributions::Alphanumeric, Rng};
-use reqwest::header::{HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use reqwest::header::{
+    HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER,
+    USER_AGENT,
+};
 use reqwest::{Client, Method, Proxy, StatusCode, Url};
 use rusqlite::{
     params, params_from_iter, types::Value as SqlValue, Connection, Error as SqliteError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use sha1::{Digest, Sha1};
-use sha2::Sha256;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error as StdError;
+use std::io::Write;
 use std::net::{Ipv4Addr, TcpListener as StdTcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Command as StdCommand, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
@@ -55,12 +66,17 @@ use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::tungstenite::Error as WsError;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{client_async_tls_with_config, MaybeTlsStream, WebSocketStream};
-use toml_edit::{value, Document};
+use toml_edit::Document;
 
 const CODEX_LOCAL_ACCESS_FILE: &str = "codex_local_access.json";
 const CODEX_LOCAL_ACCESS_CHAT_TEST_STREAM_EVENT: &str = "codex-local-access-chat-test-stream";
 const CODEX_LOCAL_ACCESS_STATS_FILE: &str = "codex_local_access_stats.json";
 const CODEX_LOCAL_ACCESS_LOGS_DB_FILE: &str = "codex_local_access_logs.sqlite";
+const CODEX_LOCAL_ACCESS_HEALTH_FILE: &str = "codex_local_access_health.json";
+const CODEX_LOCAL_ACCESS_AUDIT_FILE: &str = "codex_local_access_audit.jsonl";
+const CODEX_RUNTIME_MODE_FILE: &str = "codex_runtime_mode.json";
+const CODEX_LOCAL_ACCESS_DATA_ROOT_ENV: &str = "COCKPIT_LOCAL_ACCESS_DATA_ROOT";
+const CODEX_LOCAL_ACCESS_BIND_HOST: &str = "127.0.0.1";
 const CODEX_LOCAL_ACCESS_TAKEOVER_BACKUPS_FILE: &str = "codex_local_access_takeover_backups.json";
 const CODEX_LOCAL_ACCESS_SIDECAR_DIR: &str = "codex_local_access_sidecar";
 const CODEX_LOCAL_ACCESS_SIDECAR_CONFIG_FILE: &str = "config.json";
@@ -70,22 +86,37 @@ const CODEX_LOCAL_ACCESS_SIDECAR_BIN_NAME: &str = "cockpit-cliproxy";
 const CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST: &str = "127.0.0.1";
 const CODEX_LOCAL_ACCESS_LAN_BIND_HOST: &str = "0.0.0.0";
 const CODEX_LOCAL_ACCESS_DEFAULT_CLIENT_URL_HOST: &str = "localhost";
+const CODEX_LOCAL_ACCESS_URL_HOST: &str = CODEX_LOCAL_ACCESS_DEFAULT_CLIENT_URL_HOST;
 const CODEX_LOCAL_ACCESS_API_PORT_ENV: &str = "COCKPIT_TOOLS_API_PORT";
 const CODEX_LOCAL_ACCESS_DEV_DEFAULT_PORT: u16 = 1456;
+const LITELLM_GATEWAY_HEALTH_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_HTTP_REQUEST_BYTES: usize = 64 * 1024 * 1024;
+// Internal hard cap; HLA safety config may raise the per-request limit up to this value.
+const MAX_HTTP_REQUEST_BYTES: usize = 256 * 1024 * 1024;
 const CODEX_LOCAL_ACCESS_TAKEOVER_BACKUP_VERSION: u32 = 1;
-const CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID: &str = "codex_local_access";
 const CODEX_PROFILE_AUTH_FILE: &str = "auth.json";
 const CODEX_PROFILE_CONFIG_FILE: &str = "config.toml";
-const CODEX_PROVIDER_MODEL_CATALOG_FILE: &str = "cockpit-provider-model-catalog.json";
-const CODEX_PROVIDER_MODEL_BACKUP_FILE: &str = ".cockpit-provider-model-backup.json";
-const MAX_HTTP_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
+const REQUEST_READ_TIMEOUT: Duration = DEFAULT_REQUEST_READ_TIMEOUT;
+const MAX_INLINE_ACCOUNT_RETRY_WAIT: Duration = Duration::from_secs(3);
+const MAX_POOL_UNAVAILABLE_PRE_ADMISSION_WAIT: Duration = Duration::from_secs(3);
+const UPSTREAM_SEND_RETRY_ATTEMPTS: usize = 3;
+const UPSTREAM_SEND_RETRY_BASE_DELAY: Duration = Duration::from_millis(200);
+const UPSTREAM_SEND_RETRY_MAX_DELAY: Duration = Duration::from_millis(1200);
 const MAX_REQUEST_RETRY_ATTEMPTS: usize = 1;
+const CODEX_RESPONSES_WEBSOCKET_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
+const SINGLE_ACCOUNT_STATUS_RETRY_BASE_DELAY: Duration = Duration::from_millis(300);
+const SINGLE_ACCOUNT_STATUS_RETRY_MAX_DELAY: Duration = Duration::from_millis(1500);
+const CODEX_WEBSOCKET_INITIAL_MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const DEFAULT_UPSTREAM_STREAM_TOTAL_TIMEOUT: Duration = Duration::from_secs(180);
+const UPSTREAM_CONNECT_TIMEOUT: Duration = DEFAULT_UPSTREAM_CONNECT_TIMEOUT;
+const UPSTREAM_STREAM_IDLE_TIMEOUT: Duration = DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT;
+const UPSTREAM_STREAM_TOTAL_TIMEOUT: Duration = DEFAULT_UPSTREAM_STREAM_TOTAL_TIMEOUT;
 const STATS_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
-const MAX_RETRY_CREDENTIALS_PER_REQUEST: usize = 8;
+const MAX_RETRY_CREDENTIALS_PER_REQUEST: usize = 24;
+const MAX_USAGE_LIMIT_RESCUE_CREDENTIALS_PER_REQUEST: usize = 4;
 const SESSION_AFFINITY_TTL_MIN_MS: i64 = 60 * 1000;
 const SESSION_AFFINITY_TTL_MAX_MS: i64 = 24 * 60 * 60 * 1000;
 const DEFAULT_SESSION_AFFINITY_TTL_MS: i64 = 60 * 60 * 1000;
@@ -110,6 +141,12 @@ const MAX_CUSTOM_TIMEOUT_PRESETS: usize = 20;
 const TIMEOUT_PRESET_NAME_MAX_CHARS: usize = 40;
 const RESPONSE_AFFINITY_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const MAX_RESPONSE_AFFINITY_BINDINGS: usize = 4096;
+const REQUEST_AFFINITY_TTL_MS: i64 = 60 * 60 * 1000;
+const MAX_REQUEST_AFFINITY_BINDINGS: usize = 4096;
+const REQUEST_AFFINITY_BINDING_REASON: &str = "codex_turn_affinity";
+const PROCESS_STICKY_BINDING_KEY: &str = "process";
+const PROCESS_STICKY_BINDING_REASON: &str = "sticky_process";
+const PROCESS_STICKY_BINDING_TTL_MS: i64 = 24 * 60 * 60 * 1000;
 const PREPARED_ACCOUNT_CACHE_TTL_MS: i64 = 30 * 1000;
 const DAY_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 const WEEK_WINDOW_MS: i64 = 7 * DAY_WINDOW_MS;
@@ -121,6 +158,11 @@ const CUSTOM_ROUTING_PRIORITY_MAX: i32 = 100;
 const CUSTOM_ROUTING_WEIGHT_MIN: u32 = 1;
 const CUSTOM_ROUTING_WEIGHT_MAX: u32 = 100;
 const GATEWAY_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_UNKNOWN_RATE_LIMIT_COOLDOWN: Duration = Duration::from_secs(60);
+const CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION: u32 = 1;
+const CODEX_LOCAL_ACCESS_AUDIT_MAX_BYTES: usize = 2 * 1024 * 1024;
+const CONCURRENCY_DIAGNOSTICS_AUDIT_WINDOW_MS: i64 = 10 * 60 * 1000;
+const RUNTIME_PROJECTION_RECENT_AUDIT_GRACE_MS: u128 = 5 * 60 * 1000;
 const GATEWAY_PORT_RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_PORT_RELEASE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SIDECAR_READY_TIMEOUT: Duration = Duration::from_secs(8);
@@ -129,25 +171,29 @@ const DEFAULT_OPENAI_RESPONSES_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_CODEX_USER_AGENT: &str =
     "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)";
 const DEFAULT_CODEX_ORIGINATOR: &str = "codex-tui";
-const CODEX_RESPONSES_WEBSOCKET_BETA_HEADER_VALUE: &str = "responses_websockets=2026-02-06";
+const LEGACY_DEFAULT_CODEX_LOCAL_ACCESS_PORT: u16 = 5335;
+const PREFERRED_CODEX_LOCAL_ACCESS_PORTS: &[u16] =
+    &[45335, 45336, 45435, 45436, 45535, 45536, 46335, 47335];
+const CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID: &str = "codex_local_access";
+const CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME: &str = "Cockpit API Service";
+const CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID: &str = "codex_local_access_runtime";
 const MAX_GPT_REASONING_SIGNATURE_LEN: usize = 32 * 1024 * 1024;
 const CODEX_WEBSOCKET_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-const CODEX_WEBSOCKET_INITIAL_MESSAGE_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const CODEX_WEBSOCKET_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const CODEX_WEBSOCKET_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(25);
 const CODEX_WEBSOCKET_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CODEX_WEBSOCKET_PROXY_CONNECT_MAX_BYTES: usize = 16 * 1024;
-const CORS_ALLOW_HEADERS: &str = "Authorization, Content-Type, OpenAI-Beta, X-API-Key, X-Codex-Beta-Features, X-Codex-Turn-State, X-Codex-Turn-Metadata, X-Client-Request-Id, X-ResponsesAPI-Include-Timing-Metrics, Version, Originator, Session_id, Conversation_id, ChatGPT-Account-Id";
+const CORS_ALLOW_HEADERS: &str = "Authorization, Content-Type, OpenAI-Beta, X-API-Key, X-Codex-Beta-Features, X-Codex-Turn-State, X-Codex-Turn-Metadata, X-Client-Request-Id, X-ResponsesAPI-Include-Timing-Metrics, Version, Originator, Session-Id, Session_id, Conversation_id, ChatGPT-Account-Id";
 const CODEX_OFFICIAL_EMPTY_HEADERS: &[&str] = &[
     "version",
-    "x-codex-turn-state",
-    "x-codex-turn-metadata",
     "x-client-request-id",
     "x-responsesapi-include-timing-metrics",
 ];
 const DEFAULT_CODEX_MODELS: &[&str] = &[
+    "gpt-5.5",
+    "gpt-5.5-mini",
     "gpt-5-codex",
     "gpt-5-codex-mini",
     "gpt-5.5",
@@ -172,10 +218,31 @@ const BACKEND_CODEX_RESPONSES_PATH: &str = "/backend-api/codex/responses";
 const BACKEND_CODEX_RESPONSES_COMPACT_PATH: &str = "/backend-api/codex/responses/compact";
 const IMAGES_GENERATIONS_PATH: &str = "/v1/images/generations";
 const IMAGES_EDITS_PATH: &str = "/v1/images/edits";
+const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
+const X_CODEX_TURN_METADATA_HEADER: &str = "x-codex-turn-metadata";
+const LOCAL_CODEX_TURN_STATE_PREFIX: &str = "cockpit-turn-";
 static GATEWAY_RUNTIME: OnceLock<TokioMutex<GatewayRuntime>> = OnceLock::new();
 static GATEWAY_LIFECYCLE_LOCK: OnceLock<TokioMutex<()>> = OnceLock::new();
 static GATEWAY_ROUND_ROBIN_CURSOR: AtomicUsize = AtomicUsize::new(0);
+static GATEWAY_REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 static UPSTREAM_HTTP_CLIENT: OnceLock<Mutex<Option<CachedUpstreamHttpClient>>> = OnceLock::new();
+static LOCAL_API_BACKPRESSURE_STATE: OnceLock<Mutex<LocalApiBackpressureState>> = OnceLock::new();
+static LOCAL_API_BACKPRESSURE_ADMISSION_QUEUE: OnceLock<TokioMutex<()>> = OnceLock::new();
+static ACTIVE_STREAM_LEASE_REGISTRY: OnceLock<Mutex<ActiveStreamLeaseRegistry>> = OnceLock::new();
+static AUDIT_TRAIL_STATUS: OnceLock<Mutex<AuditTrailStatus>> = OnceLock::new();
+static AUDIT_TRAIL_APPEND_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static HEALTH_SUMMARY_CACHE: OnceLock<Mutex<Option<CachedHealthSummary>>> = OnceLock::new();
+static RUNTIME_HISTORY_VISIBILITY_REPAIR_RUNNING: OnceLock<AtomicBool> = OnceLock::new();
+static WINDOWS_PERSISTENT_ENV_PROXY_URL: OnceLock<Option<String>> = OnceLock::new();
+const HEALTH_SUMMARY_CACHE_TTL_MS: i64 = 10_000;
+const ENV_PROXY_KEYS: [&str; 6] = [
+    "HTTPS_PROXY",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+];
 
 #[derive(Default)]
 struct GatewayRuntime {
@@ -185,6 +252,7 @@ struct GatewayRuntime {
     stats_dirty: bool,
     stats_flush_inflight: bool,
     response_affinity: HashMap<String, ResponseAffinityBinding>,
+    request_affinity: HashMap<String, ResponseAffinityBinding>,
     model_cooldowns: HashMap<String, AccountModelCooldown>,
     account_health: HashMap<String, RuntimeAccountHealth>,
     prepared_accounts: HashMap<String, CachedPreparedAccount>,
@@ -196,6 +264,15 @@ struct GatewayRuntime {
     shutdown_sender: Option<watch::Sender<bool>>,
     task: Option<tokio::task::JoinHandle<()>>,
     sidecar_child: Option<Child>,
+}
+
+#[derive(Debug, Clone)]
+struct CachedHealthSummary {
+    account_ids: Vec<String>,
+    file_modified_ms: Option<i64>,
+    audit_status: AuditTrailStatus,
+    cached_at_ms: i64,
+    summary: CodexLocalAccessHealthSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -238,7 +315,15 @@ struct UsageCapture {
 struct ResponseCapture {
     usage: Option<UsageCapture>,
     response_id: Option<String>,
+    response_completed_seen: bool,
+    compaction_summary_seen: bool,
     terminal_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResponseHeaderValue {
+    name: &'static str,
+    value: String,
 }
 
 #[derive(Debug, Clone)]
@@ -367,14 +452,14 @@ struct ProxyDispatchError {
     account_id: Option<String>,
     account_email: Option<String>,
     error_category: Option<String>,
+    retry_after: Option<Duration>,
+    defer_until_pool_available: bool,
 }
 
 #[derive(Debug, Clone)]
 struct ResolvedLocalApiKey {
     id: String,
     label: String,
-    provider_gateway: Option<CodexLocalAccessProviderGateway>,
-    account_ids: Vec<String>,
     model_prefix: Option<String>,
     allowed_models: Vec<String>,
     excluded_models: Vec<String>,
@@ -388,12 +473,163 @@ struct RequestStatsContext {
     api_key_label: String,
 }
 
+#[derive(Debug, Clone, Default)]
+struct LocalApiBackpressureState {
+    active_requests: u32,
+    last_started_at: Option<Instant>,
+}
+
+#[derive(Debug)]
+struct LocalApiBackpressurePermit {
+    released: bool,
+}
+
+#[derive(Debug, Default)]
+struct ActiveStreamLeaseRegistry {
+    next_lease_id: u64,
+    leases: BTreeMap<u64, ActiveStreamLeaseRecord>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AuditTrailStatus {
+    degraded: bool,
+    error: Option<String>,
+    degraded_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Default)]
+struct ConcurrencyAuditRollup {
+    recent_audit_event_count: usize,
+    recent_request_count: usize,
+    recent_local_backpressure_count: usize,
+    recent_pool_wait_count: usize,
+    recent_upstream_limit_count: usize,
+    recent_stream_error_count: usize,
+    last_problem_at_ms: Option<i64>,
+    last_problem_kind: Option<String>,
+    audit_load_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveStreamLeaseRecord {
+    account_id: String,
+    request_affinity_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveStreamTerminal {
+    Completed,
+    StreamError,
+    ClientAborted,
+    Dropped,
+}
+
+#[derive(Debug)]
+struct ActiveStreamLease {
+    lease_id: u64,
+    context: AuditContext,
+    released: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeProjectionChangeOptions {
+    pub force: bool,
+    pub source: &'static str,
+}
+
+impl RuntimeProjectionChangeOptions {
+    pub const fn new(source: &'static str, force: bool) -> Self {
+        Self { force, source }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RuntimeProjectionContinuityRisk {
+    active_stream_count: usize,
+    codex_app_process_count: usize,
+    recent_audit_activity: bool,
+    audit_last_modified_age_ms: Option<u128>,
+}
+
+impl RuntimeProjectionContinuityRisk {
+    fn has_live_continuity_risk(&self) -> bool {
+        self.active_stream_count > 0
+            || self.codex_app_process_count > 0
+            || self.recent_audit_activity
+    }
+
+    fn has_active_local_access_risk(&self) -> bool {
+        self.active_stream_count > 0 || self.recent_audit_activity
+    }
+
+    fn blocking_reasons(&self) -> Vec<&'static str> {
+        let mut reasons = Vec::new();
+        if self.active_stream_count > 0 {
+            reasons.push("active_stream");
+        }
+        if self.codex_app_process_count > 0 {
+            reasons.push("codex_app_running");
+        }
+        if self.recent_audit_activity {
+            reasons.push("recent_audit_activity");
+        }
+        reasons
+    }
+
+    fn audit_detail(&self) -> BTreeMap<String, String> {
+        let mut detail = BTreeMap::from([
+            (
+                "active_stream_count".to_string(),
+                self.active_stream_count.to_string(),
+            ),
+            (
+                "codex_app_process_count".to_string(),
+                self.codex_app_process_count.to_string(),
+            ),
+            (
+                "recent_audit_activity".to_string(),
+                self.recent_audit_activity.to_string(),
+            ),
+        ]);
+        if let Some(age_ms) = self.audit_last_modified_age_ms {
+            detail.insert("audit_last_modified_age_ms".to_string(), age_ms.to_string());
+        }
+        let reasons = self.blocking_reasons();
+        if !reasons.is_empty() {
+            detail.insert("blocking_reasons".to_string(), reasons.join(","));
+        }
+        detail
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StreamWriteState {
+    headers_written: bool,
+    first_chunk_written: bool,
+}
+
+impl StreamWriteState {
+    fn mark_headers_written(&mut self) {
+        self.headers_written = true;
+    }
+
+    fn mark_first_chunk_written(&mut self) {
+        self.first_chunk_written = true;
+    }
+
+    fn can_attempt_account_fallback(self) -> bool {
+        !self.headers_written && !self.first_chunk_written
+    }
+}
+
 struct ResponseUsageCollector {
     is_stream: bool,
     body: Vec<u8>,
     stream_buffer: Vec<u8>,
     usage: Option<UsageCapture>,
     response_id: Option<String>,
+    response_completed_seen: bool,
+    compaction_summary_seen: bool,
     terminal_error: Option<String>,
 }
 
@@ -403,6 +639,83 @@ struct ParsedRequest {
     target: String,
     headers: HashMap<String, String>,
     body: Vec<u8>,
+    gateway_request_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HttpRequestReadError {
+    RequestTooLarge {
+        limit_bytes: usize,
+        observed_bytes: usize,
+        content_length: Option<usize>,
+    },
+    Other(String),
+}
+
+impl HttpRequestReadError {
+    fn other(message: impl Into<String>) -> Self {
+        Self::Other(message.into())
+    }
+}
+
+impl std::fmt::Display for HttpRequestReadError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RequestTooLarge {
+                limit_bytes,
+                observed_bytes,
+                content_length,
+            } => write!(
+                formatter,
+                "请求体过大: limit_bytes={}, observed_bytes={}, content_length={}",
+                limit_bytes,
+                observed_bytes,
+                content_length
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".to_string())
+            ),
+            Self::Other(message) => formatter.write_str(message),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AuditContext {
+    request_id: String,
+    request_id_source: String,
+    route: String,
+    model: String,
+    account_hash: String,
+    gateway_request_id: String,
+    turn_lineage_id: Option<String>,
+    turn_lineage_source: Option<String>,
+    previous_response_id_hash: Option<String>,
+    sticky_boundary: Option<String>,
+    is_continuation: bool,
+    is_sticky_continuation: bool,
+    is_auto_compact_candidate: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CodexLocalAccessAuditEvent {
+    schema_version: u32,
+    timestamp: i64,
+    request_id: String,
+    phase: String,
+    route: String,
+    model: String,
+    account_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    detail: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -422,6 +735,17 @@ enum GatewayResponseAdapter {
     },
 }
 
+impl GatewayResponseAdapter {
+    fn audit_kind(&self) -> &'static str {
+        match self {
+            Self::Passthrough { .. } => "passthrough",
+            Self::ChatCompletions { .. } => "chat_completions",
+            Self::Images { stream_prefix, .. } if stream_prefix == "image_edit" => "images_edit",
+            Self::Images { .. } => "images_generations",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct RequestRoutingHint {
     model_key: String,
@@ -437,12 +761,40 @@ struct WebSocketDispatchSuccess {
     account_email: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OfficialCodexStickyRoutingBoundary {
+    TurnState { affinity_key: String },
+    PreviousResponseId { response_id: String },
+}
+
+impl OfficialCodexStickyRoutingBoundary {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::TurnState { .. } => "codex_turn_state",
+            Self::PreviousResponseId { .. } => "previous_response_id",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RoutingCandidate {
     account_id: String,
     plan_rank: Option<i32>,
     remaining_quota: Option<i32>,
     subscription_expiry_ms: Option<i64>,
+}
+
+#[derive(Debug, Default)]
+struct PoolUnavailableSummary {
+    total_count: usize,
+    schedulable_count: usize,
+    exhausted_count: usize,
+    cooling_count: usize,
+    model_cooldown_count: usize,
+    manual_required_count: usize,
+    disabled_count: usize,
+    unknown_blocked_count: usize,
+    nearest_wait: Option<Duration>,
 }
 
 fn gateway_runtime() -> &'static TokioMutex<GatewayRuntime> {
@@ -468,30 +820,879 @@ fn duration_from_millis(value: u64, fallback: Duration) -> Duration {
     Duration::from_millis(value)
 }
 
-fn upstream_env_proxy_url() -> Option<String> {
-    const ENV_PROXY_KEYS: [&str; 6] = [
-        "HTTPS_PROXY",
-        "https_proxy",
-        "ALL_PROXY",
-        "all_proxy",
-        "HTTP_PROXY",
-        "http_proxy",
-    ];
-
+fn first_non_empty_proxy_value<F>(mut read: F) -> Option<String>
+where
+    F: FnMut(&str) -> Option<String>,
+{
     for key in ENV_PROXY_KEYS {
-        if let Ok(value) = std::env::var(key) {
-            let proxy_url = value.trim();
-            if !proxy_url.is_empty() {
-                return Some(proxy_url.to_string());
-            }
+        let Some(value) = read(key) else {
+            continue;
+        };
+        let proxy_url = value.trim();
+        if !proxy_url.is_empty() {
+            return Some(proxy_url.to_string());
         }
+    }
+    None
+}
+
+fn upstream_process_env_proxy_url() -> Option<String> {
+    first_non_empty_proxy_value(|key| std::env::var(key).ok())
+}
+
+#[cfg(target_os = "windows")]
+fn upstream_windows_persistent_env_proxy_url() -> Option<String> {
+    WINDOWS_PERSISTENT_ENV_PROXY_URL
+        .get_or_init(read_windows_persistent_env_proxy_url)
+        .clone()
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_persistent_env_proxy_url() -> Option<String> {
+    use std::process::Command;
+
+    let keys = ENV_PROXY_KEYS
+        .iter()
+        .map(|key| format!("'{}'", key.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!(
+        r#"$keys=@({keys});
+foreach ($scope in @('User','Machine')) {{
+  foreach ($key in $keys) {{
+    $value = [Environment]::GetEnvironmentVariable($key, $scope)
+    if (-not [string]::IsNullOrWhiteSpace($value)) {{
+      [Console]::Out.Write($value.Trim())
+      exit 0
+    }}
+  }}
+}}
+exit 0"#
+    );
+    let mut command = Command::new("powershell");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let Ok(output) = command.output() else {
+        return None;
+    };
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout);
+    let proxy_url = value.trim();
+    if proxy_url.is_empty() {
+        None
+    } else {
+        Some(proxy_url.to_string())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn upstream_windows_persistent_env_proxy_url() -> Option<String> {
+    None
+}
+
+fn upstream_env_proxy_url() -> Option<String> {
+    upstream_process_env_proxy_url().or_else(upstream_windows_persistent_env_proxy_url)
+}
+
+fn local_api_backpressure_state() -> &'static Mutex<LocalApiBackpressureState> {
+    LOCAL_API_BACKPRESSURE_STATE.get_or_init(|| Mutex::new(LocalApiBackpressureState::default()))
+}
+
+fn local_api_backpressure_admission_queue() -> &'static TokioMutex<()> {
+    LOCAL_API_BACKPRESSURE_ADMISSION_QUEUE.get_or_init(|| TokioMutex::new(()))
+}
+
+fn active_stream_lease_registry() -> &'static Mutex<ActiveStreamLeaseRegistry> {
+    ACTIVE_STREAM_LEASE_REGISTRY.get_or_init(|| Mutex::new(ActiveStreamLeaseRegistry::default()))
+}
+
+fn active_stream_lease_count() -> usize {
+    active_stream_lease_registry()
+        .lock()
+        .map(|registry| registry.leases.len())
+        .unwrap_or(0)
+}
+
+fn current_local_backpressure_snapshot() -> LocalApiBackpressureState {
+    local_api_backpressure_state()
+        .lock()
+        .map(|state| state.clone())
+        .unwrap_or_default()
+}
+
+fn local_backpressure_start_interval_remaining(
+    state: &LocalApiBackpressureState,
+    config: &CodexLocalApiSafetyConfig,
+    now: Instant,
+) -> Duration {
+    if state.active_requests >= config.max_concurrent_requests.max(1) {
+        return Duration::from_millis(0);
+    }
+
+    let min_interval = Duration::from_secs(config.min_request_interval_seconds);
+    if min_interval.is_zero() {
+        return Duration::from_millis(0);
+    }
+
+    let Some(last_started_at) = state.last_started_at else {
+        return Duration::from_millis(0);
+    };
+    let Some(next_allowed_at) = last_started_at.checked_add(min_interval) else {
+        return Duration::from_millis(0);
+    };
+    next_allowed_at
+        .checked_duration_since(now)
+        .unwrap_or_else(|| Duration::from_millis(0))
+}
+
+fn duration_as_millis_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u64::MAX as u128) as u64
+}
+
+struct LocalAccessPerfTrace {
+    operation: &'static str,
+    started_at: Instant,
+    last_mark_at: Instant,
+    phases: Vec<(&'static str, u64)>,
+}
+
+impl LocalAccessPerfTrace {
+    fn new(operation: &'static str) -> Self {
+        let now = Instant::now();
+        Self {
+            operation,
+            started_at: now,
+            last_mark_at: now,
+            phases: Vec::new(),
+        }
+    }
+
+    fn mark(&mut self, phase: &'static str) {
+        let now = Instant::now();
+        self.phases.push((
+            phase,
+            duration_as_millis_u64(now.duration_since(self.last_mark_at)),
+        ));
+        self.last_mark_at = now;
+    }
+
+    fn finish(self, slow_threshold_ms: u64) {
+        let total_ms = duration_as_millis_u64(self.started_at.elapsed());
+        if total_ms < slow_threshold_ms {
+            return;
+        }
+        let phases = self
+            .phases
+            .into_iter()
+            .map(|(phase, elapsed_ms)| format!("{}={}ms", phase, elapsed_ms))
+            .collect::<Vec<_>>()
+            .join(" ");
+        logger::log_codex_api_info(&format!(
+            "[CodexLocalAccess][Perf] operation={} total_ms={} {}",
+            self.operation, total_ms, phases
+        ));
+    }
+}
+
+async fn ensure_runtime_loaded_traced(
+    trace: &mut LocalAccessPerfTrace,
+    without_start: bool,
+) -> Result<(), String> {
+    if without_start {
+        ensure_runtime_loaded_without_start().await?;
+        trace.mark("runtime_load");
+    } else {
+        ensure_runtime_loaded().await?;
+        trace.mark("runtime_load");
+    }
+    Ok(())
+}
+
+fn load_runtime_collection_snapshot() -> Option<CodexLocalAccessCollection> {
+    futures::executor::block_on(async {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    })
+}
+
+async fn load_runtime_collection_snapshot_async() -> Option<CodexLocalAccessCollection> {
+    let runtime = gateway_runtime().lock().await;
+    runtime.collection.clone()
+}
+
+fn concurrency_problem_kind(event: &CodexLocalAccessAuditEvent) -> Option<&'static str> {
+    let phase = event.phase.to_ascii_lowercase();
+    let error_type = event
+        .error_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    if phase == "local_backpressure" || error_type == "local_backpressure" {
+        return Some("local_backpressure");
+    }
+    if phase == "pool_wait" || error_type == "cockpit_pool_wait" {
+        return Some("pool_wait");
+    }
+    if matches!(
+        error_type.as_str(),
+        "usage_limit_reached"
+            | "upstream_rate_limit"
+            | "insufficient_quota"
+            | "model_capacity"
+            | "rate_limited"
+    ) {
+        return Some("upstream_limit");
+    }
+    if phase.contains("stream_error") || error_type.contains("stream_error") {
+        return Some("stream_error");
+    }
+    None
+}
+
+fn update_concurrency_audit_rollup(
+    rollup: &mut ConcurrencyAuditRollup,
+    event: &CodexLocalAccessAuditEvent,
+) {
+    rollup.recent_audit_event_count = rollup.recent_audit_event_count.saturating_add(1);
+    if event.phase == "listener" {
+        rollup.recent_request_count = rollup.recent_request_count.saturating_add(1);
+    }
+
+    let Some(kind) = concurrency_problem_kind(event) else {
+        return;
+    };
+    match kind {
+        "local_backpressure" => {
+            rollup.recent_local_backpressure_count =
+                rollup.recent_local_backpressure_count.saturating_add(1);
+        }
+        "pool_wait" => {
+            rollup.recent_pool_wait_count = rollup.recent_pool_wait_count.saturating_add(1);
+        }
+        "upstream_limit" => {
+            rollup.recent_upstream_limit_count =
+                rollup.recent_upstream_limit_count.saturating_add(1);
+        }
+        "stream_error" => {
+            rollup.recent_stream_error_count = rollup.recent_stream_error_count.saturating_add(1);
+        }
+        _ => {}
+    }
+
+    if rollup
+        .last_problem_at_ms
+        .map(|timestamp| event.timestamp >= timestamp)
+        .unwrap_or(true)
+    {
+        rollup.last_problem_at_ms = Some(event.timestamp);
+        rollup.last_problem_kind = Some(kind.to_string());
+    }
+}
+
+fn read_concurrency_audit_file(
+    path: &Path,
+    now: i64,
+    audit_window_ms: i64,
+    rollup: &mut ConcurrencyAuditRollup,
+) {
+    if !path.exists() {
+        return;
+    }
+
+    match path.metadata() {
+        Ok(metadata) if metadata.len() as usize > CODEX_LOCAL_ACCESS_AUDIT_MAX_BYTES => {
+            if rollup.audit_load_error.is_none() {
+                rollup.audit_load_error = Some(format!(
+                    "审计日志过大，已跳过 {}",
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("audit")
+                ));
+            }
+            return;
+        }
+        Err(err) => {
+            if rollup.audit_load_error.is_none() {
+                rollup.audit_load_error = Some(format!("读取审计日志元数据失败: {}", err));
+            }
+            return;
+        }
+        _ => {}
+    }
+
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(err) => {
+            if rollup.audit_load_error.is_none() {
+                rollup.audit_load_error = Some(format!("读取审计日志失败: {}", err));
+            }
+            return;
+        }
+    };
+
+    let window_start = now.saturating_sub(audit_window_ms.max(0));
+    for (index, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let event = match serde_json::from_str::<CodexLocalAccessAuditEvent>(line) {
+            Ok(event) => event,
+            Err(err) => {
+                if rollup.audit_load_error.is_none() {
+                    rollup.audit_load_error =
+                        Some(format!("解析审计日志第 {} 行失败: {}", index + 1, err));
+                }
+                continue;
+            }
+        };
+        if event.timestamp < window_start || event.timestamp > now.saturating_add(60_000) {
+            continue;
+        }
+        update_concurrency_audit_rollup(rollup, &event);
+    }
+}
+
+fn load_concurrency_audit_rollup(now: i64, audit_window_ms: i64) -> ConcurrencyAuditRollup {
+    let mut rollup = ConcurrencyAuditRollup::default();
+    let path = match local_access_audit_file_path() {
+        Ok(path) => path,
+        Err(err) => {
+            rollup.audit_load_error = Some(err);
+            return rollup;
+        }
+    };
+
+    let rotated_path = audit_rotated_path(&path);
+    read_concurrency_audit_file(&rotated_path, now, audit_window_ms, &mut rollup);
+    read_concurrency_audit_file(&path, now, audit_window_ms, &mut rollup);
+    rollup
+}
+
+fn is_continuity_relevant_audit_event(event: &CodexLocalAccessAuditEvent) -> bool {
+    event.route.starts_with("/v1/")
+}
+
+fn latest_continuity_audit_timestamp_from_path(path: &Path, now: i64) -> Option<i64> {
+    if !path.exists() {
+        return None;
+    }
+
+    let content = std::fs::read_to_string(path).ok()?;
+    for line in content.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(event) = serde_json::from_str::<CodexLocalAccessAuditEvent>(line) else {
+            continue;
+        };
+        if !is_continuity_relevant_audit_event(&event) {
+            continue;
+        }
+        if event.timestamp > now.saturating_add(60_000) {
+            continue;
+        }
+        return Some(event.timestamp);
     }
 
     None
 }
 
+fn recent_audit_activity_from_path(path: &Path, now: i64) -> (bool, Option<u128>) {
+    let rotated_path = audit_rotated_path(path);
+    let latest_timestamp = [
+        latest_continuity_audit_timestamp_from_path(&rotated_path, now),
+        latest_continuity_audit_timestamp_from_path(path, now),
+    ]
+    .into_iter()
+    .flatten()
+    .max();
+
+    let Some(timestamp) = latest_timestamp else {
+        return (false, None);
+    };
+    let age_ms = now.saturating_sub(timestamp).max(0) as u128;
+    (
+        age_ms <= RUNTIME_PROJECTION_RECENT_AUDIT_GRACE_MS,
+        Some(age_ms),
+    )
+}
+
+fn recent_audit_activity() -> (bool, Option<u128>) {
+    let Ok(path) = local_access_audit_file_path() else {
+        return (false, None);
+    };
+    recent_audit_activity_from_path(&path, now_ms())
+}
+
+fn collect_runtime_projection_continuity_risk() -> RuntimeProjectionContinuityRisk {
+    let (recent_audit_activity, audit_last_modified_age_ms) = recent_audit_activity();
+    RuntimeProjectionContinuityRisk {
+        active_stream_count: active_stream_lease_count(),
+        codex_app_process_count: process::collect_codex_process_entries().len(),
+        recent_audit_activity,
+        audit_last_modified_age_ms,
+    }
+}
+
+fn should_block_direct_projection_change(
+    current_mode: CodexRuntimeIntegrationMode,
+    target_mode: CodexRuntimeIntegrationMode,
+    force: bool,
+    risk: &RuntimeProjectionContinuityRisk,
+) -> bool {
+    current_mode == CodexRuntimeIntegrationMode::CockpitApiService
+        && target_mode == CodexRuntimeIntegrationMode::DirectProjection
+        && should_block_runtime_projection_change(current_mode, target_mode, force, risk)
+}
+
+fn should_block_runtime_projection_change(
+    current_mode: CodexRuntimeIntegrationMode,
+    target_mode: CodexRuntimeIntegrationMode,
+    force: bool,
+    risk: &RuntimeProjectionContinuityRisk,
+) -> bool {
+    if current_mode == target_mode || force {
+        return false;
+    }
+
+    match (current_mode, target_mode) {
+        (
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeIntegrationMode::CockpitApiService,
+        ) => risk.has_active_local_access_risk(),
+        _ => risk.has_live_continuity_risk(),
+    }
+}
+
+fn should_block_codex_auth_projection_change(
+    force: bool,
+    risk: &RuntimeProjectionContinuityRisk,
+) -> bool {
+    !force && risk.has_live_continuity_risk()
+}
+
+pub fn ensure_codex_auth_projection_change_allowed(
+    source: &str,
+    force: bool,
+) -> Result<(), String> {
+    let risk = collect_runtime_projection_continuity_risk();
+    if !should_block_codex_auth_projection_change(force, &risk) {
+        return Ok(());
+    }
+
+    record_runtime_projection_audit_event(
+        "auth_projection_transition",
+        "blocked",
+        source,
+        force,
+        Some(CodexRuntimeIntegrationMode::DirectProjection),
+        Some(CodexRuntimeIntegrationMode::DirectProjection),
+        Some(&risk),
+    );
+
+    Err(format!(
+        "Codex 连续性保护窗口内已阻止切换（{}）。Direct OAuth/API 切换会替换 Codex auth 投影，可能中断正在使用当前登录态的任务。如确需切换，请在确认没有运行中任务后使用强制切换。",
+        risk.blocking_reasons().join(", ")
+    ))
+}
+
+fn audit_trail_status() -> &'static Mutex<AuditTrailStatus> {
+    AUDIT_TRAIL_STATUS.get_or_init(|| Mutex::new(AuditTrailStatus::default()))
+}
+
+fn audit_trail_append_lock() -> &'static Mutex<()> {
+    AUDIT_TRAIL_APPEND_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn health_summary_cache() -> &'static Mutex<Option<CachedHealthSummary>> {
+    HEALTH_SUMMARY_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn runtime_history_visibility_repair_running() -> &'static AtomicBool {
+    RUNTIME_HISTORY_VISIBILITY_REPAIR_RUNNING.get_or_init(|| AtomicBool::new(false))
+}
+
+fn invalidate_health_summary_cache() {
+    if let Ok(mut cache) = health_summary_cache().lock() {
+        *cache = None;
+    }
+}
+
+fn current_audit_trail_status() -> AuditTrailStatus {
+    audit_trail_status()
+        .lock()
+        .map(|status| status.clone())
+        .unwrap_or_default()
+}
+
+fn mark_audit_trail_degraded(err: &str) {
+    if let Ok(mut status) = audit_trail_status().lock() {
+        status.degraded = true;
+        status.error = Some(safe_log_field(Some(err), 240));
+        status.degraded_at_ms = Some(now_ms());
+    }
+    invalidate_health_summary_cache();
+}
+
+fn mark_audit_trail_healthy() {
+    if let Ok(mut status) = audit_trail_status().lock() {
+        *status = AuditTrailStatus::default();
+    }
+    invalidate_health_summary_cache();
+}
+
+fn apply_audit_trail_status_to_health_summary(
+    summary: &mut CodexLocalAccessHealthSummary,
+    status: &AuditTrailStatus,
+) {
+    summary.audit_degraded = status.degraded;
+    summary.audit_error = status.error.clone();
+    summary.audit_degraded_at_ms = status.degraded_at_ms;
+}
+
+impl Drop for LocalApiBackpressurePermit {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+impl LocalApiBackpressurePermit {
+    fn release(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        let Ok(mut state) = local_api_backpressure_state().lock() else {
+            return;
+        };
+        state.active_requests = state.active_requests.saturating_sub(1);
+    }
+}
+
+impl ActiveStreamTerminal {
+    fn phase(self) -> &'static str {
+        match self {
+            Self::Completed => "stream_completed",
+            Self::StreamError => "stream_error",
+            Self::ClientAborted => "client_aborted",
+            Self::Dropped => "stream_error",
+        }
+    }
+
+    fn outcome(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::StreamError => "error",
+            Self::ClientAborted => "aborted",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
+impl ActiveStreamLease {
+    fn release(&mut self, terminal: ActiveStreamTerminal) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        let active_count = release_active_stream_lease(self.lease_id);
+        record_audit_event_from_context(
+            &self.context,
+            terminal.phase(),
+            None,
+            None,
+            None,
+            Some(terminal.outcome()),
+            BTreeMap::from([("lease_id".to_string(), self.lease_id.to_string())]),
+        );
+        record_audit_event_from_context(
+            &self.context,
+            "lease_released",
+            None,
+            None,
+            None,
+            Some(terminal.outcome()),
+            BTreeMap::from([
+                ("lease_id".to_string(), self.lease_id.to_string()),
+                ("active_count".to_string(), active_count.to_string()),
+            ]),
+        );
+    }
+}
+
+impl Drop for ActiveStreamLease {
+    fn drop(&mut self) {
+        self.release(ActiveStreamTerminal::Dropped);
+    }
+}
+
+fn local_backpressure_wait_duration(
+    state: &LocalApiBackpressureState,
+    config: &CodexLocalApiSafetyConfig,
+    now: Instant,
+) -> Option<Duration> {
+    let max_concurrent = config.max_concurrent_requests.max(1);
+    if state.active_requests >= max_concurrent {
+        return Some(Duration::from_millis(50));
+    }
+
+    let min_interval = Duration::from_secs(config.min_request_interval_seconds);
+    if min_interval.is_zero() {
+        return None;
+    }
+
+    let last_started_at = state.last_started_at?;
+    let next_allowed_at = last_started_at.checked_add(min_interval)?;
+    next_allowed_at
+        .checked_duration_since(now)
+        .filter(|wait| *wait > Duration::from_secs(0))
+}
+
+fn local_backpressure_retry_after(config: &CodexLocalApiSafetyConfig) -> Duration {
+    Duration::from_secs(
+        config
+            .min_request_interval_seconds
+            .max(1)
+            .min(config.max_queue_wait_seconds.max(1)),
+    )
+}
+
+fn local_backpressure_error(config: &CodexLocalApiSafetyConfig) -> ProxyDispatchError {
+    ProxyDispatchError {
+        status: StatusCode::TOO_MANY_REQUESTS.as_u16(),
+        message: "本地接入队列等待超时，请稍后重试".to_string(),
+        account_id: None,
+        account_email: None,
+        error_category: Some("local_backpressure".to_string()),
+        retry_after: Some(local_backpressure_retry_after(config)),
+        defer_until_pool_available: false,
+    }
+}
+
+fn try_acquire_local_api_backpressure(
+    config: &CodexLocalApiSafetyConfig,
+) -> Result<LocalApiBackpressurePermit, Duration> {
+    let mut state = local_api_backpressure_state()
+        .lock()
+        .map_err(|_| Duration::from_millis(50))?;
+    let now = Instant::now();
+    if let Some(wait) = local_backpressure_wait_duration(&state, config, now) {
+        return Err(wait.min(Duration::from_millis(250)));
+    }
+
+    state.active_requests = state.active_requests.saturating_add(1);
+    state.last_started_at = Some(now);
+    Ok(LocalApiBackpressurePermit { released: false })
+}
+
+#[cfg(test)]
+async fn acquire_local_api_backpressure(
+    config: &CodexLocalApiSafetyConfig,
+) -> Result<LocalApiBackpressurePermit, ProxyDispatchError> {
+    acquire_local_api_backpressure_with_wait(
+        config,
+        Duration::from_secs(config.max_queue_wait_seconds.max(1)),
+    )
+    .await
+}
+
+async fn acquire_local_api_backpressure_with_wait(
+    config: &CodexLocalApiSafetyConfig,
+    queue_wait: Duration,
+) -> Result<LocalApiBackpressurePermit, ProxyDispatchError> {
+    let _admission_turn = local_api_backpressure_admission_queue().lock().await;
+    let queue_wait = queue_wait.max(Duration::from_millis(1));
+    timeout(queue_wait, async {
+        loop {
+            match try_acquire_local_api_backpressure(config) {
+                Ok(permit) => return Ok(permit),
+                Err(wait) => tokio::time::sleep(wait).await,
+            }
+        }
+    })
+    .await
+    .map_err(|_| local_backpressure_error(config))?
+}
+
+#[cfg(test)]
+fn reset_local_api_backpressure_for_tests() {
+    if let Ok(mut state) = local_api_backpressure_state().lock() {
+        *state = LocalApiBackpressureState::default();
+    }
+}
+
+#[cfg(test)]
+fn active_stream_lease_count_for_account(account_id: &str) -> usize {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return 0;
+    }
+    let Ok(registry) = active_stream_lease_registry().lock() else {
+        return 0;
+    };
+    registry
+        .leases
+        .values()
+        .filter(|lease| lease.account_id == account_id)
+        .count()
+}
+
+#[cfg(test)]
+fn active_stream_request_affinity_key_from_context(context: &AuditContext) -> Option<String> {
+    let request_id = context.request_id.trim();
+    if request_id.is_empty() || request_id == "-" {
+        return None;
+    }
+    health_registry_request_id(Some(request_id))
+}
+
+fn active_stream_affinity_account_for_request(request: &ParsedRequest) -> Option<String> {
+    let request_key = request_affinity_key(request)?;
+    let Ok(registry) = active_stream_lease_registry().lock() else {
+        return None;
+    };
+    registry.leases.iter().rev().find_map(|(_, lease)| {
+        (lease.request_affinity_key.as_deref() == Some(request_key.as_str()))
+            .then(|| lease.account_id.clone())
+    })
+}
+
+fn grant_active_stream_lease_with_affinity_key(
+    context: &AuditContext,
+    account_id: &str,
+    request_affinity_key: Option<String>,
+) -> ActiveStreamLease {
+    let account_id = account_id.trim();
+    let (lease_id, active_count) = match active_stream_lease_registry().lock() {
+        Ok(mut registry) => {
+            registry.next_lease_id = registry.next_lease_id.saturating_add(1).max(1);
+            let lease_id = registry.next_lease_id;
+            registry.leases.insert(
+                lease_id,
+                ActiveStreamLeaseRecord {
+                    account_id: account_id.to_string(),
+                    request_affinity_key,
+                },
+            );
+            (
+                lease_id,
+                registry
+                    .leases
+                    .values()
+                    .filter(|lease| lease.account_id == account_id)
+                    .count(),
+            )
+        }
+        Err(_) => (0, 0),
+    };
+    record_audit_event_from_context(
+        context,
+        "lease_granted",
+        None,
+        None,
+        None,
+        Some("active"),
+        BTreeMap::from([
+            ("lease_id".to_string(), lease_id.to_string()),
+            ("active_count".to_string(), active_count.to_string()),
+        ]),
+    );
+    ActiveStreamLease {
+        lease_id,
+        context: context.clone(),
+        released: false,
+    }
+}
+
+#[cfg(test)]
+fn grant_active_stream_lease(context: &AuditContext, account_id: &str) -> ActiveStreamLease {
+    grant_active_stream_lease_with_affinity_key(
+        context,
+        account_id,
+        active_stream_request_affinity_key_from_context(context),
+    )
+}
+
+fn grant_active_stream_lease_for_request(
+    context: &AuditContext,
+    account_id: &str,
+    request: &ParsedRequest,
+) -> ActiveStreamLease {
+    grant_active_stream_lease_with_affinity_key(context, account_id, request_affinity_key(request))
+}
+
+fn release_active_stream_lease(lease_id: u64) -> usize {
+    if lease_id == 0 {
+        return 0;
+    }
+    let Ok(mut registry) = active_stream_lease_registry().lock() else {
+        return 0;
+    };
+    let account_id = registry
+        .leases
+        .remove(&lease_id)
+        .map(|lease| lease.account_id);
+    account_id
+        .as_deref()
+        .map(|account_id| {
+            registry
+                .leases
+                .values()
+                .filter(|lease| lease.account_id == account_id)
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+fn classify_active_stream_terminal_error(err: &str) -> ActiveStreamTerminal {
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("写入")
+        || lower.contains("broken pipe")
+        || lower.contains("connection reset")
+        || lower.contains("connection aborted")
+        || lower.contains("early eof")
+    {
+        ActiveStreamTerminal::ClientAborted
+    } else {
+        ActiveStreamTerminal::StreamError
+    }
+}
+
+#[cfg(test)]
+fn reset_active_stream_leases_for_tests() {
+    if let Ok(mut registry) = active_stream_lease_registry().lock() {
+        *registry = ActiveStreamLeaseRegistry::default();
+    }
+}
+
 fn current_upstream_http_client_signature(
     upstream_proxy_url: Option<&str>,
+    connect_timeout: Duration,
+) -> UpstreamHttpClientSignature {
+    let config = crate::modules::config::get_user_config();
+    current_upstream_http_client_signature_with_env_proxy(
+        upstream_proxy_url,
+        config.global_proxy_enabled,
+        &config.global_proxy_url,
+        upstream_env_proxy_url(),
+        connect_timeout,
+    )
+}
+
+fn current_upstream_http_client_signature_with_env_proxy(
+    upstream_proxy_url: Option<&str>,
+    global_proxy_enabled: bool,
+    global_proxy_url: &str,
+    env_proxy_url: Option<String>,
     connect_timeout: Duration,
 ) -> UpstreamHttpClientSignature {
     let connect_timeout_ms = duration_to_millis(connect_timeout);
@@ -506,9 +1707,8 @@ fn current_upstream_http_client_signature(
         };
     }
 
-    let config = crate::modules::config::get_user_config();
-    if config.global_proxy_enabled {
-        let proxy_url = config.global_proxy_url.trim();
+    if global_proxy_enabled {
+        let proxy_url = global_proxy_url.trim();
         if !proxy_url.is_empty() {
             return UpstreamHttpClientSignature {
                 proxy_source: UpstreamProxySource::Global,
@@ -518,7 +1718,14 @@ fn current_upstream_http_client_signature(
         }
     }
 
-    if let Some(proxy_url) = upstream_env_proxy_url() {
+    if let Some(proxy_url) = env_proxy_url.map(|value| value.trim().to_string()) {
+        if proxy_url.is_empty() {
+            return UpstreamHttpClientSignature {
+                proxy_source: UpstreamProxySource::SystemAuto,
+                proxy_url: None,
+                connect_timeout_ms,
+            };
+        }
         return UpstreamHttpClientSignature {
             proxy_source: UpstreamProxySource::SystemEnv,
             proxy_url: Some(proxy_url),
@@ -651,16 +1858,49 @@ fn upstream_http_client(
     Ok(client)
 }
 
+fn local_access_data_root() -> Result<PathBuf, String> {
+    if let Ok(raw) = std::env::var(CODEX_LOCAL_ACCESS_DATA_ROOT_ENV) {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let path = PathBuf::from(trimmed);
+            std::fs::create_dir_all(&path)
+                .map_err(|e| format!("创建本地接入临时数据目录失败: {}", e))?;
+            return Ok(path);
+        }
+    }
+
+    let home = dirs::home_dir().ok_or("Cannot find home directory")?;
+    let path = home.join(".antigravity_cockpit");
+    std::fs::create_dir_all(&path).map_err(|e| format!("创建本地接入数据目录失败: {}", e))?;
+    Ok(path)
+}
+
 fn local_access_file_path() -> Result<PathBuf, String> {
-    Ok(account::get_data_dir()?.join(CODEX_LOCAL_ACCESS_FILE))
+    Ok(local_access_data_root()?.join(CODEX_LOCAL_ACCESS_FILE))
 }
 
 fn local_access_stats_file_path() -> Result<PathBuf, String> {
-    Ok(account::get_data_dir()?.join(CODEX_LOCAL_ACCESS_STATS_FILE))
+    Ok(local_access_data_root()?.join(CODEX_LOCAL_ACCESS_STATS_FILE))
 }
 
 fn local_access_logs_db_path() -> Result<PathBuf, String> {
-    Ok(account::get_data_dir()?.join(CODEX_LOCAL_ACCESS_LOGS_DB_FILE))
+    Ok(local_access_data_root()?.join(CODEX_LOCAL_ACCESS_LOGS_DB_FILE))
+}
+
+fn local_access_health_file_path() -> Result<PathBuf, String> {
+    Ok(local_access_data_root()?.join(CODEX_LOCAL_ACCESS_HEALTH_FILE))
+}
+
+fn local_access_audit_file_path() -> Result<PathBuf, String> {
+    Ok(local_access_data_root()?.join(CODEX_LOCAL_ACCESS_AUDIT_FILE))
+}
+
+fn runtime_mode_file_path() -> Result<PathBuf, String> {
+    Ok(local_access_data_root()?.join(CODEX_RUNTIME_MODE_FILE))
+}
+
+fn codex_home_runtime_mode_file_path() -> PathBuf {
+    codex_account::get_codex_home().join(CODEX_RUNTIME_MODE_FILE)
 }
 
 fn local_access_takeover_backups_path() -> Result<PathBuf, String> {
@@ -671,9 +1911,558 @@ fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
+fn next_gateway_request_id() -> String {
+    let sequence = GATEWAY_REQUEST_ID_COUNTER
+        .fetch_add(1, Ordering::Relaxed)
+        .saturating_add(1);
+    format!("gw-{}-{}", now_ms(), sequence)
+}
+
+fn runtime_account_identity(account: &CodexAccount) -> (CodexRuntimeAccountKind, Option<String>) {
+    let account_kind = if account.is_api_key_auth() {
+        CodexRuntimeAccountKind::Api
+    } else {
+        CodexRuntimeAccountKind::OAuth
+    };
+    (account_kind, Some(account.id.clone()))
+}
+
+fn current_runtime_account_kind() -> (CodexRuntimeAccountKind, Option<String>) {
+    let account = codex_account::get_current_account();
+    account
+        .as_ref()
+        .map(runtime_account_identity)
+        .unwrap_or((CodexRuntimeAccountKind::Unknown, None))
+}
+
+fn runtime_account_kind_for_mode(
+    mode: CodexRuntimeIntegrationMode,
+) -> (CodexRuntimeAccountKind, Option<String>) {
+    if mode == CodexRuntimeIntegrationMode::CockpitApiService {
+        return (
+            CodexRuntimeAccountKind::Api,
+            Some(CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID.to_string()),
+        );
+    }
+    current_runtime_account_kind()
+}
+
+fn build_runtime_mode_state(mode: CodexRuntimeIntegrationMode) -> CodexRuntimeModeState {
+    let (account_kind, current_account_id) = runtime_account_kind_for_mode(mode);
+    CodexRuntimeModeState {
+        mode,
+        account_kind,
+        current_account_id,
+        updated_at: now_ms(),
+    }
+}
+
+fn is_runtime_mode_projection_noop(
+    current_state: Option<&CodexRuntimeModeState>,
+    target_mode: CodexRuntimeIntegrationMode,
+) -> bool {
+    let (account_kind, current_account_id) = runtime_account_kind_for_mode(target_mode);
+    if !is_runtime_mode_projection_noop_for_target(
+        current_state,
+        target_mode,
+        account_kind,
+        current_account_id.as_deref(),
+    ) {
+        return false;
+    }
+    if !is_runtime_mode_state_mirrored_for_target(
+        current_state,
+        target_mode,
+        account_kind,
+        current_account_id.as_deref(),
+    ) {
+        return false;
+    }
+    is_runtime_mode_projection_attached_for_target(target_mode)
+}
+
+fn is_runtime_mode_projection_attached_for_target(
+    target_mode: CodexRuntimeIntegrationMode,
+) -> bool {
+    match target_mode {
+        CodexRuntimeIntegrationMode::CockpitApiService => load_collection_from_disk()
+            .ok()
+            .flatten()
+            .map(|collection| {
+                if !collection.enabled {
+                    return false;
+                }
+                inspect_local_access_profile_attachment(
+                    &codex_account::get_codex_home(),
+                    Some(&collection),
+                )
+                .attached
+            })
+            .unwrap_or(false),
+        CodexRuntimeIntegrationMode::DirectProjection => true,
+    }
+}
+
+fn is_runtime_mode_projection_noop_for_target(
+    current_state: Option<&CodexRuntimeModeState>,
+    target_mode: CodexRuntimeIntegrationMode,
+    account_kind: CodexRuntimeAccountKind,
+    current_account_id: Option<&str>,
+) -> bool {
+    let Some(state) = current_state else {
+        return false;
+    };
+    if state.mode != target_mode {
+        return false;
+    }
+
+    if account_kind == CodexRuntimeAccountKind::Unknown || current_account_id.is_none() {
+        return false;
+    }
+
+    state.account_kind == account_kind && state.current_account_id.as_deref() == current_account_id
+}
+
+fn is_runtime_mode_state_mirrored_for_target(
+    current_state: Option<&CodexRuntimeModeState>,
+    target_mode: CodexRuntimeIntegrationMode,
+    account_kind: CodexRuntimeAccountKind,
+    current_account_id: Option<&str>,
+) -> bool {
+    let path = match codex_home_runtime_mode_file_path().canonicalize() {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+    let content = match std::fs::read_to_string(path) {
+        Ok(content) => content,
+        Err(_) => return false,
+    };
+    let state = match serde_json::from_str::<CodexRuntimeModeState>(&content) {
+        Ok(state) => state,
+        Err(_) => return false,
+    };
+    is_runtime_mode_projection_noop_for_target(
+        current_state,
+        target_mode,
+        account_kind,
+        current_account_id,
+    ) && is_runtime_mode_projection_noop_for_target(
+        Some(&state),
+        target_mode,
+        account_kind,
+        current_account_id,
+    )
+}
+
+fn save_runtime_mode_state(state: &CodexRuntimeModeState) -> Result<(), String> {
+    let path = runtime_mode_file_path()?;
+    let mirror_path = codex_home_runtime_mode_file_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("创建 Codex runtime mode 目录失败: {}", e))?;
+    }
+    let content = serde_json::to_string_pretty(state)
+        .map_err(|e| format!("序列化 runtime mode 失败: {}", e))?;
+    write_string_atomic(&path, &content).map_err(|e| format!("写入 runtime mode 失败: {}", e))?;
+    if mirror_path != path {
+        if let Some(parent) = mirror_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建 Codex home runtime mode 目录失败: {}", e))?;
+        }
+        write_string_atomic(&mirror_path, &content)
+            .map_err(|e| format!("写入 Codex home runtime mode 失败: {}", e))?;
+    }
+    Ok(())
+}
+
+fn should_sync_local_access_collection_on_account_switch(
+    _mode: CodexRuntimeIntegrationMode,
+    _collection: &CodexLocalAccessCollection,
+) -> bool {
+    false
+}
+
+fn should_restore_direct_projection_before_app_exit(_mode: CodexRuntimeIntegrationMode) -> bool {
+    false
+}
+
+fn build_projection_seed_local_access_account_ids(
+    account_id: &str,
+    collection: Option<&CodexLocalAccessCollection>,
+) -> Option<Vec<String>> {
+    collection.is_none().then(|| vec![account_id.to_string()])
+}
+
+fn repair_runtime_projection_history_visibility() -> Result<(), String> {
+    let summary =
+        crate::modules::codex_session_visibility::repair_session_visibility_across_instances()?;
+    logger::log_info(&format!(
+        "[CodexRuntimeMode] 历史会话 provider 投影已同步: {}",
+        summary.message
+    ));
+    Ok(())
+}
+
+fn schedule_runtime_projection_history_visibility_repair(source: impl Into<String>) {
+    let source = source.into();
+    let running = runtime_history_visibility_repair_running();
+    if running
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        logger::log_info(&format!(
+            "[CodexRuntimeMode] {} 后历史会话 provider 投影同步已在后台运行，跳过重复调度",
+            source
+        ));
+        return;
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let started = Instant::now();
+        let result = repair_runtime_projection_history_visibility();
+        runtime_history_visibility_repair_running().store(false, Ordering::Release);
+        match result {
+            Ok(()) => {
+                logger::log_info(&format!(
+                    "[CodexRuntimeMode] {} 后后台同步历史会话 provider 投影完成: elapsed_ms={}",
+                    source,
+                    started.elapsed().as_millis()
+                ));
+            }
+            Err(err) => {
+                logger::log_warn(&format!(
+                    "[CodexRuntimeMode] {} 后后台同步历史会话 provider 投影失败: {} elapsed_ms={}",
+                    source,
+                    err,
+                    started.elapsed().as_millis()
+                ));
+            }
+        }
+    });
+}
+
+fn repair_runtime_projection_history_visibility_if_needed(source: &str) {
+    let mode = load_runtime_mode_state()
+        .map(|state| state.mode)
+        .unwrap_or(CodexRuntimeIntegrationMode::DirectProjection);
+    if mode != CodexRuntimeIntegrationMode::CockpitApiService {
+        return;
+    }
+
+    schedule_runtime_projection_history_visibility_repair(source);
+}
+
+async fn assert_cockpit_local_access_ready(api_key: &str, port: u16) -> Result<(), String> {
+    let models_url = format!("http://{CODEX_LOCAL_ACCESS_URL_HOST}:{port}/v1/models");
+    let client = Client::builder()
+        .timeout(LITELLM_GATEWAY_HEALTH_TIMEOUT)
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("创建 Cockpit local access 健康检查客户端失败: {}", e))?;
+
+    let response = client
+        .get(&models_url)
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|e| {
+            format!(
+                "Cockpit local access 未就绪，无法访问 {}: {}。已保留 Direct Projection；请先修复本地接入后再切换 API 服务模式。",
+                models_url, e
+            )
+        })?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Cockpit local access 健康检查失败: {} -> {}。已保留 Direct Projection；请先修复本地接入后再切换 API 服务模式。",
+            models_url,
+            response.status()
+        ));
+    }
+
+    Ok(())
+}
+
+async fn probe_existing_local_access_listener(api_key: &str, port: u16) -> Result<(), String> {
+    let trimmed_api_key = api_key.trim();
+    if trimmed_api_key.is_empty() {
+        return Err("本地接入 api_key 为空，无法确认现有监听是否为 Cockpit relay".to_string());
+    }
+
+    let models_url = format!("http://{CODEX_LOCAL_ACCESS_URL_HOST}:{port}/v1/models");
+    let client = Client::builder()
+        .timeout(LITELLM_GATEWAY_HEALTH_TIMEOUT)
+        .no_proxy()
+        .build()
+        .map_err(|e| format!("创建现有本地接入监听健康检查客户端失败: {}", e))?;
+
+    let response = client
+        .get(&models_url)
+        .bearer_auth(trimmed_api_key)
+        .send()
+        .await
+        .map_err(|e| format!("现有本地接入监听不可访问 {}: {}", models_url, e))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "现有本地接入监听健康检查失败: {} -> {}",
+            models_url,
+            response.status()
+        ));
+    }
+
+    Ok(())
+}
+
+async fn materialize_cockpit_api_service_projection() -> Result<(), String> {
+    let mut trace = LocalAccessPerfTrace::new("materialize_api_service_projection");
+    ensure_runtime_loaded_traced(&mut trace, true).await?;
+    let current_account = codex_account::get_current_account();
+    let runtime_collection = load_runtime_collection_snapshot_async().await;
+    trace.mark("collection_snapshot");
+    let seed_account_ids = current_account.as_ref().and_then(|account| {
+        build_projection_seed_local_access_account_ids(&account.id, runtime_collection.as_ref())
+    });
+    if let Some(account_ids) = seed_account_ids {
+        let _ = save_local_access_accounts(account_ids, false).await?;
+    }
+    trace.mark("seed_accounts");
+
+    let collection = load_runtime_collection_snapshot_async()
+        .await
+        .ok_or_else(|| "API 服务集合尚未创建，无法写入 API 服务投影".to_string())?;
+    trace.mark("collection_reload");
+    let api_key = collection.api_key.clone();
+    validate_local_access_routable_pool(&collection)?;
+    trace.mark("validate_projection_pool");
+    let enabled_state = set_local_access_enabled(true).await?;
+    trace.mark("ensure_gateway_enabled");
+    let enabled_collection = enabled_state
+        .collection
+        .as_ref()
+        .ok_or_else(|| "Cockpit local access 集合尚未创建，无法写入 API 服务投影".to_string())?;
+    if !enabled_state.running {
+        return Err("Cockpit local access 未启动，已保留 Direct Projection；请先修复本地接入后再切换 API 服务模式。".to_string());
+    }
+    assert_cockpit_local_access_ready(&api_key, enabled_collection.port).await?;
+    trace.mark("gateway_health_ready");
+    let base_url = enabled_state
+        .base_url
+        .clone()
+        .unwrap_or_else(|| build_base_url(enabled_collection.port));
+    let runtime_account = build_runtime_account(base_url, api_key);
+    codex_account::write_account_bundle_to_dir(&codex_account::get_codex_home(), &runtime_account)?;
+    trace.mark("write_runtime_bundle");
+    crate::modules::codex_instance::update_default_settings(None, None, Some(true), None, None)?;
+    trace.mark("update_default_settings");
+    schedule_runtime_projection_history_visibility_repair("API 服务投影");
+    trace.mark("schedule_history_visibility");
+    trace.finish(50);
+    Ok(())
+}
+
+async fn materialize_direct_projection(
+    options: RuntimeProjectionChangeOptions,
+) -> Result<(), String> {
+    let mut trace = LocalAccessPerfTrace::new("materialize_direct_projection");
+    let account = codex_account::get_current_account()
+        .or_else(codex_account::get_current_or_fallback_oauth_account)
+        .ok_or_else(|| "未找到当前 Codex 账号".to_string())?;
+    trace.mark("resolve_target_account");
+    ensure_runtime_loaded_traced(&mut trace, true).await?;
+    if load_runtime_collection_snapshot_async().await.is_some() {
+        trace.mark("collection_snapshot");
+        let _ = set_local_access_enabled_with_options(false, options).await?;
+        trace.mark("disable_gateway");
+    } else {
+        trace.mark("collection_snapshot");
+    }
+    codex_account::write_account_bundle_to_dir(&codex_account::get_codex_home(), &account)?;
+    trace.mark("write_runtime_bundle");
+    crate::modules::codex_instance::update_default_settings(None, None, Some(true), None, None)?;
+    trace.mark("update_default_settings");
+    schedule_runtime_projection_history_visibility_repair("Direct Projection 投影");
+    trace.mark("schedule_history_visibility");
+    trace.finish(50);
+    Ok(())
+}
+
+pub fn load_runtime_mode_state() -> Result<CodexRuntimeModeState, String> {
+    let path = runtime_mode_file_path()?;
+    if !path.exists() {
+        let state = build_runtime_mode_state(CodexRuntimeIntegrationMode::DirectProjection);
+        save_runtime_mode_state(&state)?;
+        return Ok(state);
+    }
+
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("读取 runtime mode 失败: {}", e))?;
+    let mut state: CodexRuntimeModeState =
+        serde_json::from_str(&content).map_err(|e| format!("解析 runtime mode 失败: {}", e))?;
+    let (account_kind, current_account_id) = runtime_account_kind_for_mode(state.mode);
+    if state.account_kind != account_kind || state.current_account_id != current_account_id {
+        state.account_kind = account_kind;
+        state.current_account_id = current_account_id;
+        state.updated_at = now_ms();
+        save_runtime_mode_state(&state)?;
+    } else if !is_runtime_mode_state_mirrored_for_target(
+        Some(&state),
+        state.mode,
+        account_kind,
+        current_account_id.as_deref(),
+    ) {
+        save_runtime_mode_state(&state)?;
+    }
+    Ok(state)
+}
+
+pub async fn set_runtime_integration_mode(
+    mode: CodexRuntimeIntegrationMode,
+) -> Result<CodexRuntimeModeState, String> {
+    set_runtime_integration_mode_with_options(
+        mode,
+        RuntimeProjectionChangeOptions::new("runtime_mode_set", false),
+    )
+    .await
+}
+
+pub async fn set_runtime_integration_mode_with_options(
+    mode: CodexRuntimeIntegrationMode,
+    options: RuntimeProjectionChangeOptions,
+) -> Result<CodexRuntimeModeState, String> {
+    let mut trace = LocalAccessPerfTrace::new(match mode {
+        CodexRuntimeIntegrationMode::CockpitApiService => "runtime_mode_set_api_service",
+        CodexRuntimeIntegrationMode::DirectProjection => "runtime_mode_set_direct",
+    });
+    let current_state = load_runtime_mode_state().ok();
+    trace.mark("load_runtime_mode_state");
+    if is_runtime_mode_projection_noop(current_state.as_ref(), mode) {
+        logger::log_codex_api_info(&format!(
+            "[CodexRuntimeMode] 已处于目标模式，跳过重复投影: mode={:?} source={}",
+            mode, options.source
+        ));
+        trace.mark("noop");
+        trace.finish(25);
+        return current_state.ok_or_else(|| "读取 runtime mode 失败".to_string());
+    }
+
+    let current_mode = current_state
+        .as_ref()
+        .map(|state| state.mode)
+        .unwrap_or(CodexRuntimeIntegrationMode::DirectProjection);
+    let risk = if mode != current_mode {
+        Some(collect_runtime_projection_continuity_risk())
+    } else {
+        None
+    };
+    trace.mark("continuity_risk");
+    if let Some(risk) = risk.as_ref() {
+        if should_block_runtime_projection_change(current_mode, mode, options.force, risk) {
+            record_runtime_projection_audit_event(
+                "runtime_mode_transition",
+                "blocked",
+                options.source,
+                options.force,
+                Some(current_mode),
+                Some(mode),
+                Some(risk),
+            );
+            let action = match (current_mode, mode) {
+                (
+                    CodexRuntimeIntegrationMode::DirectProjection,
+                    CodexRuntimeIntegrationMode::CockpitApiService,
+                ) => "启用 API 服务会替换 Codex auth 投影，可能让旧 Direct API/OAuth 任务把本地 API 服务 token 发到官方端点",
+                (
+                    CodexRuntimeIntegrationMode::CockpitApiService,
+                    CodexRuntimeIntegrationMode::DirectProjection,
+                ) => "停用 API 服务会替换 Codex auth 投影，可能断开正在使用本地 provider 的任务",
+                _ => "切换 Codex runtime mode 会替换 Codex auth 投影",
+            };
+            trace.mark("blocked");
+            trace.finish(25);
+            return Err(format!(
+                "Codex 连续性保护窗口内已阻止切换（{}）。{}。如确需切换，请在确认没有运行中任务后使用强制切换。",
+                risk.blocking_reasons().join(", "),
+                action
+            ));
+        }
+    }
+
+    match mode {
+        CodexRuntimeIntegrationMode::CockpitApiService => {
+            materialize_cockpit_api_service_projection().await?;
+        }
+        CodexRuntimeIntegrationMode::DirectProjection => {
+            materialize_direct_projection(options).await?;
+        }
+    }
+    trace.mark("materialize_projection");
+
+    let state = build_runtime_mode_state(mode);
+    save_runtime_mode_state(&state)?;
+    trace.mark("save_runtime_mode_state");
+    record_runtime_projection_audit_event(
+        "runtime_mode_transition",
+        "changed",
+        options.source,
+        options.force,
+        Some(current_mode),
+        Some(mode),
+        risk.as_ref(),
+    );
+    trace.mark("audit_event");
+    trace.finish(50);
+    Ok(state)
+}
+
+pub async fn prepare_runtime_projection_for_app_exit() -> Result<bool, String> {
+    let mode = load_runtime_mode_state()
+        .map(|state| state.mode)
+        .unwrap_or(CodexRuntimeIntegrationMode::DirectProjection);
+    if !should_restore_direct_projection_before_app_exit(mode) {
+        return Ok(false);
+    }
+
+    let state = set_runtime_integration_mode_with_options(
+        CodexRuntimeIntegrationMode::DirectProjection,
+        RuntimeProjectionChangeOptions::new("app_exit", false),
+    )
+    .await?;
+    logger::log_info(&format!(
+        "[CodexRuntimeMode] 应用退出前已恢复 Direct Projection: mode={:?}",
+        state.mode
+    ));
+    Ok(true)
+}
+
+pub async fn sync_runtime_projection_after_account_switch(account_id: &str) -> Result<(), String> {
+    let mode = load_runtime_mode_state()
+        .map(|state| state.mode)
+        .unwrap_or(CodexRuntimeIntegrationMode::DirectProjection);
+
+    match mode {
+        CodexRuntimeIntegrationMode::CockpitApiService => {
+            sync_local_access_to_current_account_on_switch(account_id).await?;
+            materialize_cockpit_api_service_projection().await?;
+        }
+        CodexRuntimeIntegrationMode::DirectProjection => {
+            materialize_direct_projection(RuntimeProjectionChangeOptions::new(
+                "account_switch",
+                false,
+            ))
+            .await?;
+        }
+    }
+
+    let state = build_runtime_mode_state(mode);
+    save_runtime_mode_state(&state)?;
+    Ok(())
+}
+
 fn is_prepared_account_cache_valid(entry: &CachedPreparedAccount, now: i64) -> bool {
     now.saturating_sub(entry.cached_at_ms) <= PREPARED_ACCOUNT_CACHE_TTL_MS
-        && !codex_oauth::is_token_expired(&entry.account.tokens.access_token)
+        && (entry.account.is_api_key_auth()
+            || !codex_oauth::is_token_expired(&entry.account.tokens.access_token))
 }
 
 fn account_has_refresh_token(account: &CodexAccount) -> bool {
@@ -704,42 +2493,10 @@ fn prune_prepared_account_cache(runtime: &mut GatewayRuntime, now: i64) {
     });
 }
 
-fn prune_runtime_account_state(runtime: &mut GatewayRuntime) {
-    let Some(collection) = runtime.collection.as_ref() else {
-        runtime.prepared_accounts.clear();
-        runtime.account_health.clear();
-        runtime.model_cooldowns.clear();
-        runtime.response_affinity.clear();
-        return;
-    };
-
-    let allowed_account_ids = collection
-        .account_ids
-        .iter()
-        .map(String::as_str)
-        .collect::<HashSet<_>>();
-
-    runtime
-        .prepared_accounts
-        .retain(|account_id, _| allowed_account_ids.contains(account_id.as_str()));
-    runtime
-        .account_health
-        .retain(|account_id, _| allowed_account_ids.contains(account_id.as_str()));
-    runtime
-        .response_affinity
-        .retain(|_, binding| allowed_account_ids.contains(binding.account_id.as_str()));
-    runtime.model_cooldowns.retain(|key, _| {
-        key.split_once(COOLDOWN_KEY_SEPARATOR)
-            .map(|(account_id, _)| allowed_account_ids.contains(account_id))
-            .unwrap_or(false)
-    });
-}
-
 fn sync_runtime_collection(runtime: &mut GatewayRuntime, collection: CodexLocalAccessCollection) {
     runtime.collection = Some(collection);
     runtime.loaded = true;
     runtime.last_error = None;
-    prune_runtime_account_state(runtime);
     prune_prepared_account_cache(runtime, now_ms());
 }
 
@@ -933,14 +2690,23 @@ pub async fn run_official_wakeup_chat(
         )
     })?;
     let status = response.status();
-    let body_text = response
-        .text()
+    let stream_total_timeout = duration_from_millis(
+        timeouts.legacy_stream_total_timeout_ms,
+        DEFAULT_UPSTREAM_STREAM_TOTAL_TIMEOUT,
+    );
+    let body_text = timeout(stream_total_timeout, response.text())
         .await
+        .map_err(|_| {
+            format!(
+                "读取官方直连唤醒响应超时: 总时长超过 {} 秒",
+                stream_total_timeout.as_secs()
+            )
+        })?
         .map_err(|e| format!("读取官方直连唤醒响应失败: {}", e))?;
 
     if !status.is_success() {
         let message = extract_upstream_error_message(&body_text)
-            .unwrap_or_else(|| truncate_diagnostic_text(body_text.trim(), 4000));
+            .unwrap_or_else(|| extract_gateway_error_message(&body_text));
         return Err(format!(
             "官方直连唤醒失败({}): {}",
             status.as_u16(),
@@ -1143,16 +2909,6 @@ fn normalize_model_rule_list(values: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn normalize_account_id_list(values: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    values
-        .into_iter()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .filter(|value| seen.insert(value.clone()))
-        .collect()
-}
-
 fn normalize_model_prefix_value(value: Option<String>) -> Option<String> {
     value
         .map(|item| item.trim().trim_matches('/').trim().to_ascii_lowercase())
@@ -1308,20 +3064,7 @@ fn visible_codex_model_ids_for_api_key(
     api_key: &ResolvedLocalApiKey,
     health_by_account_id: Option<&HashMap<String, RuntimeAccountHealth>>,
 ) -> Vec<String> {
-    let mut visible = visible_codex_model_ids_for_collection(collection, health_by_account_id);
-    if let Some(provider_gateway) = api_key.provider_gateway.as_ref() {
-        let mut seen: HashSet<String> = visible
-            .iter()
-            .map(|model| model.trim().to_ascii_lowercase())
-            .filter(|model| !model.is_empty())
-            .collect();
-        for model in &provider_gateway.upstream_models {
-            let model = model.trim();
-            if !model.is_empty() && seen.insert(model.to_ascii_lowercase()) {
-                visible.push(model.to_string());
-            }
-        }
-    }
+    let visible = visible_codex_model_ids_for_collection(collection, health_by_account_id);
     let filtered = apply_model_filters(visible, &api_key.allowed_models, &api_key.excluded_models);
     append_codex_internal_model_ids(add_model_prefix(filtered, api_key.model_prefix.as_deref()))
 }
@@ -1367,7 +3110,7 @@ fn validate_client_model_visible(
     if is_codex_internal_model(without_prefix) || is_codex_internal_model(canonical_model) {
         return true;
     }
-    let visible = visible_codex_model_ids_for_api_key(collection, api_key, health_by_account_id);
+    let visible = visible_codex_model_ids_for_collection(collection, health_by_account_id);
     let visible_match = visible.iter().any(|item| {
         item.eq_ignore_ascii_case(without_prefix)
             || item.eq_ignore_ascii_case(canonical_model)
@@ -1501,6 +3244,43 @@ fn parse_request_body_json(body: &[u8]) -> Option<Value> {
         return None;
     }
     serde_json::from_slice::<Value>(body).ok()
+}
+
+fn extract_body_string_path(value: &Value, path: &[&str]) -> Option<String> {
+    let mut cursor = value;
+    for key in path {
+        cursor = cursor.get(*key)?;
+    }
+    cursor
+        .as_str()
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_session_affinity_key(request: &ParsedRequest) -> Option<String> {
+    for header in [
+        "session_id",
+        "x-session-id",
+        "x-client-request-id",
+        "x-amp-thread-id",
+    ] {
+        if let Some(value) = request
+            .headers
+            .get(header)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
+            return Some(format!("{}={}", header, value));
+        }
+    }
+
+    let body = parse_request_body_json(&request.body)?;
+    extract_body_string_path(&body, &["metadata", "user_id"])
+        .or_else(|| extract_body_string_path(&body, &["conversation_id"]))
+        .or_else(|| extract_body_string_path(&body, &["thread_id"]))
+        .map(|value| format!("body={}", value))
 }
 
 fn proxy_target_path(target: &str) -> &str {
@@ -2209,6 +3989,49 @@ fn build_request_routing_hint(request: &ParsedRequest) -> RequestRoutingHint {
     }
 }
 
+fn official_codex_turn_state_affinity_key(request: &ParsedRequest) -> Option<String> {
+    request_header_value(request, X_CODEX_TURN_STATE_HEADER)
+        .and_then(|value| hashed_request_correlation_id(X_CODEX_TURN_STATE_HEADER, value))
+}
+
+fn official_codex_sticky_routing_boundary(
+    request: &ParsedRequest,
+) -> Option<OfficialCodexStickyRoutingBoundary> {
+    // Mirrors openai-codex core semantics:
+    // - x-codex-turn-state is the per-turn sticky routing token.
+    // - previous_response_id binds Responses continuations.
+    // - x-codex-turn-metadata is observability lineage only.
+    if let Some(affinity_key) = official_codex_turn_state_affinity_key(request) {
+        return Some(OfficialCodexStickyRoutingBoundary::TurnState { affinity_key });
+    }
+
+    build_request_routing_hint(request)
+        .previous_response_id
+        .map(|response_id| OfficialCodexStickyRoutingBoundary::PreviousResponseId { response_id })
+}
+
+async fn local_backpressure_bypass_reason(request: &ParsedRequest) -> Option<&'static str> {
+    if !is_responses_request(&request.target) {
+        return None;
+    }
+
+    if let Some(boundary) = official_codex_sticky_routing_boundary(request) {
+        let reason = boundary.reason();
+        match boundary {
+            OfficialCodexStickyRoutingBoundary::PreviousResponseId { .. } => {
+                return Some(reason);
+            }
+            OfficialCodexStickyRoutingBoundary::TurnState { .. } => {
+                if resolve_request_affinity_account(request).await.is_some() {
+                    return Some(reason);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn is_chat_completions_request(target: &str) -> bool {
     let path = target.split('?').next().unwrap_or(target).trim();
     path == CHAT_COMPLETIONS_PATH || path.ends_with("/chat/completions")
@@ -2216,6 +4039,57 @@ fn is_chat_completions_request(target: &str) -> bool {
 
 fn is_responses_completion_event(event_type: &str) -> bool {
     matches!(event_type, "response.completed" | "response.done")
+}
+
+fn response_event_type<'a>(event: &'a Value, event_name: Option<&'a str>) -> &'a str {
+    event
+        .get("type")
+        .and_then(Value::as_str)
+        .or(event_name)
+        .unwrap_or("")
+}
+
+fn response_event_is_compaction_summary(event: &Value, event_type: &str) -> bool {
+    event_type == "compaction_summary"
+        || event
+            .get("item")
+            .and_then(|item| item.get("type"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "compaction_summary")
+        || event
+            .get("output")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| value == "compaction_summary")
+                })
+            })
+}
+
+fn update_response_capture_trace(
+    response_capture: &mut ResponseCapture,
+    event: &Value,
+    event_name: Option<&str>,
+) {
+    let event_type = response_event_type(event, event_name);
+    if is_responses_completion_event(event_type)
+        || event
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "completed")
+        || event
+            .get("response")
+            .and_then(|response| response.get("status"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| value == "completed")
+    {
+        response_capture.response_completed_seen = true;
+    }
+    if response_event_is_compaction_summary(event, event_type) {
+        response_capture.compaction_summary_seen = true;
+    }
 }
 
 fn response_text_type_for_role(role: &str) -> &'static str {
@@ -2828,13 +4702,28 @@ fn prepare_gateway_request(
             }
             let mut body_value = parse_request_body_json(&request.body)
                 .ok_or("responses 请求体必须是合法 JSON".to_string())?;
+            let accept_wants_stream = request
+                .headers
+                .get("accept")
+                .map(|accept| accept.to_ascii_lowercase().contains("text/event-stream"))
+                .unwrap_or(false);
+            let explicit_non_stream =
+                body_value.get("stream").and_then(Value::as_bool) == Some(false);
+            let request_wants_stream = accept_wants_stream || !explicit_non_stream;
             rewrite_request_model_alias_value(&mut body_value);
             codex_protocol::normalize_responses_body_for_codex(&mut body_value);
+            if let Some(body_obj) = body_value.as_object_mut() {
+                if !request_wants_stream {
+                    body_obj.insert("stream".to_string(), Value::Bool(false));
+                }
+            }
             request.body = serde_json::to_vec(&body_value)
                 .map_err(|e| format!("序列化 responses 请求体失败: {}", e))?;
-            request
-                .headers
-                .insert("accept".to_string(), "text/event-stream".to_string());
+            if request_wants_stream {
+                request
+                    .headers
+                    .insert("accept".to_string(), "text/event-stream".to_string());
+            }
             request
                 .headers
                 .insert("content-type".to_string(), "application/json".to_string());
@@ -2928,6 +4817,11 @@ fn extract_output_text_from_response(response_body: &Value) -> String {
                     }
                 }
             }
+        }
+    }
+    if text.trim().is_empty() {
+        if let Some(output_text) = root.get("output_text").and_then(Value::as_str) {
+            append_non_empty_text(&mut text, output_text);
         }
     }
     text
@@ -3242,11 +5136,9 @@ impl ChatCompletionStreamTransformer {
             self.response_capture.response_id = extract_response_id(&event);
         }
 
-        let event_type = event
-            .get("type")
-            .and_then(Value::as_str)
-            .or(event_name.as_deref())
-            .unwrap_or("");
+        update_response_capture_trace(&mut self.response_capture, &event, event_name.as_deref());
+
+        let event_type = response_event_type(&event, event_name.as_deref());
 
         if event_type == "response.created" {
             if let Some(response) = event.get("response").and_then(Value::as_object) {
@@ -3522,6 +5414,14 @@ fn build_ordered_account_ids(
     ordered
 }
 
+fn next_routing_start_index(collection: &CodexLocalAccessCollection) -> usize {
+    if collection.safety_config.hardened_local_mode {
+        0
+    } else {
+        GATEWAY_ROUND_ROBIN_CURSOR.fetch_add(1, Ordering::Relaxed)
+    }
+}
+
 fn normalize_plan_key(plan_type: Option<&str>) -> String {
     let normalized = plan_type.unwrap_or("").trim().to_ascii_lowercase();
     if normalized.is_empty() {
@@ -3614,6 +5514,24 @@ fn resolve_remaining_quota(account: &CodexAccount) -> Option<i32> {
     percentages.into_iter().min()
 }
 
+fn normalize_unix_timestamp_millis(value: i64) -> i64 {
+    if value > 0 && value < 1_000_000_000_000 {
+        value.saturating_mul(1000)
+    } else {
+        value
+    }
+}
+
+fn resolve_earliest_quota_reset_ms(account: &CodexAccount) -> Option<i64> {
+    let quota = account.quota.as_ref()?;
+    [quota.hourly_reset_time, quota.weekly_reset_time]
+        .into_iter()
+        .flatten()
+        .filter(|value| *value > 0)
+        .map(normalize_unix_timestamp_millis)
+        .min()
+}
+
 fn resolve_subscription_expiry_ms(account: &CodexAccount) -> Option<i64> {
     let raw = account.subscription_active_until.as_deref()?.trim();
     if raw.is_empty() {
@@ -3631,6 +5549,90 @@ fn resolve_subscription_expiry_ms(account: &CodexAccount) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|parsed| parsed.timestamp_millis())
+}
+
+fn retry_failover_max_retries(config: &CodexLocalApiSafetyConfig) -> usize {
+    config.max_retries.clamp(1, 3) as usize
+}
+
+fn retry_failover_account_attempt_limit(config: &CodexLocalApiSafetyConfig) -> usize {
+    (config.max_retry_accounts.max(2) as usize).clamp(1, MAX_RETRY_CREDENTIALS_PER_REQUEST)
+}
+
+fn usage_limit_rescue_account_attempt_limit(current_limit: usize, total_accounts: usize) -> usize {
+    current_limit
+        .max(MAX_USAGE_LIMIT_RESCUE_CREDENTIALS_PER_REQUEST)
+        .min(total_accounts)
+        .min(MAX_RETRY_CREDENTIALS_PER_REQUEST)
+}
+
+fn should_extend_usage_limit_failover_attempts(
+    hard_affinity_bound: bool,
+    classified: &ClassifiedCodexUpstreamError,
+    attempts: usize,
+    current_limit: usize,
+    total_accounts: usize,
+) -> Option<usize> {
+    if hard_affinity_bound
+        || classified.error_type != CodexLocalAccessErrorType::UsageLimitReached
+        || attempts < current_limit
+        || current_limit >= total_accounts
+    {
+        return None;
+    }
+
+    let next_limit = usage_limit_rescue_account_attempt_limit(current_limit, total_accounts);
+    (next_limit > current_limit).then_some(next_limit)
+}
+
+fn build_effective_local_access_account_ids(
+    collection: &CodexLocalAccessCollection,
+) -> Vec<String> {
+    collection.account_ids.clone()
+}
+
+fn build_effective_local_access_account_ids_from_registry(
+    collection: &CodexLocalAccessCollection,
+    registry: &CodexLocalAccessHealthRegistry,
+    now: i64,
+) -> Vec<String> {
+    let mut account_ids = build_effective_local_access_account_ids(collection);
+    sort_account_ids_by_health_estimate(&mut account_ids, registry, now);
+    pin_process_sticky_account(account_ids, registry, None, now)
+}
+
+fn build_effective_local_access_account_ids_for_state(
+    collection: &CodexLocalAccessCollection,
+) -> Vec<String> {
+    let Ok(registry) = load_health_registry_from_disk() else {
+        let mut account_ids = build_effective_local_access_account_ids(collection);
+        sort_account_ids_by_health_estimate(
+            &mut account_ids,
+            &empty_health_registry(now_ms()),
+            now_ms(),
+        );
+        return account_ids;
+    };
+    build_effective_local_access_account_ids_from_registry(collection, &registry, now_ms())
+}
+
+fn build_routing_pool_account_ids(collection: &CodexLocalAccessCollection) -> Vec<String> {
+    collection.account_ids.clone()
+}
+
+fn apply_collection_routing_strategy(
+    account_ids: &[String],
+    collection: &CodexLocalAccessCollection,
+) -> Vec<String> {
+    if collection.safety_config.hardened_local_mode {
+        return account_ids.to_vec();
+    }
+    apply_routing_strategy(
+        account_ids,
+        collection.routing_strategy,
+        &collection.custom_routing_rules,
+        0,
+    )
 }
 
 fn build_routing_candidates(ordered_account_ids: &[String]) -> Vec<RoutingCandidate> {
@@ -3758,6 +5760,20 @@ fn normalize_custom_routing_rules(
     }
 
     normalized
+}
+
+fn custom_routing_rules_from_account_order(
+    account_ids: &[String],
+) -> Vec<CodexLocalAccessCustomRoutingRule> {
+    account_ids
+        .iter()
+        .enumerate()
+        .map(|(index, account_id)| CodexLocalAccessCustomRoutingRule {
+            account_id: account_id.clone(),
+            priority: (CUSTOM_ROUTING_PRIORITY_MAX - index as i32).max(CUSTOM_ROUTING_PRIORITY_MIN),
+            weight: CUSTOM_ROUTING_WEIGHT_MIN,
+        })
+        .collect()
 }
 
 fn normalize_account_model_rule(
@@ -3990,6 +6006,176 @@ fn pin_account_to_front(
     ordered
 }
 
+fn constrain_previous_response_affinity(
+    account_ids: Vec<String>,
+    affinity_account_id: Option<&str>,
+) -> Vec<String> {
+    let Some(affinity_account_id) = affinity_account_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return account_ids;
+    };
+    if account_ids
+        .iter()
+        .any(|account_id| account_id == affinity_account_id)
+    {
+        vec![affinity_account_id.to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct SelectorAuditSummary {
+    candidate_count: usize,
+    eligible_count: usize,
+    skipped_counts_by_reason: BTreeMap<String, usize>,
+    cap_applied: bool,
+    cap_limit: usize,
+    sticky_cleared: bool,
+}
+
+fn account_id_matches(account_id: Option<&str>, expected: &str) -> bool {
+    let expected = expected.trim();
+    if expected.is_empty() {
+        return false;
+    }
+    account_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value == expected)
+        .unwrap_or(false)
+}
+
+fn increment_selector_skip_count(counts: &mut BTreeMap<String, usize>, reason: &str) {
+    let count = counts.entry(reason.to_string()).or_insert(0);
+    *count = count.saturating_add(1);
+}
+
+fn selector_selected_reason(
+    selected_account_id: &str,
+    active_stream_affinity_account_id: Option<&str>,
+    previous_response_affinity_account_id: Option<&str>,
+    request_affinity_account_id: Option<&str>,
+    process_sticky_account_id: Option<&str>,
+) -> &'static str {
+    if account_id_matches(active_stream_affinity_account_id, selected_account_id) {
+        return "active_stream_affinity_selected";
+    }
+    if account_id_matches(previous_response_affinity_account_id, selected_account_id) {
+        return "previous_response_affinity_selected";
+    }
+    if account_id_matches(request_affinity_account_id, selected_account_id) {
+        return "request_affinity_selected";
+    }
+    if account_id_matches(process_sticky_account_id, selected_account_id) {
+        return "sticky_selected";
+    }
+    "fill_first_selected"
+}
+
+fn build_selector_audit_summary(
+    candidate_ids: &[String],
+    registry: &CodexLocalAccessHealthRegistry,
+    model: Option<&str>,
+    now: i64,
+    max_credential_attempts: usize,
+    affinity_account_id: Option<&str>,
+    sticky_cleared: bool,
+) -> SelectorAuditSummary {
+    let cap_limit = max_credential_attempts.max(1);
+    let mut summary = SelectorAuditSummary {
+        candidate_count: candidate_ids.len(),
+        cap_applied: candidate_ids.len() > cap_limit,
+        cap_limit,
+        sticky_cleared,
+        ..SelectorAuditSummary::default()
+    };
+
+    for account_id in candidate_ids.iter().take(cap_limit) {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            increment_selector_skip_count(
+                &mut summary.skipped_counts_by_reason,
+                "invalid_candidate",
+            );
+            continue;
+        }
+
+        let is_affinity_continuation = account_id_matches(affinity_account_id, account_id);
+        let has_hard_block = health_registry_account_has_hard_block(registry, account_id);
+        if health_registry_account_cooldown_wait(registry, account_id, model, now).is_some()
+            && (!is_affinity_continuation || has_hard_block)
+        {
+            increment_selector_skip_count(&mut summary.skipped_counts_by_reason, "health_skipped");
+            continue;
+        }
+
+        if (!is_affinity_continuation || has_hard_block)
+            && !health_registry_account_is_schedulable(registry, account_id, model, now)
+        {
+            increment_selector_skip_count(&mut summary.skipped_counts_by_reason, "health_skipped");
+            continue;
+        }
+
+        summary.eligible_count = summary.eligible_count.saturating_add(1);
+    }
+
+    if summary.cap_applied {
+        let truncated = candidate_ids.len().saturating_sub(cap_limit);
+        if truncated > 0 {
+            summary
+                .skipped_counts_by_reason
+                .insert("cap_truncated".to_string(), truncated);
+        }
+    }
+    if sticky_cleared {
+        increment_selector_skip_count(&mut summary.skipped_counts_by_reason, "sticky_cleared");
+    }
+
+    summary
+}
+
+fn selector_audit_detail(
+    summary: &SelectorAuditSummary,
+    selected_reason: &str,
+    model_key: &str,
+) -> BTreeMap<String, String> {
+    let skipped_counts = serde_json::to_string(&summary.skipped_counts_by_reason)
+        .unwrap_or_else(|_| "{}".to_string());
+    BTreeMap::from([
+        ("model_key".to_string(), model_key.to_string()),
+        (
+            "candidate_count".to_string(),
+            summary.candidate_count.to_string(),
+        ),
+        (
+            "eligible_count".to_string(),
+            summary.eligible_count.to_string(),
+        ),
+        ("skipped_counts_by_reason".to_string(), skipped_counts),
+        ("selected_reason".to_string(), selected_reason.to_string()),
+        ("cap_applied".to_string(), summary.cap_applied.to_string()),
+        ("cap_limit".to_string(), summary.cap_limit.to_string()),
+        (
+            "sticky_cleared".to_string(),
+            summary.sticky_cleared.to_string(),
+        ),
+    ])
+}
+
+fn infer_single_account_continuation_affinity(
+    previous_response_id: Option<&str>,
+    account_ids: &[String],
+) -> Option<String> {
+    previous_response_id?;
+    if account_ids.len() == 1 {
+        return account_ids.first().cloned();
+    }
+    None
+}
+
 fn format_retry_after_duration(wait: Duration) -> String {
     let seconds = wait.as_secs().max(1);
     format!("{} 秒", seconds)
@@ -4007,32 +6193,2706 @@ fn build_cooldown_unavailable_message(model_key: &str, wait: Duration) -> String
     }
 }
 
-fn parse_codex_retry_after(status: StatusCode, error_body: &str) -> Option<Duration> {
-    if status != StatusCode::TOO_MANY_REQUESTS || error_body.trim().is_empty() {
+fn summarize_pool_unavailability(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_ids: &[String],
+    model: Option<&str>,
+    now: i64,
+) -> PoolUnavailableSummary {
+    let mut summary = PoolUnavailableSummary {
+        total_count: account_ids.len(),
+        ..PoolUnavailableSummary::default()
+    };
+
+    for account_id in account_ids {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            summary.unknown_blocked_count += 1;
+            continue;
+        }
+
+        let mut blocked = false;
+        if let Some(account) = registry.accounts.get(account_id) {
+            match account.status {
+                CodexLocalAccessAccountHealthStatus::Healthy
+                | CodexLocalAccessAccountHealthStatus::EstimatedAvailable => {}
+                CodexLocalAccessAccountHealthStatus::CoolingDown => {
+                    if let Some(wait) = cooldown_wait_from_until_ms(account.cooldown_until_ms, now)
+                    {
+                        summary.cooling_count += 1;
+                        summary.nearest_wait = min_cooldown_wait(summary.nearest_wait, wait);
+                        blocked = true;
+                    }
+                }
+                CodexLocalAccessAccountHealthStatus::Exhausted => {
+                    summary.exhausted_count += 1;
+                    if let Some(wait) = cooldown_wait_from_until_ms(
+                        account.estimated_reset_at_ms.or(account.cooldown_until_ms),
+                        now,
+                    ) {
+                        summary.nearest_wait = min_cooldown_wait(summary.nearest_wait, wait);
+                    }
+                    blocked = true;
+                }
+                CodexLocalAccessAccountHealthStatus::AuthSuspect
+                | CodexLocalAccessAccountHealthStatus::ManualRequired => {
+                    summary.manual_required_count += 1;
+                    blocked = true;
+                }
+                CodexLocalAccessAccountHealthStatus::Disabled => {
+                    summary.disabled_count += 1;
+                    blocked = true;
+                }
+            }
+
+            if account.manual_required
+                && !matches!(
+                    account.status,
+                    CodexLocalAccessAccountHealthStatus::AuthSuspect
+                        | CodexLocalAccessAccountHealthStatus::ManualRequired
+                )
+            {
+                summary.manual_required_count += 1;
+                blocked = true;
+            }
+        }
+
+        if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+            let key = health_registry_model_key(account_id, model);
+            if let Some(wait) = registry.model_cooldowns.get(&key).and_then(|cooldown| {
+                cooldown_wait_from_until_ms(Some(cooldown.cooldown_until_ms), now)
+            }) {
+                summary.model_cooldown_count += 1;
+                summary.nearest_wait = min_cooldown_wait(summary.nearest_wait, wait);
+                blocked = true;
+            }
+        }
+
+        if !blocked && health_registry_account_is_schedulable(registry, account_id, model, now) {
+            summary.schedulable_count += 1;
+        } else if !blocked {
+            summary.unknown_blocked_count += 1;
+        }
+    }
+
+    summary
+}
+
+fn status_for_pool_unavailable(summary: &PoolUnavailableSummary) -> u16 {
+    if summary.total_count > 0
+        && summary.manual_required_count == summary.total_count
+        && summary.schedulable_count == 0
+    {
+        return StatusCode::UNAUTHORIZED.as_u16();
+    }
+    StatusCode::SERVICE_UNAVAILABLE.as_u16()
+}
+
+fn should_use_pool_unavailable_summary(summary: &PoolUnavailableSummary) -> bool {
+    summary.total_count > 0
+        && summary.schedulable_count == 0
+        && (summary.exhausted_count
+            + summary.cooling_count
+            + summary.model_cooldown_count
+            + summary.manual_required_count
+            + summary.disabled_count
+            + summary.unknown_blocked_count)
+            > 0
+}
+
+fn should_defer_pool_unavailable(summary: &PoolUnavailableSummary) -> bool {
+    should_use_pool_unavailable_summary(summary)
+        && summary.nearest_wait.is_some()
+        && (summary.exhausted_count + summary.cooling_count + summary.model_cooldown_count) > 0
+}
+
+fn pool_wait_fits_request_budget(
+    wait: Duration,
+    elapsed: Duration,
+    request_timeout: Duration,
+) -> bool {
+    let timeout_guard = Duration::from_secs(2);
+    let remaining = request_timeout.saturating_sub(elapsed);
+    wait <= MAX_POOL_UNAVAILABLE_PRE_ADMISSION_WAIT
+        && remaining > timeout_guard
+        && wait < remaining.saturating_sub(timeout_guard)
+}
+
+fn backpressure_wait_budget(elapsed: Duration, request_timeout: Duration) -> Option<Duration> {
+    let timeout_guard = Duration::from_secs(2);
+    let remaining = request_timeout.saturating_sub(elapsed);
+    if remaining <= timeout_guard {
+        return None;
+    }
+    Some(remaining.saturating_sub(timeout_guard))
+}
+
+fn build_pool_unavailable_message(model_key: &str, summary: &PoolUnavailableSummary) -> String {
+    if summary.total_count == 0 {
+        return "API 服务号池为空，请先加入账号".to_string();
+    }
+
+    let model_prefix = model_key
+        .trim()
+        .is_empty()
+        .then(String::new)
+        .unwrap_or_else(|| format!("模型 {} 的", model_key.trim()));
+
+    if summary.exhausted_count == summary.total_count {
+        if let Some(wait) = summary.nearest_wait {
+            return format!(
+                "{}API 服务号池账号额度均已耗尽，请 {} 后重试",
+                model_prefix,
+                format_retry_after_duration(wait)
+            );
+        }
+        return format!(
+            "{}API 服务号池账号额度均已耗尽，且未拿到上游 reset 时间；请刷新配额、调整号池或恢复账号后重试",
+            model_prefix
+        );
+    }
+
+    if summary.manual_required_count == summary.total_count {
+        return format!(
+            "{}API 服务号池账号均需人工处理（重新登录或风控验证），请在 Cockpit 中恢复账号后重试",
+            model_prefix
+        );
+    }
+
+    let mut parts = Vec::new();
+    if summary.exhausted_count > 0 {
+        parts.push(format!("额度耗尽 {} 个", summary.exhausted_count));
+    }
+    let cooling_total = summary
+        .cooling_count
+        .saturating_add(summary.model_cooldown_count);
+    if cooling_total > 0 {
+        parts.push(format!("冷却中 {} 个", cooling_total));
+    }
+    if summary.manual_required_count > 0 {
+        parts.push(format!("需人工处理 {} 个", summary.manual_required_count));
+    }
+    if summary.disabled_count > 0 {
+        parts.push(format!("已禁用 {} 个", summary.disabled_count));
+    }
+    if summary.unknown_blocked_count > 0 {
+        parts.push(format!("状态未知 {} 个", summary.unknown_blocked_count));
+    }
+
+    if parts.is_empty() {
+        return format!(
+            "{}API 服务号池暂无可调度账号，请刷新配额或调整号池后重试",
+            model_prefix
+        );
+    }
+
+    format!(
+        "{}API 服务号池暂无可调度账号（{}）；请刷新配额、恢复账号或调整号池后重试",
+        model_prefix,
+        parts.join("，")
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexLocalAccessErrorType {
+    UpstreamRateLimit,
+    UsageLimitReached,
+    AuthError,
+    CaptchaOrSuspicious,
+    InsufficientQuota,
+    ModelCapacity,
+    NetworkError,
+    ServerError,
+    Unknown,
+}
+
+impl CodexLocalAccessErrorType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UpstreamRateLimit => "upstream_rate_limit",
+            Self::UsageLimitReached => "usage_limit_reached",
+            Self::AuthError => "auth_error",
+            Self::CaptchaOrSuspicious => "captcha_or_suspicious",
+            Self::InsufficientQuota => "insufficient_quota",
+            Self::ModelCapacity => "model_capacity",
+            Self::NetworkError => "network_error",
+            Self::ServerError => "server_error",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexLocalAccessErrorSource {
+    Network,
+    Upstream,
+}
+
+impl CodexLocalAccessErrorSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Network => "network",
+            Self::Upstream => "upstream",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexLocalAccessErrorScope {
+    Request,
+    Account,
+    Model,
+    Provider,
+    Unknown,
+}
+
+impl CodexLocalAccessErrorScope {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Account => "account",
+            Self::Model => "model",
+            Self::Provider => "provider",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClassifiedCodexUpstreamError {
+    error_type: CodexLocalAccessErrorType,
+    source: CodexLocalAccessErrorSource,
+    scope: CodexLocalAccessErrorScope,
+    status: u16,
+    provider_code: Option<String>,
+    retry_after: Option<Duration>,
+    manual_required: bool,
+    safe_message: String,
+    log_fields: BTreeMap<String, String>,
+}
+
+impl ClassifiedCodexUpstreamError {
+    fn safe_for_request_failover(&self) -> bool {
+        if self.manual_required || self.status == 401 {
+            return false;
+        }
+
+        if self.status == 403
+            && !matches!(
+                self.error_type,
+                CodexLocalAccessErrorType::UsageLimitReached
+                    | CodexLocalAccessErrorType::InsufficientQuota
+                    | CodexLocalAccessErrorType::ModelCapacity
+            )
+        {
+            return false;
+        }
+
+        matches!(
+            self.error_type,
+            CodexLocalAccessErrorType::UsageLimitReached
+                | CodexLocalAccessErrorType::InsufficientQuota
+                | CodexLocalAccessErrorType::ModelCapacity
+                | CodexLocalAccessErrorType::NetworkError
+                | CodexLocalAccessErrorType::ServerError
+        )
+    }
+}
+
+fn sanitize_provider_code(value: &str) -> Option<String> {
+    let mut safe = String::new();
+    for ch in value.trim().chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':') {
+            safe.push(ch);
+        }
+        if safe.len() >= 96 {
+            break;
+        }
+    }
+
+    if safe.is_empty() {
         return None;
     }
 
-    let payload = serde_json::from_str::<Value>(error_body).ok()?;
-    let error = payload.get("error")?;
-    if error.get("type").and_then(Value::as_str).map(str::trim) != Some("usage_limit_reached") {
-        return None;
-    }
+    Some(safe)
+}
 
-    let now_seconds = chrono::Utc::now().timestamp();
-    if let Some(resets_at) = error.get("resets_at").and_then(Value::as_i64) {
-        if resets_at > now_seconds {
-            let delta = resets_at.saturating_sub(now_seconds) as u64;
-            if delta > 0 {
-                return Some(Duration::from_secs(delta));
+fn first_safe_json_metadata_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .and_then(sanitize_provider_code)
+    })
+}
+
+fn insert_safe_upstream_header_metadata(
+    log_fields: &mut BTreeMap<String, String>,
+    headers: Option<&HeaderMap>,
+    field_name: &str,
+    header_name: &str,
+) {
+    let Some(headers) = headers else {
+        return;
+    };
+    let Some(value) = headers
+        .get(header_name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(sanitize_provider_code)
+    else {
+        return;
+    };
+
+    log_fields.insert(field_name.to_string(), value);
+}
+
+fn insert_codex_upstream_quota_metadata(
+    log_fields: &mut BTreeMap<String, String>,
+    headers: Option<&HeaderMap>,
+    parsed: Option<&Value>,
+) {
+    if let Some(root) = parsed {
+        let candidates = [
+            Some(root),
+            root.get("error"),
+            root.get("detail"),
+            root.get("data"),
+        ];
+
+        for candidate in candidates.into_iter().flatten() {
+            if !log_fields.contains_key("plan_type") {
+                if let Some(plan_type) =
+                    first_safe_json_metadata_field(candidate, &["plan_type", "planType"])
+                {
+                    log_fields.insert("plan_type".to_string(), plan_type);
+                }
+            }
+            if !log_fields.contains_key("provider_plan_type") {
+                if let Some(plan_type) = first_safe_json_metadata_field(
+                    candidate,
+                    &["provider_plan_type", "providerPlanType"],
+                ) {
+                    log_fields.insert("provider_plan_type".to_string(), plan_type);
+                }
+            }
+            if !log_fields.contains_key("reset_at") {
+                if let Some(reset_at) = first_i64_json_field(
+                    candidate,
+                    [
+                        "reset_at",
+                        "resets_at",
+                        "resetAt",
+                        "reset_at_seconds",
+                        "reset_timestamp",
+                        "reset_time",
+                    ],
+                )
+                .map(normalize_unix_timestamp_seconds)
+                {
+                    log_fields.insert("reset_at".to_string(), reset_at.to_string());
+                }
+            }
+            if !log_fields.contains_key("reset_after_seconds") {
+                if let Some(reset_after_seconds) = first_i64_json_field(
+                    candidate,
+                    [
+                        "reset_after_seconds",
+                        "resets_in_seconds",
+                        "resetAfterSeconds",
+                        "retry_after_seconds",
+                        "retry_after",
+                    ],
+                )
+                .filter(|seconds| *seconds >= 0)
+                {
+                    log_fields.insert(
+                        "reset_after_seconds".to_string(),
+                        reset_after_seconds.to_string(),
+                    );
+                }
+            }
+            if !log_fields.contains_key("active_limit") {
+                if let Some(active_limit) =
+                    first_safe_json_metadata_field(candidate, &["active_limit", "activeLimit"])
+                {
+                    log_fields.insert("active_limit".to_string(), active_limit);
+                }
+            }
+            if !log_fields.contains_key("rate_limit_reached_type") {
+                if let Some(limit_type) = first_safe_json_metadata_field(
+                    candidate,
+                    &["rate_limit_reached_type", "rateLimitReachedType"],
+                ) {
+                    log_fields.insert("rate_limit_reached_type".to_string(), limit_type);
+                }
+            }
+            if !log_fields.contains_key("promo_message_present")
+                && (candidate.get("promo_message").is_some()
+                    || candidate.get("promoMessage").is_some())
+            {
+                log_fields.insert("promo_message_present".to_string(), "true".to_string());
             }
         }
     }
 
-    error
-        .get("resets_in_seconds")
-        .and_then(Value::as_i64)
+    insert_safe_upstream_header_metadata(
+        log_fields,
+        headers,
+        "provider_plan_type",
+        "x-codex-plan-type",
+    );
+    insert_safe_upstream_header_metadata(
+        log_fields,
+        headers,
+        "active_limit",
+        "x-codex-active-limit",
+    );
+    insert_safe_upstream_header_metadata(
+        log_fields,
+        headers,
+        "rate_limit_reached_type",
+        "x-codex-rate-limit-reached-type",
+    );
+    if headers
+        .and_then(|headers| headers.get("x-codex-promo-message"))
+        .is_some()
+    {
+        log_fields.insert("promo_message_present".to_string(), "true".to_string());
+    }
+}
+
+fn extract_provider_error_code(parsed: &Value) -> Option<String> {
+    for value in [
+        parsed
+            .get("error")
+            .and_then(|error| error.get("type"))
+            .and_then(Value::as_str),
+        parsed
+            .get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_str),
+        parsed
+            .get("detail")
+            .and_then(|detail| detail.get("type"))
+            .and_then(Value::as_str),
+        parsed
+            .get("detail")
+            .and_then(|detail| detail.get("code"))
+            .and_then(Value::as_str),
+        parsed.get("type").and_then(Value::as_str),
+        parsed.get("code").and_then(Value::as_str),
+    ] {
+        if let Some(safe) = value.and_then(sanitize_provider_code) {
+            return Some(safe);
+        }
+    }
+
+    None
+}
+
+fn parse_retry_after_ms_header_value(value: &str) -> Option<Duration> {
+    let milliseconds = value.trim().parse::<u64>().ok()?;
+    if milliseconds == 0 {
+        return None;
+    }
+
+    Some(Duration::from_millis(milliseconds))
+}
+
+fn parse_retry_after_header_value(
+    value: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<Duration> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(seconds) = trimmed.parse::<u64>() {
+        if seconds == 0 {
+            return None;
+        }
+        return Some(Duration::from_secs(seconds));
+    }
+
+    let retry_at = chrono::DateTime::parse_from_rfc2822(trimmed)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    retry_at
+        .signed_duration_since(now)
+        .to_std()
+        .ok()
+        .filter(|wait| *wait > Duration::from_secs(0))
+}
+
+fn parse_retry_after_headers(headers: Option<&HeaderMap>) -> Option<Duration> {
+    let headers = headers?;
+
+    if let Some(wait) = headers
+        .get("retry-after-ms")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after_ms_header_value)
+    {
+        return Some(wait);
+    }
+
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| parse_retry_after_header_value(value, chrono::Utc::now()))
+}
+
+fn parse_upstream_body_retry_after(status: StatusCode, error_body: &str) -> Option<Duration> {
+    if error_body.trim().is_empty() {
+        return None;
+    }
+    if !matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+    ) {
+        return None;
+    }
+
+    let payload = serde_json::from_str::<Value>(error_body).ok()?;
+    let provider_code = extract_provider_error_code(&payload)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let body_lower = error_body.to_ascii_lowercase();
+    let has_retryable_marker = [
+        "usage_limit_reached",
+        "insufficient_quota",
+        "rate_limit",
+        "too_many_requests",
+        "quota",
+        "model_capacity",
+        "capacity",
+        "workspace_owner_credits_depleted",
+        "workspace_member_credits_depleted",
+        "credits_depleted",
+    ]
+    .iter()
+    .any(|marker| provider_code.contains(marker) || body_lower.contains(marker));
+    if !has_retryable_marker {
+        return None;
+    }
+
+    let now_seconds = chrono::Utc::now().timestamp();
+    let reset_hint = extract_account_quota_reset_hint_from_body(error_body, now_seconds);
+    if let Some(reset_at) = reset_hint
+        .reset_at_seconds
+        .filter(|reset_at| *reset_at > now_seconds)
+    {
+        let delta = reset_at.saturating_sub(now_seconds) as u64;
+        if delta > 0 {
+            return Some(Duration::from_secs(delta));
+        }
+    }
+
+    reset_hint
+        .reset_after_seconds
         .filter(|seconds| *seconds > 0)
         .map(|seconds| Duration::from_secs(seconds as u64))
+}
+
+fn classify_codex_upstream_error(
+    status: StatusCode,
+    headers: Option<&HeaderMap>,
+    error_body: &str,
+) -> ClassifiedCodexUpstreamError {
+    let parsed = serde_json::from_str::<Value>(error_body).ok();
+    let provider_code = parsed.as_ref().and_then(extract_provider_error_code);
+    let provider_code_lower = provider_code
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let body_lower = error_body.to_ascii_lowercase();
+    let retry_after = parse_retry_after_headers(headers)
+        .or_else(|| parse_upstream_body_retry_after(status, error_body));
+
+    let has_marker = |markers: &[&str]| {
+        markers
+            .iter()
+            .any(|marker| provider_code_lower.contains(marker) || body_lower.contains(marker))
+    };
+
+    let (error_type, source, scope, manual_required, safe_message) = if status
+        == StatusCode::UNAUTHORIZED
+        || has_marker(&["unauthorized", "invalid_api_key", "invalid_token", "auth"])
+    {
+        (
+            CodexLocalAccessErrorType::AuthError,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Account,
+            true,
+            "上游账号鉴权失败，请手动重新登录或刷新账号".to_string(),
+        )
+    } else if status == StatusCode::FORBIDDEN
+        && has_marker(&["captcha", "suspicious", "abuse", "risk", "challenge"])
+    {
+        (
+            CodexLocalAccessErrorType::CaptchaOrSuspicious,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Account,
+            true,
+            "上游要求人工验证或触发风控，请手动处理该账号".to_string(),
+        )
+    } else if is_image_generation_capability_message(Some(status.as_u16()), error_body) {
+        (
+            CodexLocalAccessErrorType::ModelCapacity,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Account,
+            false,
+            "当前账号未启用图片生成能力，已尝试轮转到其他账号".to_string(),
+        )
+    } else if status == StatusCode::FORBIDDEN {
+        (
+            CodexLocalAccessErrorType::AuthError,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Account,
+            true,
+            "上游拒绝该账号或请求，请手动确认账号状态".to_string(),
+        )
+    } else if has_marker(&[
+        "workspace_owner_credits_depleted",
+        "workspace_member_credits_depleted",
+        "workspace_owner_usage_limit_reached",
+        "workspace_member_usage_limit_reached",
+        "credits_depleted",
+    ]) {
+        (
+            CodexLocalAccessErrorType::UsageLimitReached,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Account,
+            false,
+            "上游返回工作区或账号额度耗尽，请更换或恢复账号额度".to_string(),
+        )
+    } else if provider_code_lower == "usage_limit_reached"
+        || has_marker(&["usage_limit_reached", "limit reached"])
+    {
+        (
+            CodexLocalAccessErrorType::UsageLimitReached,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Model,
+            false,
+            "上游返回使用额度冷却，请稍后重试".to_string(),
+        )
+    } else if has_marker(&["insufficient_quota", "quota exceeded"]) {
+        (
+            CodexLocalAccessErrorType::InsufficientQuota,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Account,
+            false,
+            "上游账号额度不足，请更换或恢复账号额度".to_string(),
+        )
+    } else if has_marker(&[
+        "selected model is at capacity",
+        "model is at capacity",
+        "model_capacity",
+    ]) {
+        (
+            CodexLocalAccessErrorType::ModelCapacity,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Model,
+            false,
+            "上游模型容量暂不可用，请稍后重试".to_string(),
+        )
+    } else if status == StatusCode::TOO_MANY_REQUESTS {
+        (
+            CodexLocalAccessErrorType::UpstreamRateLimit,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Provider,
+            false,
+            "上游请求频率受限，请稍后重试".to_string(),
+        )
+    } else if status == StatusCode::REQUEST_TIMEOUT {
+        (
+            CodexLocalAccessErrorType::NetworkError,
+            CodexLocalAccessErrorSource::Network,
+            CodexLocalAccessErrorScope::Request,
+            false,
+            "上游请求超时，请稍后重试".to_string(),
+        )
+    } else if status.is_server_error() {
+        (
+            CodexLocalAccessErrorType::ServerError,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Provider,
+            false,
+            "上游服务暂不可用，请稍后重试".to_string(),
+        )
+    } else {
+        (
+            CodexLocalAccessErrorType::Unknown,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Unknown,
+            false,
+            format!("上游接口返回状态 {}", status.as_u16()),
+        )
+    };
+
+    let mut log_fields = BTreeMap::from([
+        ("error_type".to_string(), error_type.as_str().to_string()),
+        ("source".to_string(), source.as_str().to_string()),
+        ("scope".to_string(), scope.as_str().to_string()),
+        ("status".to_string(), status.as_u16().to_string()),
+        ("manual_required".to_string(), manual_required.to_string()),
+    ]);
+
+    if let Some(provider_code) = provider_code.as_deref() {
+        log_fields.insert("provider_code".to_string(), provider_code.to_string());
+    }
+    if let Some(wait) = retry_after {
+        log_fields.insert("retry_after_ms".to_string(), wait.as_millis().to_string());
+    }
+    insert_codex_upstream_quota_metadata(&mut log_fields, headers, parsed.as_ref());
+
+    ClassifiedCodexUpstreamError {
+        error_type,
+        source,
+        scope,
+        status: status.as_u16(),
+        provider_code,
+        retry_after,
+        manual_required,
+        safe_message,
+        log_fields,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AccountQuotaResetHint {
+    reset_at_seconds: Option<i64>,
+    reset_after_seconds: Option<i64>,
+}
+
+fn should_persist_account_quota_exhaustion(classified: &ClassifiedCodexUpstreamError) -> bool {
+    matches!(
+        classified.error_type,
+        CodexLocalAccessErrorType::InsufficientQuota
+    ) || (classified.error_type == CodexLocalAccessErrorType::UsageLimitReached
+        && classified.scope == CodexLocalAccessErrorScope::Account)
+}
+
+fn should_persist_account_quota_exhaustion_for_request(
+    classified: &ClassifiedCodexUpstreamError,
+    request: &ParsedRequest,
+) -> bool {
+    let model_key = build_request_routing_hint(request).model_key;
+    let request_model = model_key.as_str().trim();
+    if classified.error_type == CodexLocalAccessErrorType::UsageLimitReached
+        && classified.scope == CodexLocalAccessErrorScope::Model
+        && request_model.is_empty()
+    {
+        return true;
+    }
+
+    if !should_persist_account_quota_exhaustion(classified) {
+        return false;
+    }
+
+    if is_model_scoped_cooldown(classified, Some(request_model)) {
+        return false;
+    }
+
+    true
+}
+
+fn normalize_unix_timestamp_seconds(value: i64) -> i64 {
+    if value > 1_000_000_000_000 {
+        value / 1000
+    } else {
+        value
+    }
+}
+
+fn first_i64_json_field<'a>(
+    value: &'a Value,
+    keys: impl IntoIterator<Item = &'a str>,
+) -> Option<i64> {
+    keys.into_iter().find_map(|key| {
+        value.get(key).and_then(|item| {
+            item.as_i64()
+                .or_else(|| item.as_u64().and_then(|v| i64::try_from(v).ok()))
+                .or_else(|| {
+                    item.as_str()
+                        .and_then(|value| value.trim().parse::<i64>().ok())
+                })
+        })
+    })
+}
+
+fn extract_account_quota_reset_hint_from_body(
+    error_body: &str,
+    now_seconds: i64,
+) -> AccountQuotaResetHint {
+    let Ok(root) = serde_json::from_str::<Value>(error_body) else {
+        return AccountQuotaResetHint::default();
+    };
+    let candidates = [
+        Some(&root),
+        root.get("error"),
+        root.get("detail"),
+        root.get("data"),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        let reset_at = first_i64_json_field(
+            candidate,
+            [
+                "reset_at",
+                "resets_at",
+                "resetAt",
+                "reset_at_seconds",
+                "reset_timestamp",
+                "reset_time",
+            ],
+        )
+        .map(normalize_unix_timestamp_seconds);
+        let reset_after_seconds = first_i64_json_field(
+            candidate,
+            [
+                "reset_after_seconds",
+                "resets_in_seconds",
+                "resetAfterSeconds",
+                "retry_after_seconds",
+                "retry_after",
+            ],
+        )
+        .filter(|seconds| *seconds >= 0);
+
+        if reset_at.is_some() || reset_after_seconds.is_some() {
+            return AccountQuotaResetHint {
+                reset_at_seconds: reset_at.or_else(|| {
+                    reset_after_seconds.map(|seconds| now_seconds.saturating_add(seconds))
+                }),
+                reset_after_seconds,
+            };
+        }
+    }
+
+    AccountQuotaResetHint::default()
+}
+
+fn duration_to_millis_i64(duration: Duration) -> i64 {
+    i64::try_from(duration.as_millis()).unwrap_or(i64::MAX)
+}
+
+fn duration_to_ceiled_seconds_i64(duration: Duration) -> i64 {
+    let seconds = duration.as_millis().saturating_add(999) / 1000;
+    i64::try_from(seconds).unwrap_or(i64::MAX)
+}
+
+fn account_quota_reset_hint_from_classified_error(
+    classified: &ClassifiedCodexUpstreamError,
+    error_body: &str,
+    now_ms: i64,
+) -> AccountQuotaResetHint {
+    let now_seconds = now_ms.div_euclid(1000);
+    let mut hint = extract_account_quota_reset_hint_from_body(error_body, now_seconds);
+
+    if hint.reset_at_seconds.is_none() {
+        if let Some(retry_after) = classified.retry_after {
+            let reset_after_seconds = duration_to_ceiled_seconds_i64(retry_after);
+            hint.reset_at_seconds = Some(now_seconds.saturating_add(reset_after_seconds));
+            hint.reset_after_seconds.get_or_insert(reset_after_seconds);
+        }
+    }
+
+    hint
+}
+
+fn build_account_quota_exhaustion_message(
+    classified: &ClassifiedCodexUpstreamError,
+    reset_at_seconds: Option<i64>,
+) -> String {
+    let mut message = format!(
+        "Cockpit API service upstream quota exhausted: status={}, error_type={}",
+        classified.status,
+        classified.error_type.as_str()
+    );
+    if let Some(provider_code) = classified.provider_code.as_deref() {
+        message.push_str(&format!(", provider_code={}", provider_code));
+    }
+    if let Some(reset_at) = reset_at_seconds {
+        message.push_str(&format!(", reset_at={}", reset_at));
+    }
+    message
+}
+
+fn apply_account_quota_exhaustion_snapshot(
+    account: &mut CodexAccount,
+    classified: &ClassifiedCodexUpstreamError,
+    error_body: &str,
+    now_ms: i64,
+) -> bool {
+    if !should_persist_account_quota_exhaustion(classified) {
+        return false;
+    }
+
+    let now_seconds = now_ms.div_euclid(1000);
+    let previous = account.quota.as_ref();
+    let reset_hint = account_quota_reset_hint_from_classified_error(classified, error_body, now_ms);
+    let reset_at = reset_hint.reset_at_seconds;
+    let retry_after_ms = classified.retry_after.map(duration_to_millis_i64);
+
+    account.quota = Some(CodexQuota {
+        hourly_percentage: 0,
+        hourly_reset_time: reset_at.or_else(|| previous.and_then(|quota| quota.hourly_reset_time)),
+        hourly_window_minutes: previous.and_then(|quota| quota.hourly_window_minutes),
+        hourly_window_present: previous
+            .and_then(|quota| quota.hourly_window_present)
+            .or(Some(true)),
+        weekly_percentage: 0,
+        weekly_reset_time: reset_at.or_else(|| previous.and_then(|quota| quota.weekly_reset_time)),
+        weekly_window_minutes: previous.and_then(|quota| quota.weekly_window_minutes),
+        weekly_window_present: previous
+            .and_then(|quota| quota.weekly_window_present)
+            .or(Some(true)),
+        raw_data: Some(json!({
+            "source": "codex_local_access_upstream_error",
+            "quota_exhausted": true,
+            "exhausted_at": now_seconds,
+            "reset_at": reset_at,
+            "reset_after_seconds": reset_hint.reset_after_seconds,
+            "retry_after_ms": retry_after_ms,
+            "status": classified.status,
+            "error_type": classified.error_type.as_str(),
+            "provider_code": classified.provider_code.as_deref(),
+        })),
+    });
+    account.quota_error = Some(CodexQuotaErrorInfo {
+        code: classified
+            .provider_code
+            .clone()
+            .or_else(|| Some(classified.error_type.as_str().to_string())),
+        message: build_account_quota_exhaustion_message(classified, reset_at),
+        timestamp: now_seconds,
+    });
+    account.usage_updated_at = Some(now_seconds);
+    true
+}
+
+fn persist_account_quota_exhaustion_from_classified_error(
+    account_id: &str,
+    classified: &ClassifiedCodexUpstreamError,
+    error_body: &str,
+    now_ms: i64,
+) -> Result<bool, String> {
+    let account_id = account_id.trim();
+    if account_id.is_empty() || !should_persist_account_quota_exhaustion(classified) {
+        return Ok(false);
+    }
+
+    let Some(mut account) = codex_account::load_account(account_id) else {
+        return Err(format!("账号详情不存在: account_id={}", account_id));
+    };
+    if !apply_account_quota_exhaustion_snapshot(&mut account, classified, error_body, now_ms) {
+        return Ok(false);
+    }
+
+    codex_account::save_account(&account)?;
+    Ok(true)
+}
+
+fn persist_account_quota_exhaustion_with_audit(
+    account_id: &str,
+    request: &ParsedRequest,
+    classified: &ClassifiedCodexUpstreamError,
+    error_body: &str,
+) {
+    if !should_persist_account_quota_exhaustion_for_request(classified, request) {
+        return;
+    }
+
+    let context = build_audit_context(request, Some(account_id));
+    match persist_account_quota_exhaustion_from_classified_error(
+        account_id,
+        classified,
+        error_body,
+        now_ms(),
+    ) {
+        Ok(true) => record_audit_event_from_context(
+            &context,
+            "account_quota_snapshot",
+            Some(classified.status),
+            Some(classified.error_type.as_str()),
+            None,
+            Some("recorded"),
+            classified_audit_detail(classified),
+        ),
+        Ok(false) => {}
+        Err(err) => {
+            logger::log_warn(&format!(
+                "[CodexLocalAccess][QuotaSnapshot] 写入账号额度耗尽快照失败: {}",
+                err
+            ));
+            record_audit_event_from_context(
+                &context,
+                "account_quota_snapshot",
+                Some(classified.status),
+                Some(classified.error_type.as_str()),
+                None,
+                Some("error"),
+                BTreeMap::from([("reason".to_string(), "persist_failed".to_string())]),
+            );
+        }
+    }
+}
+
+fn empty_health_registry(now: i64) -> CodexLocalAccessHealthRegistry {
+    CodexLocalAccessHealthRegistry {
+        schema_version: CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
+        updated_at: now,
+        ..CodexLocalAccessHealthRegistry::default()
+    }
+}
+
+fn normalize_health_registry(
+    mut registry: CodexLocalAccessHealthRegistry,
+    now: i64,
+) -> CodexLocalAccessHealthRegistry {
+    if registry.schema_version == 0 {
+        registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+    }
+    if registry.updated_at <= 0 {
+        registry.updated_at = now;
+    }
+    demote_model_scoped_account_cooldowns(&mut registry, now);
+    recover_stale_auth_manual_required_from_token_updates(&mut registry, now);
+    apply_estimated_quota_recovery(&mut registry, now);
+    prune_persisted_request_affinity_bindings(&mut registry, None, now);
+    registry
+}
+
+fn recover_stale_auth_manual_required_from_token_updates(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    now: i64,
+) {
+    let mut changed = false;
+
+    for (account_id, account_health) in registry.accounts.iter_mut() {
+        let has_auth_failure = account_health.last_status == Some(401)
+            || account_health
+                .last_error_type
+                .as_deref()
+                .map(|value| value.eq_ignore_ascii_case("auth_error"))
+                .unwrap_or(false)
+            || matches!(
+                account_health.status,
+                CodexLocalAccessAccountHealthStatus::AuthSuspect
+            );
+        if !has_auth_failure || !account_health.manual_required {
+            continue;
+        }
+
+        let Some(account) = codex_account::load_account(account_id) else {
+            continue;
+        };
+        if account.is_api_key_auth()
+            || account.requires_reauth
+            || !codex_account::account_has_refresh_token(&account)
+        {
+            continue;
+        }
+
+        let Some(token_updated_at_ms) = account
+            .token_updated_at
+            .and_then(|value| value.checked_mul(1_000))
+        else {
+            continue;
+        };
+        if token_updated_at_ms <= account_health.updated_at.max(0) {
+            continue;
+        }
+
+        account_health.status = CodexLocalAccessAccountHealthStatus::EstimatedAvailable;
+        account_health.cooldown_until_ms = None;
+        account_health.exhausted_at_ms = None;
+        account_health.estimated_reset_at_ms = None;
+        account_health.estimated_remaining_percentage = Some(100);
+        account_health.last_observed_remaining_percentage = None;
+        account_health.reset_source = Some("token_refresh_recovery".to_string());
+        account_health.confidence = Some("token_refreshed".to_string());
+        account_health.manual_required = false;
+        account_health.last_status = None;
+        account_health.last_error_type = None;
+        account_health.last_provider_code = None;
+        account_health.last_error_scope = None;
+        account_health.last_request_id = None;
+        account_health.updated_at = now;
+        changed = true;
+    }
+
+    if changed {
+        registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+        registry.updated_at = now;
+    }
+}
+
+fn is_model_scoped_cooldown_type(error_type: CodexLocalAccessErrorType) -> bool {
+    matches!(
+        error_type,
+        CodexLocalAccessErrorType::UsageLimitReached | CodexLocalAccessErrorType::ModelCapacity
+    )
+}
+
+fn is_model_scoped_cooldown_error_name(error_type: &str) -> bool {
+    matches!(
+        error_type.trim().to_ascii_lowercase().as_str(),
+        "usage_limit_reached" | "model_capacity"
+    )
+}
+
+fn is_model_scoped_cooldown(
+    classified: &ClassifiedCodexUpstreamError,
+    model: Option<&str>,
+) -> bool {
+    model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+        && classified.scope == CodexLocalAccessErrorScope::Model
+        && is_model_scoped_cooldown_type(classified.error_type)
+}
+
+fn demote_model_scoped_account_cooldowns(registry: &mut CodexLocalAccessHealthRegistry, now: i64) {
+    let active_model_scoped_accounts: HashSet<String> = registry
+        .model_cooldowns
+        .values()
+        .filter(|cooldown| cooldown.cooldown_until_ms > now)
+        .filter(|cooldown| {
+            cooldown
+                .last_error_type
+                .as_deref()
+                .map(is_model_scoped_cooldown_error_name)
+                .unwrap_or(false)
+        })
+        .map(|cooldown| cooldown.account_id.trim().to_string())
+        .filter(|account_id| !account_id.is_empty())
+        .collect();
+
+    if active_model_scoped_accounts.is_empty() {
+        return;
+    }
+
+    let mut changed = false;
+    for (account_id, account) in registry.accounts.iter_mut() {
+        if !active_model_scoped_accounts.contains(account_id.as_str()) {
+            continue;
+        }
+        if !account
+            .last_error_type
+            .as_deref()
+            .map(is_model_scoped_cooldown_error_name)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if !matches!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::CoolingDown
+                | CodexLocalAccessAccountHealthStatus::Exhausted
+        ) {
+            continue;
+        }
+
+        account.status = CodexLocalAccessAccountHealthStatus::Healthy;
+        account.cooldown_until_ms = None;
+        account.exhausted_at_ms = None;
+        account.estimated_reset_at_ms = None;
+        account.estimated_remaining_percentage = None;
+        account.last_observed_remaining_percentage = None;
+        account.reset_source = None;
+        account.confidence = None;
+        account.manual_required = false;
+        account.updated_at = now;
+        changed = true;
+    }
+
+    if changed {
+        registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+        registry.updated_at = now;
+    }
+}
+
+fn apply_estimated_quota_recovery(registry: &mut CodexLocalAccessHealthRegistry, now: i64) {
+    for account in registry.accounts.values_mut() {
+        if account.manual_required {
+            continue;
+        }
+        if !matches!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::CoolingDown
+                | CodexLocalAccessAccountHealthStatus::Exhausted
+        ) {
+            continue;
+        }
+        let Some(reset_at) = account.estimated_reset_at_ms.or(account.cooldown_until_ms) else {
+            continue;
+        };
+        if reset_at > now {
+            continue;
+        }
+
+        account.status = CodexLocalAccessAccountHealthStatus::EstimatedAvailable;
+        account.cooldown_until_ms = None;
+        account.estimated_remaining_percentage = Some(100);
+        account.confidence = Some("estimated".to_string());
+        account.updated_at = now;
+    }
+}
+
+fn load_health_registry_from_path(path: &Path) -> Result<CodexLocalAccessHealthRegistry, String> {
+    if !path.exists() {
+        return Ok(empty_health_registry(now_ms()));
+    }
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("读取 API 服务健康状态失败: {}", e))?;
+    let parsed = serde_json::from_str::<CodexLocalAccessHealthRegistry>(&content)
+        .map_err(|e| format!("解析 API 服务健康状态失败: {}", e))?;
+    let normalized = normalize_health_registry(parsed.clone(), now_ms());
+    if normalized != parsed {
+        save_health_registry_to_path(path, &normalized)?;
+        invalidate_health_summary_cache();
+    }
+    Ok(normalized)
+}
+
+fn save_health_registry_to_path(
+    path: &Path,
+    registry: &CodexLocalAccessHealthRegistry,
+) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(registry)
+        .map_err(|e| format!("序列化 API 服务健康状态失败: {}", e))?;
+    write_string_atomic(path, &content).map_err(|e| format!("写入 API 服务健康状态失败: {}", e))
+}
+
+fn load_health_registry_from_disk() -> Result<CodexLocalAccessHealthRegistry, String> {
+    let path = local_access_health_file_path()?;
+    load_health_registry_from_path(&path)
+}
+
+fn save_health_registry_to_disk(registry: &CodexLocalAccessHealthRegistry) -> Result<(), String> {
+    let path = local_access_health_file_path()?;
+    save_health_registry_to_path(&path, registry)?;
+    invalidate_health_summary_cache();
+    Ok(())
+}
+
+fn health_registry_model_key(account_id: &str, model: &str) -> String {
+    format!(
+        "{}::{}",
+        account_id.trim(),
+        model.trim().to_ascii_lowercase()
+    )
+}
+
+fn health_registry_request_id(request_id: Option<&str>) -> Option<String> {
+    request_id
+        .and_then(sanitize_provider_code)
+        .map(|value| value.chars().take(128).collect())
+}
+
+fn health_registry_cooldown_until(now: i64, wait: Option<Duration>) -> i64 {
+    let wait = wait.unwrap_or(DEFAULT_UNKNOWN_RATE_LIMIT_COOLDOWN);
+    let wait_ms = i64::try_from(wait.as_millis()).unwrap_or(i64::MAX);
+    now.saturating_add(wait_ms.max(1))
+}
+
+fn health_registry_reset_source(classified: &ClassifiedCodexUpstreamError) -> Option<String> {
+    if classified.retry_after.is_some() {
+        if matches!(
+            classified.error_type,
+            CodexLocalAccessErrorType::UsageLimitReached
+                | CodexLocalAccessErrorType::InsufficientQuota
+                | CodexLocalAccessErrorType::UpstreamRateLimit
+                | CodexLocalAccessErrorType::ModelCapacity
+        ) {
+            return Some("upstream_reset_hint".to_string());
+        }
+    }
+    None
+}
+
+fn update_health_registry_from_classified_error(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    model: Option<&str>,
+    request_id: Option<&str>,
+    classified: &ClassifiedCodexUpstreamError,
+    now: i64,
+) {
+    registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+    registry.updated_at = now;
+
+    let safe_account_id = account_id.trim();
+    if safe_account_id.is_empty() {
+        registry.last_global_error = Some(CodexLocalAccessGlobalError {
+            error_type: classified.error_type.as_str().to_string(),
+            status: Some(classified.status),
+            request_id: health_registry_request_id(request_id),
+            updated_at: now,
+        });
+        return;
+    }
+
+    let safe_model = model.map(str::trim).filter(|m| !m.is_empty());
+    let model_scoped_cooldown = is_model_scoped_cooldown(classified, safe_model);
+    let cooldown_until = classified
+        .retry_after
+        .or_else(|| {
+            matches!(
+                classified.error_type,
+                CodexLocalAccessErrorType::UpstreamRateLimit
+                    | CodexLocalAccessErrorType::UsageLimitReached
+                    | CodexLocalAccessErrorType::ModelCapacity
+            )
+            .then_some(DEFAULT_UNKNOWN_RATE_LIMIT_COOLDOWN)
+        })
+        .map(|wait| health_registry_cooldown_until(now, Some(wait)));
+    let is_quota_zero_signal = matches!(
+        classified.error_type,
+        CodexLocalAccessErrorType::UsageLimitReached | CodexLocalAccessErrorType::InsufficientQuota
+    );
+    let account_cooldown_until = if model_scoped_cooldown {
+        None
+    } else {
+        cooldown_until
+    };
+    let account_quota_zero_signal =
+        is_quota_zero_signal && classified.scope == CodexLocalAccessErrorScope::Account;
+
+    let (status, manual_required) = if classified.manual_required {
+        (CodexLocalAccessAccountHealthStatus::ManualRequired, true)
+    } else {
+        match classified.error_type {
+            CodexLocalAccessErrorType::AuthError
+            | CodexLocalAccessErrorType::CaptchaOrSuspicious => {
+                (CodexLocalAccessAccountHealthStatus::ManualRequired, true)
+            }
+            CodexLocalAccessErrorType::InsufficientQuota => {
+                (CodexLocalAccessAccountHealthStatus::Exhausted, false)
+            }
+            CodexLocalAccessErrorType::UsageLimitReached
+            | CodexLocalAccessErrorType::ModelCapacity
+                if model_scoped_cooldown =>
+            {
+                (CodexLocalAccessAccountHealthStatus::Healthy, false)
+            }
+            CodexLocalAccessErrorType::UsageLimitReached
+            | CodexLocalAccessErrorType::UpstreamRateLimit
+            | CodexLocalAccessErrorType::ModelCapacity => {
+                (CodexLocalAccessAccountHealthStatus::CoolingDown, false)
+            }
+            _ => (CodexLocalAccessAccountHealthStatus::Healthy, false),
+        }
+    };
+
+    let request_id = health_registry_request_id(request_id);
+    let previous_account_health = registry
+        .accounts
+        .get(safe_account_id)
+        .cloned()
+        .unwrap_or_default();
+    registry.accounts.insert(
+        safe_account_id.to_string(),
+        CodexLocalAccessAccountHealth {
+            status,
+            cooldown_until_ms: account_cooldown_until,
+            exhausted_at_ms: account_quota_zero_signal.then_some(now),
+            estimated_reset_at_ms: cooldown_until.filter(|_| account_quota_zero_signal),
+            estimated_remaining_percentage: account_quota_zero_signal.then_some(0),
+            last_observed_remaining_percentage: account_quota_zero_signal.then_some(0),
+            reset_source: cooldown_until
+                .filter(|_| !model_scoped_cooldown)
+                .and_then(|_| health_registry_reset_source(classified)),
+            confidence: account_quota_zero_signal.then_some("confirmed".to_string()),
+            manual_required,
+            last_status: Some(classified.status),
+            last_error_type: Some(classified.error_type.as_str().to_string()),
+            last_provider_code: classified.provider_code.clone(),
+            last_error_scope: Some(classified.scope.as_str().to_string()),
+            last_request_id: request_id.clone(),
+            last_selected_at_ms: previous_account_health.last_selected_at_ms,
+            last_success_at_ms: previous_account_health.last_success_at_ms,
+            last_quota_exhausted_at_ms: account_quota_zero_signal
+                .then_some(now)
+                .or(previous_account_health.last_quota_exhausted_at_ms),
+            api_service_success_count: previous_account_health.api_service_success_count,
+            updated_at: now,
+            ..CodexLocalAccessAccountHealth::default()
+        },
+    );
+
+    if model_scoped_cooldown {
+        let (Some(model), Some(cooldown_until)) = (safe_model, cooldown_until) else {
+            return;
+        };
+        let key = health_registry_model_key(safe_account_id, model);
+        registry.model_cooldowns.insert(
+            key,
+            CodexLocalAccessModelCooldown {
+                account_id: safe_account_id.to_string(),
+                model: model.to_string(),
+                cooldown_until_ms: cooldown_until,
+                last_error_type: Some(classified.error_type.as_str().to_string()),
+                last_request_id: request_id,
+                updated_at: now,
+            },
+        );
+    }
+}
+
+fn recover_health_registry_account(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    model: Option<&str>,
+    now: i64,
+) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
+    }
+
+    let model = model.map(str::trim).filter(|value| !value.is_empty());
+    let mut changed = false;
+
+    if let Some(model) = model {
+        changed |= registry
+            .model_cooldowns
+            .remove(&health_registry_model_key(account_id, model))
+            .is_some();
+    } else {
+        let before_len = registry.model_cooldowns.len();
+        let model_key_prefix = format!("{}::", account_id);
+        registry.model_cooldowns.retain(|key, cooldown| {
+            cooldown.account_id.trim() != account_id && !key.starts_with(&model_key_prefix)
+        });
+        changed |= registry.model_cooldowns.len() != before_len;
+
+        if let Some(account) = registry.accounts.get_mut(account_id) {
+            let should_recover = account.manual_required
+                || matches!(
+                    account.status,
+                    CodexLocalAccessAccountHealthStatus::CoolingDown
+                        | CodexLocalAccessAccountHealthStatus::Exhausted
+                        | CodexLocalAccessAccountHealthStatus::AuthSuspect
+                        | CodexLocalAccessAccountHealthStatus::ManualRequired
+                        | CodexLocalAccessAccountHealthStatus::Disabled
+                );
+
+            if should_recover {
+                account.status = CodexLocalAccessAccountHealthStatus::EstimatedAvailable;
+                account.cooldown_until_ms = None;
+                account.exhausted_at_ms = None;
+                account.estimated_reset_at_ms = None;
+                account.estimated_remaining_percentage = Some(100);
+                account.reset_source = Some("manual_recovery".to_string());
+                account.confidence = Some("manual".to_string());
+                account.manual_required = false;
+                account.last_status = None;
+                account.last_error_type = None;
+                account.last_provider_code = None;
+                account.last_error_scope = None;
+                account.last_request_id = None;
+                account.updated_at = now;
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+        registry.updated_at = now;
+    }
+
+    changed
+}
+
+fn pause_health_registry_account(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    now: i64,
+) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
+    }
+
+    let mut next = registry
+        .accounts
+        .get(account_id)
+        .cloned()
+        .unwrap_or_default();
+    next.status = CodexLocalAccessAccountHealthStatus::Disabled;
+    next.cooldown_until_ms = None;
+    next.exhausted_at_ms = None;
+    next.estimated_reset_at_ms = None;
+    next.reset_source = Some("manual_pause".to_string());
+    next.confidence = Some("manual".to_string());
+    next.manual_required = false;
+    next.last_status = None;
+    next.last_error_type = Some("manual_paused".to_string());
+    next.last_provider_code = None;
+    next.last_error_scope = Some(CodexLocalAccessErrorScope::Account.as_str().to_string());
+    next.last_request_id = Some("manual_pause".to_string());
+    next.updated_at = now;
+
+    let mut changed = registry.accounts.get(account_id) != Some(&next);
+    registry.accounts.insert(account_id.to_string(), next);
+
+    let before_sticky_len = registry.sticky_bindings.len();
+    registry
+        .sticky_bindings
+        .retain(|_, binding| binding.account_id.trim() != account_id);
+    changed |= registry.sticky_bindings.len() != before_sticky_len;
+
+    let before_affinity_len = registry.request_affinity.len();
+    registry
+        .request_affinity
+        .retain(|_, binding| binding.account_id.trim() != account_id);
+    changed |= registry.request_affinity.len() != before_affinity_len;
+
+    let before_model_cooldown_len = registry.model_cooldowns.len();
+    registry
+        .model_cooldowns
+        .retain(|_, cooldown| cooldown.account_id.trim() != account_id);
+    changed |= registry.model_cooldowns.len() != before_model_cooldown_len;
+
+    if changed {
+        registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+        registry.updated_at = now;
+    }
+
+    changed
+}
+
+fn health_registry_account_is_schedulable(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    model: Option<&str>,
+    now: i64,
+) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
+    }
+
+    if let Some(account) = registry.accounts.get(account_id) {
+        match account.status {
+            CodexLocalAccessAccountHealthStatus::Healthy
+            | CodexLocalAccessAccountHealthStatus::EstimatedAvailable => {}
+            CodexLocalAccessAccountHealthStatus::CoolingDown => {
+                if account.cooldown_until_ms.unwrap_or(i64::MAX) > now {
+                    return false;
+                }
+            }
+            CodexLocalAccessAccountHealthStatus::Exhausted
+            | CodexLocalAccessAccountHealthStatus::AuthSuspect
+            | CodexLocalAccessAccountHealthStatus::ManualRequired
+            | CodexLocalAccessAccountHealthStatus::Disabled => return false,
+        }
+        if account.manual_required {
+            return false;
+        }
+    }
+
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        let key = health_registry_model_key(account_id, model);
+        if registry
+            .model_cooldowns
+            .get(&key)
+            .map(|cooldown| cooldown.cooldown_until_ms > now)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn health_registry_account_has_hard_block(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_id: &str,
+) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return true;
+    }
+
+    registry
+        .accounts
+        .get(account_id)
+        .map(|account| {
+            account.manual_required
+                || matches!(
+                    account.status,
+                    CodexLocalAccessAccountHealthStatus::AuthSuspect
+                        | CodexLocalAccessAccountHealthStatus::ManualRequired
+                        | CodexLocalAccessAccountHealthStatus::Disabled
+                )
+        })
+        .unwrap_or(false)
+}
+
+fn cooldown_wait_from_until_ms(until_ms: Option<i64>, now: i64) -> Option<Duration> {
+    let until_ms = until_ms?;
+    let wait_ms = until_ms.saturating_sub(now);
+    if wait_ms <= 0 {
+        return None;
+    }
+    Some(Duration::from_millis(wait_ms as u64))
+}
+
+fn min_cooldown_wait(current: Option<Duration>, candidate: Duration) -> Option<Duration> {
+    Some(match current {
+        Some(existing) if existing <= candidate => existing,
+        _ => candidate,
+    })
+}
+
+fn health_registry_account_cooldown_wait(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    model: Option<&str>,
+    now: i64,
+) -> Option<Duration> {
+    let mut wait: Option<Duration> = None;
+
+    if let Some(account) = registry.accounts.get(account_id.trim()) {
+        match account.status {
+            CodexLocalAccessAccountHealthStatus::CoolingDown => {
+                if let Some(candidate) = cooldown_wait_from_until_ms(account.cooldown_until_ms, now)
+                {
+                    wait = min_cooldown_wait(wait, candidate);
+                }
+            }
+            CodexLocalAccessAccountHealthStatus::Exhausted => {
+                if let Some(candidate) = cooldown_wait_from_until_ms(
+                    account.estimated_reset_at_ms.or(account.cooldown_until_ms),
+                    now,
+                ) {
+                    wait = min_cooldown_wait(wait, candidate);
+                }
+            }
+            CodexLocalAccessAccountHealthStatus::Healthy
+            | CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+            | CodexLocalAccessAccountHealthStatus::AuthSuspect
+            | CodexLocalAccessAccountHealthStatus::ManualRequired
+            | CodexLocalAccessAccountHealthStatus::Disabled => {}
+        }
+    }
+
+    if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
+        let key = health_registry_model_key(account_id, model);
+        if let Some(candidate) = registry
+            .model_cooldowns
+            .get(&key)
+            .and_then(|cooldown| cooldown_wait_from_until_ms(Some(cooldown.cooldown_until_ms), now))
+        {
+            wait = min_cooldown_wait(wait, candidate);
+        }
+    }
+
+    wait
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HealthRegistryAccountSortKey {
+    bucket: u8,
+    remaining_percentage: i32,
+    asc_time_ms: i64,
+    continuity_time_ms: i64,
+    updated_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AccountQuotaSortHint {
+    remaining_percentage: Option<i32>,
+    earliest_reset_at_ms: Option<i64>,
+}
+
+fn account_quota_sort_hint(account: &CodexAccount) -> AccountQuotaSortHint {
+    AccountQuotaSortHint {
+        remaining_percentage: resolve_remaining_quota(account),
+        earliest_reset_at_ms: resolve_earliest_quota_reset_ms(account),
+    }
+}
+
+fn load_account_quota_sort_hints(account_ids: &[String]) -> HashMap<String, AccountQuotaSortHint> {
+    account_ids
+        .iter()
+        .filter_map(|account_id| {
+            let account_id = account_id.trim();
+            if account_id.is_empty() {
+                return None;
+            }
+            let account = try_get_cached_account_for_routing(account_id)
+                .or_else(|| codex_account::load_account(account_id))?;
+            Some((account_id.to_string(), account_quota_sort_hint(&account)))
+        })
+        .collect()
+}
+
+fn account_continuity_time_ms(account: &CodexLocalAccessAccountHealth) -> i64 {
+    account
+        .last_success_at_ms
+        .or(account.last_selected_at_ms)
+        .unwrap_or(account.updated_at)
+}
+
+fn health_registry_account_sort_key(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    now: i64,
+    quota_hint: AccountQuotaSortHint,
+) -> HealthRegistryAccountSortKey {
+    let quota_remaining = quota_hint.remaining_percentage;
+    let quota_reset_at_ms = quota_hint.earliest_reset_at_ms.unwrap_or(i64::MAX);
+    let Some(account) = registry.accounts.get(account_id.trim()) else {
+        let has_quota_hint =
+            quota_hint.remaining_percentage.is_some() || quota_hint.earliest_reset_at_ms.is_some();
+        return HealthRegistryAccountSortKey {
+            bucket: if has_quota_hint { 0 } else { 2 },
+            remaining_percentage: quota_remaining.unwrap_or(0),
+            asc_time_ms: quota_reset_at_ms,
+            continuity_time_ms: 0,
+            updated_at_ms: 0,
+        };
+    };
+
+    let continuity_time_ms = account_continuity_time_ms(account);
+    match account.status {
+        CodexLocalAccessAccountHealthStatus::Healthy => HealthRegistryAccountSortKey {
+            bucket: 0,
+            remaining_percentage: quota_remaining
+                .or(account.estimated_remaining_percentage)
+                .or(account.last_observed_remaining_percentage)
+                .unwrap_or(100),
+            asc_time_ms: quota_reset_at_ms,
+            continuity_time_ms,
+            updated_at_ms: account.updated_at,
+        },
+        CodexLocalAccessAccountHealthStatus::EstimatedAvailable => HealthRegistryAccountSortKey {
+            bucket: 1,
+            remaining_percentage: quota_remaining
+                .or(account.estimated_remaining_percentage)
+                .unwrap_or(100),
+            asc_time_ms: quota_hint
+                .earliest_reset_at_ms
+                .or(account.last_quota_exhausted_at_ms)
+                .or(account.estimated_reset_at_ms)
+                .unwrap_or(account.updated_at),
+            continuity_time_ms,
+            updated_at_ms: account.updated_at,
+        },
+        CodexLocalAccessAccountHealthStatus::CoolingDown => {
+            let reset_at = account.cooldown_until_ms.unwrap_or(i64::MAX);
+            if reset_at <= now {
+                HealthRegistryAccountSortKey {
+                    bucket: 1,
+                    remaining_percentage: quota_remaining
+                        .or(account.estimated_remaining_percentage)
+                        .unwrap_or(100),
+                    asc_time_ms: quota_hint
+                        .earliest_reset_at_ms
+                        .or(account.last_quota_exhausted_at_ms)
+                        .unwrap_or(reset_at),
+                    continuity_time_ms,
+                    updated_at_ms: account.updated_at,
+                }
+            } else {
+                HealthRegistryAccountSortKey {
+                    bucket: 5,
+                    remaining_percentage: account.last_observed_remaining_percentage.unwrap_or(0),
+                    asc_time_ms: reset_at,
+                    continuity_time_ms,
+                    updated_at_ms: account.updated_at,
+                }
+            }
+        }
+        CodexLocalAccessAccountHealthStatus::Exhausted => {
+            let reset_at = account.estimated_reset_at_ms.unwrap_or(i64::MAX);
+            if reset_at <= now {
+                HealthRegistryAccountSortKey {
+                    bucket: 1,
+                    remaining_percentage: quota_remaining
+                        .or(account.estimated_remaining_percentage)
+                        .unwrap_or(100),
+                    asc_time_ms: quota_hint
+                        .earliest_reset_at_ms
+                        .or(account.last_quota_exhausted_at_ms)
+                        .unwrap_or(reset_at),
+                    continuity_time_ms,
+                    updated_at_ms: account.updated_at,
+                }
+            } else {
+                HealthRegistryAccountSortKey {
+                    bucket: 6,
+                    remaining_percentage: account.last_observed_remaining_percentage.unwrap_or(0),
+                    asc_time_ms: reset_at,
+                    continuity_time_ms,
+                    updated_at_ms: account.updated_at,
+                }
+            }
+        }
+        CodexLocalAccessAccountHealthStatus::AuthSuspect
+        | CodexLocalAccessAccountHealthStatus::ManualRequired => HealthRegistryAccountSortKey {
+            bucket: 7,
+            remaining_percentage: 0,
+            asc_time_ms: account.updated_at,
+            continuity_time_ms,
+            updated_at_ms: account.updated_at,
+        },
+        CodexLocalAccessAccountHealthStatus::Disabled => HealthRegistryAccountSortKey {
+            bucket: 8,
+            remaining_percentage: 0,
+            asc_time_ms: account.updated_at,
+            continuity_time_ms,
+            updated_at_ms: account.updated_at,
+        },
+    }
+}
+
+fn sort_account_ids_by_health_estimate(
+    account_ids: &mut [String],
+    registry: &CodexLocalAccessHealthRegistry,
+    now: i64,
+) {
+    let quota_hints = load_account_quota_sort_hints(account_ids);
+    sort_account_ids_by_health_estimate_with_quota_hints(account_ids, registry, now, &quota_hints);
+}
+
+fn sort_account_ids_by_health_estimate_with_quota_hints(
+    account_ids: &mut [String],
+    registry: &CodexLocalAccessHealthRegistry,
+    now: i64,
+    quota_hints: &HashMap<String, AccountQuotaSortHint>,
+) {
+    account_ids.sort_by(|left, right| {
+        let left_key = health_registry_account_sort_key(
+            registry,
+            left,
+            now,
+            quota_hints.get(left.trim()).copied().unwrap_or_default(),
+        );
+        let right_key = health_registry_account_sort_key(
+            registry,
+            right,
+            now,
+            quota_hints.get(right.trim()).copied().unwrap_or_default(),
+        );
+        left_key
+            .bucket
+            .cmp(&right_key.bucket)
+            .then_with(|| {
+                right_key
+                    .remaining_percentage
+                    .cmp(&left_key.remaining_percentage)
+            })
+            .then_with(|| left_key.asc_time_ms.cmp(&right_key.asc_time_ms))
+            .then_with(|| {
+                right_key
+                    .continuity_time_ms
+                    .cmp(&left_key.continuity_time_ms)
+            })
+            .then_with(|| right_key.updated_at_ms.cmp(&left_key.updated_at_ms))
+            .then_with(|| left.cmp(right))
+    });
+}
+
+fn update_health_summary_nearest_cooldown(
+    summary: &mut CodexLocalAccessHealthSummary,
+    now: i64,
+    cooldown_until_ms: Option<i64>,
+) {
+    let Some(cooldown_until_ms) = cooldown_until_ms else {
+        return;
+    };
+    if cooldown_until_ms <= now {
+        return;
+    }
+    summary.nearest_cooldown_until_ms = Some(match summary.nearest_cooldown_until_ms {
+        Some(current) if current <= cooldown_until_ms => current,
+        _ => cooldown_until_ms,
+    });
+}
+
+#[cfg(test)]
+fn build_health_summary_from_registry(
+    registry: &CodexLocalAccessHealthRegistry,
+    now: i64,
+) -> CodexLocalAccessHealthSummary {
+    build_health_summary_from_registry_with_scope(registry, now, None)
+}
+
+fn build_health_summary_from_registry_for_accounts(
+    registry: &CodexLocalAccessHealthRegistry,
+    now: i64,
+    account_ids: &[String],
+) -> CodexLocalAccessHealthSummary {
+    let scoped_account_ids: HashSet<&str> = account_ids
+        .iter()
+        .map(|account_id| account_id.trim())
+        .filter(|account_id| !account_id.is_empty())
+        .collect();
+    build_health_summary_from_registry_with_scope(registry, now, Some(&scoped_account_ids))
+}
+
+fn build_health_summary_from_registry_with_scope(
+    registry: &CodexLocalAccessHealthRegistry,
+    now: i64,
+    account_scope: Option<&HashSet<&str>>,
+) -> CodexLocalAccessHealthSummary {
+    let mut summary = CodexLocalAccessHealthSummary {
+        schema_version: registry.schema_version,
+        updated_at: registry.updated_at,
+        ..CodexLocalAccessHealthSummary::default()
+    };
+
+    let mut last_error_updated_at = i64::MIN;
+    let mut observed_scoped_accounts: HashSet<&str> = HashSet::new();
+    let mut active_model_cooldowns_by_account: BTreeMap<String, (usize, Option<i64>)> =
+        BTreeMap::new();
+    let account_is_in_scope = |account_id: &str| {
+        account_scope
+            .map(|scope| scope.contains(account_id.trim()))
+            .unwrap_or(true)
+    };
+
+    for (account_id, account) in registry.accounts.iter() {
+        if !account_is_in_scope(account_id) {
+            continue;
+        }
+        observed_scoped_accounts.insert(account_id.as_str());
+        match account.status {
+            CodexLocalAccessAccountHealthStatus::Healthy => summary.healthy_count += 1,
+            CodexLocalAccessAccountHealthStatus::EstimatedAvailable => {
+                summary.estimated_available_count += 1
+            }
+            CodexLocalAccessAccountHealthStatus::CoolingDown => summary.cooling_count += 1,
+            CodexLocalAccessAccountHealthStatus::Exhausted => summary.exhausted_count += 1,
+            CodexLocalAccessAccountHealthStatus::AuthSuspect => summary.auth_suspect_count += 1,
+            CodexLocalAccessAccountHealthStatus::ManualRequired => {
+                summary.manual_required_count += 1
+            }
+            CodexLocalAccessAccountHealthStatus::Disabled => summary.disabled_count += 1,
+        }
+        if account.manual_required
+            && !matches!(
+                account.status,
+                CodexLocalAccessAccountHealthStatus::ManualRequired
+            )
+        {
+            summary.manual_required_count += 1;
+        }
+        update_health_summary_nearest_cooldown(&mut summary, now, account.cooldown_until_ms);
+        update_health_summary_nearest_cooldown(&mut summary, now, account.estimated_reset_at_ms);
+
+        if account.last_error_type.is_some() && account.updated_at >= last_error_updated_at {
+            last_error_updated_at = account.updated_at;
+            summary.last_error_type = account.last_error_type.clone();
+            summary.last_status = account.last_status;
+            summary.last_request_id = account.last_request_id.clone();
+        }
+    }
+
+    if let Some(scope) = account_scope {
+        for account_id in scope {
+            if !observed_scoped_accounts.contains(account_id) {
+                summary.healthy_count += 1;
+            }
+        }
+    }
+
+    for cooldown in registry.model_cooldowns.values() {
+        if !account_is_in_scope(cooldown.account_id.as_str()) {
+            continue;
+        }
+        if cooldown.cooldown_until_ms > now {
+            summary.active_model_cooldown_count += 1;
+            update_health_summary_nearest_cooldown(
+                &mut summary,
+                now,
+                Some(cooldown.cooldown_until_ms),
+            );
+            let entry = active_model_cooldowns_by_account
+                .entry(cooldown.account_id.trim().to_string())
+                .or_insert((0, None));
+            entry.0 += 1;
+            entry.1 = Some(match entry.1 {
+                Some(current) if current <= cooldown.cooldown_until_ms => current,
+                _ => cooldown.cooldown_until_ms,
+            });
+        }
+        if cooldown.last_error_type.is_some() && cooldown.updated_at >= last_error_updated_at {
+            last_error_updated_at = cooldown.updated_at;
+            summary.last_error_type = cooldown.last_error_type.clone();
+            summary.last_status = None;
+            summary.last_request_id = cooldown.last_request_id.clone();
+        }
+    }
+
+    if let Some(global_error) = registry.last_global_error.as_ref() {
+        if global_error.updated_at >= last_error_updated_at {
+            summary.last_error_type = Some(global_error.error_type.clone());
+            summary.last_status = global_error.status;
+            summary.last_request_id = global_error.request_id.clone();
+        }
+    }
+
+    if let Some(binding) = registry.sticky_bindings.get(PROCESS_STICKY_BINDING_KEY) {
+        if binding.expires_at_ms > now && account_is_in_scope(binding.account_id.as_str()) {
+            let account_hash = failure_log_account_hash(Some(binding.account_id.as_str()));
+            if account_hash != "-" {
+                summary.sticky_account_hash = Some(account_hash);
+            }
+            summary.sticky_reason = sanitize_provider_code(binding.reason.as_str());
+            summary.sticky_expires_at_ms = Some(binding.expires_at_ms);
+        }
+    }
+
+    if let Some(scope) = account_scope {
+        let mut account_ids_for_views: Vec<String> = scope
+            .iter()
+            .map(|account_id| (*account_id).to_string())
+            .collect();
+        account_ids_for_views.sort();
+
+        let default_account = CodexLocalAccessAccountHealth::default();
+        summary.accounts = account_ids_for_views
+            .into_iter()
+            .map(|account_id| {
+                let account = registry
+                    .accounts
+                    .get(account_id.as_str())
+                    .unwrap_or(&default_account);
+                let (active_model_cooldown_count, nearest_model_cooldown_until_ms) =
+                    active_model_cooldowns_by_account
+                        .get(account_id.as_str())
+                        .cloned()
+                        .unwrap_or((0, None));
+                CodexLocalAccessAccountHealthView {
+                    account_id,
+                    status: account.status,
+                    manual_required: account.manual_required,
+                    cooldown_until_ms: account.cooldown_until_ms,
+                    exhausted_at_ms: account.exhausted_at_ms,
+                    estimated_reset_at_ms: account.estimated_reset_at_ms,
+                    last_status: account.last_status,
+                    last_error_type: account.last_error_type.clone(),
+                    last_provider_code: account
+                        .last_provider_code
+                        .as_deref()
+                        .and_then(sanitize_provider_code),
+                    updated_at: account.updated_at,
+                    active_model_cooldown_count,
+                    nearest_model_cooldown_until_ms,
+                }
+            })
+            .collect();
+    }
+
+    summary
+}
+
+fn build_unavailable_health_summary(now: i64, err: &str) -> CodexLocalAccessHealthSummary {
+    CodexLocalAccessHealthSummary {
+        schema_version: CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
+        updated_at: now,
+        unavailable: true,
+        load_error: Some(safe_log_field(Some(err), 240)),
+        ..CodexLocalAccessHealthSummary::default()
+    }
+}
+
+fn health_summary_cache_file_modified_ms() -> Option<i64> {
+    let path = local_access_health_file_path().ok()?;
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    let elapsed = modified
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .ok()?;
+    Some(elapsed.as_millis().min(i64::MAX as u128) as i64)
+}
+
+fn health_summary_has_active_deadline(summary: &CodexLocalAccessHealthSummary, now: i64) -> bool {
+    summary
+        .nearest_cooldown_until_ms
+        .filter(|value| *value > now)
+        .is_some()
+        || summary
+            .sticky_expires_at_ms
+            .filter(|value| *value > now)
+            .is_some()
+        || summary.accounts.iter().any(|account| {
+            account
+                .cooldown_until_ms
+                .or(account.estimated_reset_at_ms)
+                .filter(|value| *value > now)
+                .is_some()
+                || account
+                    .nearest_model_cooldown_until_ms
+                    .filter(|value| *value > now)
+                    .is_some()
+        })
+}
+
+fn is_cached_health_summary_valid(
+    cached: &CachedHealthSummary,
+    account_ids: &[String],
+    file_modified_ms: Option<i64>,
+    audit_status: &AuditTrailStatus,
+    now: i64,
+) -> bool {
+    cached.account_ids == account_ids
+        && cached.file_modified_ms == file_modified_ms
+        && &cached.audit_status == audit_status
+        && now.saturating_sub(cached.cached_at_ms) <= HEALTH_SUMMARY_CACHE_TTL_MS
+        && !health_summary_has_active_deadline(&cached.summary, now)
+}
+
+fn build_health_summary_from_disk_for_accounts(
+    account_ids: &[String],
+    mut trace: Option<&mut LocalAccessPerfTrace>,
+) -> CodexLocalAccessHealthSummary {
+    let now = now_ms();
+    let file_modified_ms = health_summary_cache_file_modified_ms();
+    let audit_status = current_audit_trail_status();
+    if let Ok(cache) = health_summary_cache().lock() {
+        if let Some(cached) = cache.as_ref() {
+            if is_cached_health_summary_valid(
+                cached,
+                account_ids,
+                file_modified_ms,
+                &audit_status,
+                now,
+            ) {
+                if let Some(trace) = trace.as_deref_mut() {
+                    trace.mark("health_summary_cache_hit");
+                }
+                return cached.summary.clone();
+            }
+        }
+    }
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("health_summary_cache_miss");
+    }
+
+    let mut summary = match load_health_registry_from_disk() {
+        Ok(registry) => {
+            build_health_summary_from_registry_for_accounts(&registry, now, account_ids)
+        }
+        Err(err) => build_unavailable_health_summary(now, &err),
+    };
+    apply_audit_trail_status_to_health_summary(&mut summary, &audit_status);
+    if let Ok(mut cache) = health_summary_cache().lock() {
+        *cache = Some(CachedHealthSummary {
+            account_ids: account_ids.to_vec(),
+            file_modified_ms,
+            audit_status,
+            cached_at_ms: now,
+            summary: summary.clone(),
+        });
+    }
+    summary
+}
+
+fn process_sticky_account_id(
+    registry: &CodexLocalAccessHealthRegistry,
+    account_ids: &[String],
+    model: Option<&str>,
+    now: i64,
+) -> Option<String> {
+    let binding = registry.sticky_bindings.get(PROCESS_STICKY_BINDING_KEY)?;
+    let account_id = binding.account_id.trim();
+    if account_id.is_empty() {
+        return None;
+    }
+    if binding.expires_at_ms <= now {
+        return None;
+    }
+    if !account_ids.iter().any(|candidate| candidate == account_id) {
+        return None;
+    }
+    if !health_registry_account_is_schedulable(registry, account_id, model, now) {
+        return None;
+    }
+    Some(account_id.to_string())
+}
+
+fn pin_process_sticky_account(
+    account_ids: Vec<String>,
+    registry: &CodexLocalAccessHealthRegistry,
+    model: Option<&str>,
+    now: i64,
+) -> Vec<String> {
+    let sticky_account_id = process_sticky_account_id(registry, &account_ids, model, now);
+    pin_account_to_front(account_ids, sticky_account_id.as_deref())
+}
+
+fn upsert_process_sticky_binding(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    now: i64,
+) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
+    }
+
+    let binding = CodexLocalAccessStickyBinding {
+        binding_key: PROCESS_STICKY_BINDING_KEY.to_string(),
+        account_id: account_id.to_string(),
+        reason: PROCESS_STICKY_BINDING_REASON.to_string(),
+        expires_at_ms: now.saturating_add(PROCESS_STICKY_BINDING_TTL_MS),
+        updated_at: now,
+    };
+    let changed = registry
+        .sticky_bindings
+        .get(PROCESS_STICKY_BINDING_KEY)
+        .map(|current| current != &binding)
+        .unwrap_or(true);
+    if changed {
+        registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+        registry.updated_at = now;
+        registry
+            .sticky_bindings
+            .insert(PROCESS_STICKY_BINDING_KEY.to_string(), binding);
+    }
+    changed
+}
+
+fn prune_persisted_request_affinity_bindings(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    account_ids: Option<&[String]>,
+    now: i64,
+) -> bool {
+    let account_scope = account_ids.map(|ids| {
+        ids.iter()
+            .map(|account_id| account_id.trim())
+            .filter(|account_id| !account_id.is_empty())
+            .collect::<HashSet<&str>>()
+    });
+    let before = registry.request_affinity.len();
+    registry.request_affinity.retain(|request_id, binding| {
+        let account_id = binding.account_id.trim();
+        !request_id.trim().is_empty()
+            && !account_id.is_empty()
+            && binding.expires_at_ms > now
+            && account_scope
+                .as_ref()
+                .map(|scope| scope.contains(account_id))
+                .unwrap_or(true)
+    });
+
+    if registry.request_affinity.len() > MAX_REQUEST_AFFINITY_BINDINGS {
+        let remove_count = registry
+            .request_affinity
+            .len()
+            .saturating_sub(MAX_REQUEST_AFFINITY_BINDINGS);
+        let mut oldest: Vec<(String, i64)> = registry
+            .request_affinity
+            .iter()
+            .map(|(request_id, binding)| (request_id.clone(), binding.updated_at))
+            .collect();
+        oldest.sort_by(|left, right| left.1.cmp(&right.1).then_with(|| left.0.cmp(&right.0)));
+        for (request_id, _) in oldest.into_iter().take(remove_count) {
+            registry.request_affinity.remove(&request_id);
+        }
+    }
+
+    let changed = registry.request_affinity.len() != before;
+    if changed {
+        registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+        registry.updated_at = now;
+    }
+    changed
+}
+
+fn request_affinity_account_from_registry(
+    registry: &CodexLocalAccessHealthRegistry,
+    request: &ParsedRequest,
+    now: i64,
+) -> Option<String> {
+    let request_id = request_affinity_key(request)?;
+    let binding = registry.request_affinity.get(&request_id)?;
+    let account_id = binding.account_id.trim();
+    if account_id.is_empty() || binding.expires_at_ms <= now {
+        return None;
+    }
+    Some(account_id.to_string())
+}
+
+fn upsert_request_affinity_binding(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    request: &ParsedRequest,
+    account_id: &str,
+    now: i64,
+) -> bool {
+    let Some(request_id) = request_affinity_key(request) else {
+        return false;
+    };
+    upsert_request_affinity_binding_key(registry, &request_id, account_id, now)
+}
+
+fn upsert_request_affinity_binding_key(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    request_id: &str,
+    account_id: &str,
+    now: i64,
+) -> bool {
+    let request_id = request_id.trim();
+    if request_id.is_empty() {
+        return false;
+    }
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
+    }
+
+    let binding = CodexLocalAccessStickyBinding {
+        binding_key: request_id.to_string(),
+        account_id: account_id.to_string(),
+        reason: REQUEST_AFFINITY_BINDING_REASON.to_string(),
+        expires_at_ms: now.saturating_add(REQUEST_AFFINITY_TTL_MS),
+        updated_at: now,
+    };
+    let changed = registry
+        .request_affinity
+        .get(request_id)
+        .map(|current| current != &binding)
+        .unwrap_or(true);
+    if changed {
+        registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+        registry.updated_at = now;
+        registry
+            .request_affinity
+            .insert(request_id.to_string(), binding);
+    }
+    prune_persisted_request_affinity_bindings(registry, None, now) || changed
+}
+
+fn upsert_successful_account_health(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    account_id: &str,
+    model: Option<&str>,
+    now: i64,
+) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
+    }
+
+    let mut next = registry
+        .accounts
+        .get(account_id)
+        .cloned()
+        .unwrap_or_default();
+    let previous = next.clone();
+
+    next.status = CodexLocalAccessAccountHealthStatus::Healthy;
+    next.cooldown_until_ms = None;
+    next.exhausted_at_ms = None;
+    next.estimated_reset_at_ms = None;
+    next.estimated_remaining_percentage = None;
+    next.manual_required = false;
+    next.last_status = Some(StatusCode::OK.as_u16());
+    next.last_error_type = None;
+    next.last_provider_code = None;
+    next.last_error_scope = None;
+    next.last_request_id = None;
+    next.last_selected_at_ms = Some(now);
+    next.last_success_at_ms = Some(now);
+    next.api_service_success_count = next.api_service_success_count.saturating_add(1);
+    next.updated_at = now;
+
+    let model_cooldown_changed = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|model| {
+            registry
+                .model_cooldowns
+                .remove(&health_registry_model_key(account_id, model))
+                .is_some()
+        })
+        .unwrap_or(false);
+
+    if next == previous && !model_cooldown_changed {
+        return false;
+    }
+
+    registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+    registry.updated_at = now;
+    registry.accounts.insert(account_id.to_string(), next);
+    true
+}
+
+fn prune_process_sticky_binding(
+    registry: &mut CodexLocalAccessHealthRegistry,
+    account_ids: &[String],
+    model: Option<&str>,
+    now: i64,
+) -> bool {
+    let Some(binding) = registry.sticky_bindings.get(PROCESS_STICKY_BINDING_KEY) else {
+        return false;
+    };
+    let account_id = binding.account_id.trim();
+    let should_remove = account_id.is_empty()
+        || binding.expires_at_ms <= now
+        || !account_ids.iter().any(|candidate| candidate == account_id)
+        || !health_registry_account_is_schedulable(registry, account_id, model, now);
+    if !should_remove {
+        return false;
+    }
+
+    registry.sticky_bindings.remove(PROCESS_STICKY_BINDING_KEY);
+    registry.schema_version = CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION;
+    registry.updated_at = now;
+    true
+}
+
+fn persist_successful_routing_state(
+    account_id: &str,
+    request: &ParsedRequest,
+    model: Option<&str>,
+    persist_process_sticky: bool,
+) {
+    let mut registry = match load_health_registry_from_disk() {
+        Ok(registry) => registry,
+        Err(err) => {
+            log_health_registry_update_error(&err);
+            return;
+        }
+    };
+    let now = now_ms();
+    let sticky_changed =
+        persist_process_sticky && upsert_process_sticky_binding(&mut registry, account_id, now);
+    let affinity_changed = upsert_request_affinity_binding(&mut registry, request, account_id, now);
+    let health_changed = upsert_successful_account_health(&mut registry, account_id, model, now);
+    if !sticky_changed && !affinity_changed && !health_changed {
+        return;
+    }
+    if let Err(err) = save_health_registry_to_disk(&registry) {
+        log_health_registry_update_error(&err);
+        return;
+    }
+    if !sticky_changed && !affinity_changed {
+        return;
+    }
+
+    let context = build_audit_context(request, Some(account_id));
+    record_audit_event_from_context(
+        &context,
+        "selector",
+        None,
+        None,
+        None,
+        Some(if sticky_changed {
+            "sticky_bound"
+        } else {
+            "request_affinity_bound"
+        }),
+        BTreeMap::from([(
+            "binding_key".to_string(),
+            if sticky_changed {
+                PROCESS_STICKY_BINDING_KEY.to_string()
+            } else {
+                request_affinity_key(request).unwrap_or_default()
+            },
+        )]),
+    );
+}
+
+fn persist_request_affinity_key(account_id: &str, request: &ParsedRequest, request_id: &str) {
+    let mut registry = match load_health_registry_from_disk() {
+        Ok(registry) => registry,
+        Err(err) => {
+            log_health_registry_update_error(&err);
+            return;
+        }
+    };
+    let now = now_ms();
+    if !upsert_request_affinity_binding_key(&mut registry, request_id, account_id, now) {
+        return;
+    }
+    if let Err(err) = save_health_registry_to_disk(&registry) {
+        log_health_registry_update_error(&err);
+        return;
+    }
+
+    let context = build_audit_context(request, Some(account_id));
+    record_audit_event_from_context(
+        &context,
+        "selector",
+        None,
+        None,
+        None,
+        Some("request_affinity_bound"),
+        BTreeMap::from([
+            ("binding_key".to_string(), request_id.to_string()),
+            ("source".to_string(), "response_turn_state".to_string()),
+        ]),
+    );
+}
+
+fn hashed_request_correlation_id(prefix: &str, value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let digest = Sha256::digest(value.as_bytes());
+    let hex = format!("{:x}", digest);
+    Some(format!("{}:sha256:{}", prefix, &hex[..12]))
+}
+
+fn generated_codex_turn_state() -> String {
+    let suffix: String = rand::thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(32)
+        .map(char::from)
+        .collect();
+    format!("{}{}", LOCAL_CODEX_TURN_STATE_PREFIX, suffix)
+}
+
+fn codex_turn_state_request_id(request: &ParsedRequest) -> Option<String> {
+    official_codex_turn_state_affinity_key(request)
+}
+
+fn codex_turn_state_request_id_from_value(value: &str) -> Option<String> {
+    hashed_request_correlation_id(X_CODEX_TURN_STATE_HEADER, value)
+}
+
+fn codex_turn_metadata_request_id_with_source(
+    request: &ParsedRequest,
+) -> Option<(String, &'static str)> {
+    let value = request_header_value(request, X_CODEX_TURN_METADATA_HEADER)?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    if let Ok(metadata) = serde_json::from_str::<Value>(trimmed) {
+        if let Some(turn_id) = metadata
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|turn_id| !turn_id.is_empty())
+        {
+            return hashed_request_correlation_id("x-codex-turn-metadata.turn_id", turn_id)
+                .map(|request_id| (request_id, "codex_turn_metadata_turn_id"));
+        }
+    }
+
+    hashed_request_correlation_id(X_CODEX_TURN_METADATA_HEADER, trimmed)
+        .map(|request_id| (request_id, "codex_turn_metadata"))
+}
+
+fn codex_turn_metadata_request_id(request: &ParsedRequest) -> Option<String> {
+    codex_turn_metadata_request_id_with_source(request).map(|(request_id, _)| request_id)
+}
+
+fn request_lineage_id_with_source(
+    request: &ParsedRequest,
+) -> (Option<String>, Option<&'static str>) {
+    if let Some(value) = codex_turn_state_request_id(request) {
+        return (Some(value), Some("codex_turn_state"));
+    }
+    if let Some((value, source)) = codex_turn_metadata_request_id_with_source(request) {
+        return (Some(value), Some(source));
+    }
+    if let Some(previous_response_id) = build_request_routing_hint(request).previous_response_id {
+        return (
+            hashed_request_correlation_id("response", &previous_response_id),
+            Some("previous_response_id"),
+        );
+    }
+
+    (None, None)
+}
+
+fn previous_response_id_hash(request: &ParsedRequest) -> Option<String> {
+    build_request_routing_hint(request)
+        .previous_response_id
+        .and_then(|value| hashed_request_correlation_id("response", &value))
+}
+
+fn request_body_value_contains_compaction_trigger(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => {
+            if map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.eq_ignore_ascii_case("compaction_trigger"))
+            {
+                return true;
+            }
+            map.values()
+                .any(request_body_value_contains_compaction_trigger)
+        }
+        Value::Array(items) => items
+            .iter()
+            .any(request_body_value_contains_compaction_trigger),
+        _ => false,
+    }
+}
+
+fn request_body_is_auto_compact_candidate(request: &ParsedRequest) -> bool {
+    is_responses_request(&request.target)
+        && parse_request_body_json(&request.body)
+            .as_ref()
+            .is_some_and(request_body_value_contains_compaction_trigger)
+}
+
+fn health_registry_request_id_from_request(request: &ParsedRequest) -> Option<String> {
+    if let Some(value) = codex_turn_state_request_id(request) {
+        return Some(value);
+    }
+    if let Some(value) = codex_turn_metadata_request_id(request) {
+        return Some(value);
+    }
+    for header_name in [
+        "x-client-request-id",
+        "x-request-id",
+        "request-id",
+        "openai-request-id",
+    ] {
+        if let Some(value) = request_header_value(request, header_name) {
+            return health_registry_request_id(Some(value));
+        }
+    }
+    None
+}
+
+fn persist_health_registry_from_classified_error(
+    account_id: &str,
+    model: Option<&str>,
+    request: &ParsedRequest,
+    classified: &ClassifiedCodexUpstreamError,
+) -> Result<(), String> {
+    let mut registry = load_health_registry_from_disk()?;
+    let request_id = health_registry_request_id_from_request(request);
+    update_health_registry_from_classified_error(
+        &mut registry,
+        account_id,
+        model,
+        request_id.as_deref(),
+        classified,
+        now_ms(),
+    );
+    save_health_registry_to_disk(&registry)
+}
+
+fn log_health_registry_update_error(err: &str) {
+    logger::log_warn(&format!(
+        "[CodexLocalAccess][HealthRegistry] 更新 API 服务健康状态失败: {}",
+        err
+    ));
+}
+
+fn parse_codex_retry_after(status: StatusCode, error_body: &str) -> Option<Duration> {
+    classify_codex_upstream_error(status, None, error_body).retry_after
 }
 
 fn empty_stats_snapshot() -> CodexLocalAccessStats {
@@ -5143,7 +10003,7 @@ fn normalize_profile_dir_key(profile_dir: &Path) -> String {
     profile_dir
         .to_string_lossy()
         .trim()
-        .trim_end_matches(|item| item == '/' || item == '\\')
+        .trim_end_matches(['/', '\\'])
         .to_string()
 }
 
@@ -5397,7 +10257,7 @@ fn remove_codex_local_access_config(config_text: &str) -> Result<String, String>
         let _ = doc.remove("model_providers");
     }
 
-    Ok(crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc))
+    Ok(crate::modules::codex_config_format::normalize_config_toml_spacing(&doc.to_string()))
 }
 
 fn restore_config_toml_from_takeover_backup(
@@ -5427,7 +10287,8 @@ fn restore_config_toml_from_takeover_backup(
         }
     }
 
-    let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut backup_doc);
+    let content =
+        crate::modules::codex_config_format::normalize_config_toml_spacing(&backup_doc.to_string());
     if content.trim().is_empty() {
         Ok(None)
     } else {
@@ -5768,6 +10629,19 @@ struct SidecarAuthResultEvent {
     error_message: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SidecarAuthLifecycleEvent {
+    #[serde(default)]
+    auth_id: String,
+    #[serde(default)]
+    auth_path: String,
+    #[serde(default)]
+    account_id: String,
+    #[serde(default)]
+    account_email: String,
+}
+
 fn local_access_sidecar_dir() -> Result<PathBuf, String> {
     Ok(account::get_data_dir()?.join(CODEX_LOCAL_ACCESS_SIDECAR_DIR))
 }
@@ -5866,58 +10740,6 @@ fn sidecar_auth_file_name(account_id: &str) -> String {
     format!("{safe}.json")
 }
 
-fn sidecar_stable_id(kind: &str, parts: &[&str]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(kind.trim().as_bytes());
-    for part in parts {
-        hasher.update([0]);
-        hasher.update(part.trim().as_bytes());
-    }
-    let digest = format!("{:x}", hasher.finalize());
-    let short = digest.get(..12).unwrap_or(digest.as_str());
-    format!("{}:{}", kind.trim(), short)
-}
-
-fn sidecar_codex_api_key_auth_id(account: &CodexAccount) -> Option<String> {
-    let api_key = account.openai_api_key.as_deref()?.trim();
-    if api_key.is_empty() {
-        return None;
-    }
-    let base_url = account
-        .api_base_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_OPENAI_RESPONSES_BASE_URL);
-    Some(sidecar_stable_id("codex:apikey", &[api_key, base_url]))
-}
-
-fn sidecar_auth_id_for_account_id(account_id: &str) -> Option<String> {
-    let account_id = account_id.trim();
-    if account_id.is_empty() {
-        return None;
-    }
-    let account = codex_account::load_account(account_id)?;
-    if account.is_api_key_auth() {
-        return sidecar_codex_api_key_auth_id(&account);
-    }
-    Some(sidecar_auth_file_name(&account.id))
-}
-
-fn sidecar_auth_ids_for_account_ids(account_ids: Vec<String>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut values = Vec::new();
-    for account_id in account_ids {
-        let Some(auth_id) = sidecar_auth_id_for_account_id(&account_id) else {
-            continue;
-        };
-        if seen.insert(auth_id.clone()) {
-            values.push(auth_id);
-        }
-    }
-    values
-}
-
 fn sidecar_duration_ms(value_ms: i64) -> String {
     format!("{}ms", value_ms.max(1))
 }
@@ -5942,6 +10764,12 @@ fn sidecar_routing_strategy_value(strategy: CodexLocalAccessRoutingStrategy) -> 
         CodexLocalAccessRoutingStrategy::ExpirySoonFirst => "expiry_soon_first",
         CodexLocalAccessRoutingStrategy::Custom => "custom",
     }
+}
+
+fn sidecar_cli_routing_strategy_value(_strategy: CodexLocalAccessRoutingStrategy) -> &'static str {
+    // CLIProxyAPI 侧车当前只原生支持 round-robin/fill-first；自用场景优先减少同 IP
+    // 多账号轮换，因此固定用 fill-first，把更细的策略保留在 Cockpit manifest 中。
+    "fill-first"
 }
 
 fn sidecar_model_alias_values(collection: &CodexLocalAccessCollection) -> Vec<Value> {
@@ -5973,13 +10801,12 @@ fn sidecar_codex_key_model_values(collection: &CodexLocalAccessCollection) -> Ve
 
 fn sidecar_api_key_manifest_values(collection: &CodexLocalAccessCollection) -> Vec<Value> {
     let mut values = Vec::new();
-    if !collection.api_key.trim().is_empty() && !collection.account_ids.is_empty() {
+    if !collection.api_key.trim().is_empty() {
         values.push(json!({
             "id": "legacy",
             "label": default_local_api_key_label(),
             "key": collection.api_key.trim(),
             "enabled": true,
-            "accountIds": collection.account_ids.clone(),
             "allowedModels": [],
             "excludedModels": [],
         }));
@@ -5988,16 +10815,10 @@ fn sidecar_api_key_manifest_values(collection: &CodexLocalAccessCollection) -> V
         if !item.enabled || item.key.trim().is_empty() {
             continue;
         }
-        let account_ids = effective_api_key_account_ids(collection, item);
-        if account_ids.is_empty() {
-            continue;
-        }
         values.push(json!({
             "id": item.id.clone(),
             "label": item.label.clone(),
             "key": item.key.trim(),
-            "providerGateway": item.provider_gateway.clone(),
-            "accountIds": account_ids,
             "modelPrefix": item.model_prefix.clone(),
             "allowedModels": item.allowed_models.clone(),
             "excludedModels": item.excluded_models.clone(),
@@ -6005,82 +10826,6 @@ fn sidecar_api_key_manifest_values(collection: &CodexLocalAccessCollection) -> V
         }));
     }
     values
-}
-
-fn effective_api_key_account_ids(
-    collection: &CodexLocalAccessCollection,
-    api_key: &CodexLocalAccessApiKey,
-) -> Vec<String> {
-    if api_key.provider_gateway.is_some() {
-        return api_key.account_ids.clone();
-    }
-    if api_key.account_ids.is_empty() {
-        collection.account_ids.clone()
-    } else {
-        api_key.account_ids.clone()
-    }
-}
-
-fn effective_sidecar_account_ids(collection: &CodexLocalAccessCollection) -> Vec<String> {
-    let mut account_ids = collection.account_ids.clone();
-    let mut seen: HashSet<String> = account_ids.iter().cloned().collect();
-    for api_key in &collection.api_keys {
-        for account_id in &api_key.account_ids {
-            if seen.insert(account_id.clone()) {
-                account_ids.push(account_id.clone());
-            }
-        }
-    }
-    account_ids
-}
-
-fn sidecar_client_api_keys(collection: &CodexLocalAccessCollection) -> Vec<String> {
-    let mut keys = Vec::new();
-    let mut seen = HashSet::new();
-    if !collection.api_key.trim().is_empty()
-        && !collection.account_ids.is_empty()
-        && seen.insert(collection.api_key.trim().to_string())
-    {
-        keys.push(collection.api_key.trim().to_string());
-    }
-    for item in &collection.api_keys {
-        let key = item.key.trim();
-        if item.enabled
-            && !key.is_empty()
-            && (item.provider_gateway.is_some()
-                || !effective_api_key_account_ids(collection, item).is_empty())
-            && seen.insert(key.to_string())
-        {
-            keys.push(key.to_string());
-        }
-    }
-    keys
-}
-
-fn sidecar_api_key_account_scope_values(collection: &CodexLocalAccessCollection) -> Value {
-    let mut values = Map::new();
-    if !collection.api_key.trim().is_empty() && !collection.account_ids.is_empty() {
-        let auth_ids = sidecar_auth_ids_for_account_ids(collection.account_ids.clone());
-        if !auth_ids.is_empty() {
-            values.insert(collection.api_key.trim().to_string(), json!(auth_ids));
-        }
-    }
-    for item in &collection.api_keys {
-        let key = item.key.trim();
-        if !item.enabled || key.is_empty() {
-            continue;
-        }
-        if item.provider_gateway.is_some() {
-            continue;
-        }
-        let auth_ids =
-            sidecar_auth_ids_for_account_ids(effective_api_key_account_ids(collection, item));
-        if auth_ids.is_empty() {
-            continue;
-        }
-        values.insert(key.to_string(), json!(auth_ids));
-    }
-    Value::Object(values)
 }
 
 fn sidecar_auth_json_for_account(
@@ -6107,6 +10852,12 @@ fn sidecar_auth_json_for_account(
         "excluded_models": excluded_models,
         "disable_cooling": collection.disable_cooling,
     });
+    if let Some(exp) =
+        crate::modules::codex_oauth::jwt_token_expiration_timestamp(&account.tokens.access_token)
+    {
+        value["expired"] = json!(exp);
+        value["expires_at"] = json!(exp);
+    }
     if let Some(proxy_url) = proxy_url {
         value["proxy_url"] = Value::String(proxy_url.to_string());
     }
@@ -6114,7 +10865,7 @@ fn sidecar_auth_json_for_account(
 }
 
 fn sidecar_account_manifest_value(account: &CodexAccount, auth_id: Option<&str>) -> Value {
-    json!({
+    let mut value = json!({
         "id": account.id.clone(),
         "email": account.email.clone(),
         "authId": auth_id,
@@ -6122,7 +10873,21 @@ fn sidecar_account_manifest_value(account: &CodexAccount, auth_id: Option<&str>)
         "planRank": resolve_plan_rank(account),
         "remainingQuota": resolve_remaining_quota(account),
         "subscriptionExpiryMs": resolve_subscription_expiry_ms(account),
-    })
+    });
+
+    if !account.is_api_key_auth() {
+        value["authTokenGeneration"] = json!(account.token_generation);
+        if let Some(updated_at) = account.token_updated_at {
+            value["authTokenUpdatedAt"] = json!(updated_at);
+        }
+        if let Some(exp) = crate::modules::codex_oauth::jwt_token_expiration_timestamp(
+            &account.tokens.access_token,
+        ) {
+            value["authAccessTokenExpiresAt"] = json!(exp);
+        }
+    }
+
+    value
 }
 
 fn sidecar_codex_key_config_value(
@@ -6347,11 +11112,71 @@ fn format_upstream_response_failed_error(signal: &UpstreamResponseFailedSignal) 
 async fn start_legacy_gateway_locked(
     collection: &CodexLocalAccessCollection,
 ) -> Result<(), String> {
-    let bind_host = bind_host_for_collection(collection).to_string();
+    let mut collection = collection.clone();
+    let bind_host = bind_host_for_collection(&collection).to_string();
+    let listener = match bind_gateway_listener(&bind_host, collection.port).await {
+        Ok(listener) => listener,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            let original_port = collection.port;
+            match probe_existing_local_access_listener(&collection.api_key, original_port).await {
+                Ok(()) => {
+                    let mut runtime = gateway_runtime().lock().await;
+                    sync_runtime_collection(&mut runtime, collection.clone());
+                    runtime.running = true;
+                    runtime.actual_port = Some(original_port);
+                    runtime.actual_bind_host = Some(bind_host.to_string());
+                    runtime.sidecar_config_fingerprint = None;
+                    runtime.shutdown_sender = None;
+                    runtime.task = None;
+                    runtime.sidecar_child = None;
+                    runtime.last_error = None;
+                    logger::log_codex_api_warn(&format!(
+                        "[CodexLocalAccess][legacy] 端口 {} 已有健康本地接入监听，复用外部 relay，未改写配置端口",
+                        original_port
+                    ));
+                    return Ok(());
+                }
+                Err(probe_error) => {
+                    logger::log_codex_api_warn(&format!(
+                        "[CodexLocalAccess][legacy] 端口 {} 被占用但不是可复用的健康本地接入监听: {}",
+                        original_port, probe_error
+                    ));
+                }
+            }
+            collection.port = allocate_stable_local_access_port(&bind_host, Some(original_port))?;
+            collection.updated_at = now_ms();
+            save_collection_to_disk(&collection)?;
+            {
+                let mut runtime = gateway_runtime().lock().await;
+                sync_runtime_collection(&mut runtime, collection.clone());
+            }
+            logger::log_codex_api_warn(&format!(
+                "[CodexLocalAccess][legacy] 端口 {} 不可绑定（{}），已自动切换到端口 {}",
+                original_port, error, collection.port
+            ));
+            bind_gateway_listener(&bind_host, collection.port)
+                .await
+                .map_err(|retry_error| {
+                    format_gateway_bind_error(&bind_host, collection.port, &retry_error)
+                })?
+        }
+        Err(error) => {
+            let message = format_gateway_bind_error(&bind_host, collection.port, &error);
+            let mut runtime = gateway_runtime().lock().await;
+            runtime.running = false;
+            runtime.actual_port = None;
+            runtime.actual_bind_host = None;
+            runtime.sidecar_config_fingerprint = None;
+            runtime.last_error = Some(message.clone());
+            return Err(message);
+        }
+    };
     let port = collection.port;
-    let listener = bind_gateway_listener(&bind_host, port)
-        .await
-        .map_err(|error| format_gateway_bind_error(&bind_host, port, &error))?;
     let (shutdown_sender, mut shutdown_receiver) = watch::channel(false);
     let task = tokio::spawn(async move {
         let listener = listener;
@@ -6417,14 +11242,29 @@ async fn start_legacy_gateway_locked(
 }
 
 async fn load_sidecar_account(account_id: &str) -> Option<CodexAccount> {
-    match get_prepared_account(account_id).await {
+    let local_account = codex_account::load_account(account_id);
+    if local_account
+        .as_ref()
+        .map(|account| account.is_api_key_auth())
+        .unwrap_or(false)
+    {
+        return local_account;
+    }
+
+    #[cfg(test)]
+    {
+        return local_account;
+    }
+
+    #[cfg(not(test))]
+    match codex_account::prepare_account_for_injection(account_id).await {
         Ok(account) => Some(account),
         Err(error) => {
             logger::log_codex_api_warn(&format!(
-                "[CodexLocalAccess] sidecar 准备账号失败，尝试使用本地缓存: account_id={}, error={}",
+                "[CodexLocalAccess] sidecar 启动前准备 OAuth 账号失败，已跳过该账号以避免 stale token 入池: account_id={}, error={}",
                 account_id, error
             ));
-            codex_account::load_account(account_id)
+            None
         }
     }
 }
@@ -6450,15 +11290,15 @@ async fn prepare_sidecar_launch_config(
     };
     let mut manifest_accounts = Vec::new();
     let mut codex_keys = Vec::new();
-    for account_id in effective_sidecar_account_ids(collection) {
-        if account_health_blocks_routing(health_snapshot.get(&account_id)) {
+    for account_id in &collection.account_ids {
+        if account_health_blocks_routing(health_snapshot.get(account_id)) {
             logger::log_codex_api_warn(&format!(
                 "[CodexLocalAccess] sidecar 跳过异常账号: account_id={}",
                 account_id
             ));
             continue;
         }
-        let Some(account) = load_sidecar_account(&account_id).await else {
+        let Some(account) = load_sidecar_account(account_id).await else {
             logger::log_codex_api_warn(&format!(
                 "[CodexLocalAccess] sidecar 跳过不存在账号: account_id={}",
                 account_id
@@ -6529,14 +11369,6 @@ async fn prepare_sidecar_launch_config(
         json!(auths_dir.to_string_lossy().to_string()),
     );
     config.insert("debug".to_string(), json!(collection.debug_logs));
-    config.insert(
-        "api-keys".to_string(),
-        json!(sidecar_client_api_keys(collection)),
-    );
-    config.insert(
-        "api-key-account-ids".to_string(),
-        sidecar_api_key_account_scope_values(collection),
-    );
     config.insert("request-log".to_string(), json!(false));
     config.insert("logging-to-file".to_string(), json!(false));
     config.insert("commercial-mode".to_string(), json!(true));
@@ -6577,9 +11409,15 @@ async fn prepare_sidecar_launch_config(
     config.insert(
         "routing".to_string(),
         json!({
-            "strategy": "round-robin",
+            "strategy": sidecar_cli_routing_strategy_value(collection.routing_strategy),
             "session-affinity": collection.session_affinity,
             "session-affinity-ttl": sidecar_duration_ms(collection.session_affinity_ttl_ms),
+        }),
+    );
+    config.insert(
+        "codex".to_string(),
+        json!({
+            "identity-confuse": true,
         }),
     );
     if let Some(proxy_url) = effective_proxy_url_ref {
@@ -6895,6 +11733,80 @@ fn sidecar_ready_signal_from_value(value: &Value) -> SidecarReadySignal {
     SidecarReadySignal { host, port }
 }
 
+fn resolve_sidecar_auth_event_path(event: &SidecarAuthLifecycleEvent) -> Result<PathBuf, String> {
+    let auths_dir = sidecar_auths_dir(&local_access_sidecar_dir()?);
+    let raw_path = event.auth_path.trim();
+    let candidate = if !raw_path.is_empty() {
+        let path = PathBuf::from(raw_path);
+        if path.is_absolute() {
+            path
+        } else {
+            auths_dir.join(path)
+        }
+    } else {
+        let auth_id = event.auth_id.trim();
+        if auth_id.is_empty() {
+            return Err("sidecar auth_updated 事件缺少 auth_id/auth_path".to_string());
+        }
+        auths_dir.join(auth_id)
+    };
+
+    let canonical_auths_dir = std::fs::canonicalize(&auths_dir).map_err(|e| {
+        format!(
+            "解析 sidecar auths 目录失败: path={}, error={}",
+            auths_dir.display(),
+            e
+        )
+    })?;
+    let canonical_candidate = std::fs::canonicalize(&candidate).map_err(|e| {
+        format!(
+            "解析 sidecar OAuth 凭证路径失败: path={}, error={}",
+            candidate.display(),
+            e
+        )
+    })?;
+    if !canonical_candidate.starts_with(&canonical_auths_dir) {
+        return Err(format!(
+            "sidecar OAuth 凭证路径越界，已拒绝同步: path={}",
+            canonical_candidate.display()
+        ));
+    }
+
+    Ok(canonical_candidate)
+}
+
+async fn handle_sidecar_auth_updated_event(event: SidecarAuthLifecycleEvent) {
+    let account_id = event.account_id.trim();
+    if account_id.is_empty() {
+        logger::log_codex_api_warn(&format!(
+            "[CodexLocalAccess] sidecar auth_updated 缺少 accountId: auth_id={}, email={}",
+            event.auth_id.trim(),
+            event.account_email.trim()
+        ));
+        return;
+    }
+    let auth_path = match resolve_sidecar_auth_event_path(&event) {
+        Ok(path) => path,
+        Err(error) => {
+            logger::log_codex_api_warn(&format!(
+                "[CodexLocalAccess] sidecar auth_updated 路径校验失败: account_id={}, error={}",
+                account_id, error
+            ));
+            return;
+        }
+    };
+    if let Err(error) =
+        codex_account::sync_account_tokens_from_sidecar_auth_file(account_id, &auth_path)
+    {
+        logger::log_codex_api_warn(&format!(
+            "[CodexLocalAccess] sidecar OAuth Token 回写失败: account_id={}, auth_path={}, error={}",
+            account_id,
+            auth_path.display(),
+            error
+        ));
+    }
+}
+
 async fn handle_sidecar_stdout_line(
     line: &str,
     ready_sender: &mut Option<oneshot::Sender<SidecarReadySignal>>,
@@ -6931,6 +11843,13 @@ async fn handle_sidecar_stdout_line(
             }
             logger::log_codex_api_info(&format!("[CodexLocalAccess][sidecar] {}", trimmed));
         }
+        "auth_updated" => match serde_json::from_value::<SidecarAuthLifecycleEvent>(value) {
+            Ok(event) => handle_sidecar_auth_updated_event(event).await,
+            Err(error) => logger::log_codex_api_warn(&format!(
+                "[CodexLocalAccess] sidecar auth_updated 事件解析失败: {}",
+                error
+            )),
+        },
         "ready" => {
             update_sidecar_stdout_diagnostics(diagnostics, trimmed, true);
             if let Some(sender) = ready_sender.take() {
@@ -7283,45 +12202,28 @@ fn parse_windows_ipconfig_candidates(output: &str) -> Vec<LanIpv4Candidate> {
     candidates
 }
 
-fn build_runtime_account(
-    base_url: String,
-    api_key: String,
-    bound_oauth_account_id: Option<String>,
-) -> CodexAccount {
+fn build_runtime_account(base_url: String, api_key: String) -> CodexAccount {
     let mut runtime_account = CodexAccount::new_api_key(
-        "codex_local_access_runtime".to_string(),
+        CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID.to_string(),
         "api-service-local".to_string(),
         api_key,
         CodexApiProviderMode::Custom,
         Some(base_url),
         Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID.to_string()),
-        Some("Codex API Service".to_string()),
-        Vec::new(),
+        Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME.to_string()),
     );
     runtime_account.account_name = Some("API Service".to_string());
-    runtime_account.bound_oauth_account_id = bound_oauth_account_id;
     runtime_account
 }
 
 async fn write_local_access_profile_takeover(
     profile_dir: &Path,
     collection: &CodexLocalAccessCollection,
-    api_key: Option<&str>,
 ) -> Result<(), String> {
-    let bound_oauth_account_id =
-        normalize_optional_account_ref(collection.bound_oauth_account_id.as_deref());
-    if let Some(bound_id) = bound_oauth_account_id.as_deref() {
-        let _ = validate_local_access_bound_oauth_account(bound_id)?;
-        let _ = codex_account::ensure_managed_account_fresh(bound_id).await?;
-    }
+    validate_local_access_routable_pool(collection)?;
     let runtime_account = build_runtime_account(
         build_collection_base_url(collection),
-        api_key
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-            .unwrap_or_else(|| collection.api_key.clone()),
-        bound_oauth_account_id,
+        collection.api_key.clone(),
     );
     codex_account::write_account_bundle_to_dir(profile_dir, &runtime_account)
 }
@@ -7401,7 +12303,7 @@ async fn ensure_profile_takeover(
     }
 
     save_profile_takeover_backup(profile_dir, &collection.api_key)?;
-    write_local_access_profile_takeover(profile_dir, collection, None).await?;
+    write_local_access_profile_takeover(profile_dir, collection).await?;
 
     let next = inspect_local_access_profile_attachment(profile_dir, Some(collection));
     if !next.attached {
@@ -7497,8 +12399,6 @@ fn build_local_access_api_key(label: Option<&str>) -> CodexLocalAccessApiKey {
         id: generate_local_api_key_id(),
         label: normalize_api_key_label(label, &default_local_api_key_label()),
         key: generate_local_api_key(),
-        provider_gateway: None,
-        account_ids: Vec::new(),
         model_prefix: None,
         allowed_models: Vec::new(),
         excluded_models: Vec::new(),
@@ -7523,8 +12423,6 @@ fn normalize_collection_api_keys(collection: &mut CodexLocalAccessCollection) ->
             id: generate_local_api_key_id(),
             label: default_local_api_key_label(),
             key,
-            provider_gateway: None,
-            account_ids: Vec::new(),
             model_prefix: None,
             allowed_models: Vec::new(),
             excluded_models: Vec::new(),
@@ -7556,14 +12454,6 @@ fn normalize_collection_api_keys(collection: &mut CodexLocalAccessCollection) ->
         if normalized_label != item.label {
             item.label = normalized_label;
             changed = true;
-        }
-        let original_account_ids = std::mem::take(&mut item.account_ids);
-        let normalized_account_ids = normalize_account_id_list(original_account_ids.clone());
-        if normalized_account_ids != original_account_ids {
-            item.account_ids = normalized_account_ids;
-            changed = true;
-        } else {
-            item.account_ids = original_account_ids;
         }
         if item.created_at <= 0 {
             item.created_at = now;
@@ -7635,8 +12525,6 @@ fn resolve_collection_api_key(
         .map(|item| ResolvedLocalApiKey {
             id: item.id.clone(),
             label: item.label.clone(),
-            provider_gateway: item.provider_gateway.clone(),
-            account_ids: item.account_ids.clone(),
             model_prefix: item.model_prefix.clone(),
             allowed_models: item.allowed_models.clone(),
             excluded_models: item.excluded_models.clone(),
@@ -7646,8 +12534,6 @@ fn resolve_collection_api_key(
                 Some(ResolvedLocalApiKey {
                     id: "legacy".to_string(),
                     label: default_local_api_key_label(),
-                    provider_gateway: None,
-                    account_ids: Vec::new(),
                     model_prefix: None,
                     allowed_models: Vec::new(),
                     excluded_models: Vec::new(),
@@ -7658,29 +12544,236 @@ fn resolve_collection_api_key(
         })
 }
 
-fn scoped_collection_account_ids(
-    collection: &CodexLocalAccessCollection,
+fn header_value<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
+    headers
+        .get(&name.to_ascii_lowercase())
+        .or_else(|| headers.get(name))
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn stable_uuid_from_text(value: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(value.as_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
+}
+
+fn stable_prompt_cache_key(api_key: &ResolvedLocalApiKey) -> String {
+    stable_uuid_from_text(&format!(
+        "cockpit-tools-local:codex:prompt-cache:{}",
+        api_key.id
+    ))
+}
+
+fn stable_codex_installation_id(api_key: &ResolvedLocalApiKey) -> String {
+    stable_uuid_from_text(&format!(
+        "cockpit-tools-local:codex:installation:{}",
+        api_key.id
+    ))
+}
+
+fn stable_codex_turn_id(api_key: &ResolvedLocalApiKey, session_id: &str) -> String {
+    stable_uuid_from_text(&format!(
+        "cockpit-tools-local:codex:turn:{}:{}",
+        api_key.id, session_id
+    ))
+}
+
+fn extract_prompt_cache_key_from_value(value: &Value) -> Option<String> {
+    value
+        .get("prompt_cache_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn resolve_prompt_cache_key(
+    headers: &HashMap<String, String>,
+    body_value: Option<&Value>,
     api_key: &ResolvedLocalApiKey,
-) -> Vec<String> {
-    if api_key.account_ids.is_empty() {
-        collection.account_ids.clone()
-    } else {
-        api_key.account_ids.clone()
+) -> String {
+    body_value
+        .and_then(extract_prompt_cache_key_from_value)
+        .or_else(|| header_value(headers, "session_id").map(str::to_string))
+        .unwrap_or_else(|| stable_prompt_cache_key(api_key))
+}
+
+fn is_valid_gpt_reasoning_signature(raw_signature: &str) -> bool {
+    if raw_signature.is_empty()
+        || raw_signature.len() > MAX_GPT_REASONING_SIGNATURE_LEN
+        || raw_signature != raw_signature.trim()
+        || !raw_signature.starts_with("gAAAA")
+        || raw_signature
+            .chars()
+            .any(|ch| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' && ch != '=')
+    {
+        return false;
+    }
+
+    let decoded = general_purpose::URL_SAFE_NO_PAD
+        .decode(raw_signature)
+        .or_else(|_| general_purpose::URL_SAFE.decode(raw_signature));
+    let Ok(decoded) = decoded else {
+        return false;
+    };
+    if decoded.len() < 73 || decoded.first().copied() != Some(0x80) {
+        return false;
+    }
+    let ciphertext_len = decoded.len().saturating_sub(1 + 8 + 16 + 32);
+    ciphertext_len > 0 && ciphertext_len % 16 == 0
+}
+
+fn sanitize_codex_reasoning_encrypted_content(body_value: &mut Value) -> bool {
+    let Some(input_items) = body_value.get_mut("input").and_then(Value::as_array_mut) else {
+        return false;
+    };
+
+    let mut changed = false;
+    for item in input_items {
+        let Some(item_obj) = item.as_object_mut() else {
+            continue;
+        };
+        if item_obj.get("type").and_then(Value::as_str).map(str::trim) != Some("reasoning") {
+            continue;
+        }
+
+        let should_remove = match item_obj.get("encrypted_content") {
+            Some(Value::String(value)) => !is_valid_gpt_reasoning_signature(value),
+            Some(_) => true,
+            None => false,
+        };
+        if should_remove {
+            item_obj.remove("encrypted_content");
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn build_codex_turn_metadata(session_id: &str, turn_id: &str) -> String {
+    let window_id = format!("{}:0", session_id);
+    serde_json::to_string(&json!({
+        "prompt_cache_key": session_id,
+        "turn_id": turn_id,
+        "window_id": window_id,
+    }))
+    .unwrap_or_else(|_| "{}".to_string())
+}
+
+fn apply_codex_client_metadata(
+    body_obj: &mut Map<String, Value>,
+    request: &mut ParsedRequest,
+    api_key: &ResolvedLocalApiKey,
+    session_id: &str,
+) {
+    let installation_id = stable_codex_installation_id(api_key);
+    let turn_id = stable_codex_turn_id(api_key, session_id);
+    let window_id = format!("{}:0", session_id);
+    let turn_metadata = build_codex_turn_metadata(session_id, &turn_id);
+
+    let client_metadata = body_obj
+        .entry("client_metadata".to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !client_metadata.is_object() {
+        *client_metadata = Value::Object(Map::new());
+    }
+    if let Some(metadata_obj) = client_metadata.as_object_mut() {
+        metadata_obj
+            .entry("x-codex-installation-id".to_string())
+            .or_insert_with(|| Value::String(installation_id));
+        metadata_obj.insert(
+            "x-codex-window-id".to_string(),
+            Value::String(window_id.clone()),
+        );
+        metadata_obj.insert(
+            "x-codex-turn-metadata".to_string(),
+            Value::String(turn_metadata.clone()),
+        );
+    }
+
+    request
+        .headers
+        .insert("x-client-request-id".to_string(), session_id.to_string());
+    request
+        .headers
+        .insert("x-codex-window-id".to_string(), window_id);
+    request
+        .headers
+        .insert("x-codex-turn-metadata".to_string(), turn_metadata);
+}
+
+fn ensure_request_header(headers: &mut HashMap<String, String>, name: &str, value: &str) {
+    headers
+        .entry(name.to_ascii_lowercase())
+        .or_insert_with(|| value.to_string());
+}
+
+fn apply_codex_official_headers(request: &mut ParsedRequest) {
+    if !(is_responses_request(&request.target) || is_responses_compact_request(&request.target)) {
+        return;
+    }
+
+    for header in CODEX_OFFICIAL_EMPTY_HEADERS {
+        ensure_request_header(&mut request.headers, header, "");
     }
 }
 
-fn request_ordered_account_ids(
-    collection: &CodexLocalAccessCollection,
-    scoped_account_ids: &[String],
-    start: usize,
-    affinity_account_id: Option<&str>,
-) -> Vec<String> {
-    if scoped_account_ids == collection.account_ids.as_slice()
-        && collection.routing_strategy == CodexLocalAccessRoutingStrategy::Custom
-    {
-        return collection.account_ids.clone();
+fn align_codex_prompt_cache(
+    request: &mut ParsedRequest,
+    api_key: &ResolvedLocalApiKey,
+) -> Result<Option<String>, String> {
+    if !(is_responses_request(&request.target) || is_responses_compact_request(&request.target)) {
+        return Ok(None);
     }
-    build_ordered_account_ids(scoped_account_ids, start, affinity_account_id)
+
+    let mut body_value = parse_request_body_json(&request.body);
+    let session_id = resolve_prompt_cache_key(&request.headers, body_value.as_ref(), api_key);
+    request
+        .headers
+        .insert("session_id".to_string(), session_id.clone());
+    request
+        .headers
+        .insert("conversation_id".to_string(), session_id.clone());
+
+    if let Some(Value::Object(body_obj)) = body_value.as_mut() {
+        body_obj.insert(
+            "prompt_cache_key".to_string(),
+            Value::String(session_id.clone()),
+        );
+        apply_codex_client_metadata(body_obj, request, api_key, &session_id);
+    }
+    if let Some(body_value) = body_value.as_mut() {
+        sanitize_codex_reasoning_encrypted_content(body_value);
+        request.body = serde_json::to_vec(body_value)
+            .map_err(|e| format!("序列化 prompt_cache_key 请求体失败: {}", e))?;
+    }
+
+    Ok(Some(session_id))
 }
 
 fn allocate_random_local_port(bind_host: &str) -> Result<u16, String> {
@@ -7692,24 +12785,26 @@ fn allocate_random_local_port(bind_host: &str) -> Result<u16, String> {
         .map_err(|e| format!("读取本地接入端口失败: {}", e))
 }
 
-fn configured_initial_local_access_port() -> Option<u16> {
-    if let Ok(raw) = std::env::var(CODEX_LOCAL_ACCESS_API_PORT_ENV) {
-        if let Ok(port) = raw.trim().parse::<u16>() {
-            if port > 0 {
-                return Some(port);
-            }
-        }
-    }
-
-    if account::is_dev_profile() {
-        return Some(CODEX_LOCAL_ACCESS_DEV_DEFAULT_PORT);
-    }
-
-    None
+fn is_local_port_bindable(bind_host: &str, port: u16) -> bool {
+    port != 0 && StdTcpListener::bind((bind_host, port)).is_ok()
 }
 
-fn allocate_initial_local_port(bind_host: &str) -> Result<u16, String> {
-    configured_initial_local_access_port()
+fn first_stable_local_access_port(
+    exclude_port: Option<u16>,
+    is_bindable: impl Fn(u16) -> bool,
+) -> Option<u16> {
+    PREFERRED_CODEX_LOCAL_ACCESS_PORTS
+        .iter()
+        .copied()
+        .filter(|port| Some(*port) != exclude_port)
+        .find(|port| is_bindable(*port))
+}
+
+fn allocate_stable_local_access_port(
+    bind_host: &str,
+    exclude_port: Option<u16>,
+) -> Result<u16, String> {
+    first_stable_local_access_port(exclude_port, |port| is_local_port_bindable(bind_host, port))
         .map(Ok)
         .unwrap_or_else(|| allocate_random_local_port(bind_host))
 }
@@ -7893,26 +12988,40 @@ fn prune_runtime_routing_state(runtime: &mut GatewayRuntime, now: i64) {
         now.saturating_sub(binding.updated_at_ms) <= ttl_ms
     });
     runtime
+        .request_affinity
+        .retain(|_, binding| now.saturating_sub(binding.updated_at_ms) <= REQUEST_AFFINITY_TTL_MS);
+    runtime
         .model_cooldowns
         .retain(|_, cooldown| cooldown.next_retry_at_ms > now);
 
-    if runtime.response_affinity.len() <= MAX_RESPONSE_AFFINITY_BINDINGS {
+    prune_affinity_bindings(
+        &mut runtime.response_affinity,
+        MAX_RESPONSE_AFFINITY_BINDINGS,
+    );
+    prune_affinity_bindings(&mut runtime.request_affinity, MAX_REQUEST_AFFINITY_BINDINGS);
+}
+
+fn session_affinity_binding_key(value: &str) -> String {
+    format!("session:{}", value.trim())
+}
+
+fn prune_affinity_bindings(
+    bindings: &mut HashMap<String, ResponseAffinityBinding>,
+    max_bindings: usize,
+) {
+    if bindings.len() <= max_bindings {
         return;
     }
 
-    let mut bindings: Vec<(String, i64)> = runtime
-        .response_affinity
+    let mut ordered: Vec<(String, i64)> = bindings
         .iter()
-        .map(|(response_id, binding)| (response_id.clone(), binding.updated_at_ms))
+        .map(|(key, binding)| (key.clone(), binding.updated_at_ms))
         .collect();
-    bindings.sort_by_key(|(_, updated_at_ms)| *updated_at_ms);
+    ordered.sort_by_key(|(_, updated_at_ms)| *updated_at_ms);
 
-    let remove_count = runtime
-        .response_affinity
-        .len()
-        .saturating_sub(MAX_RESPONSE_AFFINITY_BINDINGS);
-    for (response_id, _) in bindings.into_iter().take(remove_count) {
-        runtime.response_affinity.remove(&response_id);
+    let remove_count = bindings.len().saturating_sub(max_bindings);
+    for (key, _) in ordered.into_iter().take(remove_count) {
+        bindings.remove(&key);
     }
 }
 
@@ -7924,6 +13033,36 @@ async fn resolve_affinity_account(previous_response_id: &str) -> Option<String> 
         .response_affinity
         .get(previous_response_id)
         .map(|binding| binding.account_id.clone())
+}
+
+fn request_affinity_key(request: &ParsedRequest) -> Option<String> {
+    official_codex_turn_state_affinity_key(request)
+}
+
+async fn resolve_request_affinity_account_from_runtime(request: &ParsedRequest) -> Option<String> {
+    let request_id = request_affinity_key(request)?;
+    let mut runtime = gateway_runtime().lock().await;
+    let now = now_ms();
+    prune_runtime_routing_state(&mut runtime, now);
+    runtime
+        .request_affinity
+        .get(&request_id)
+        .map(|binding| binding.account_id.clone())
+}
+
+async fn resolve_request_affinity_account(request: &ParsedRequest) -> Option<String> {
+    if let Some(account_id) = resolve_request_affinity_account_from_runtime(request).await {
+        return Some(account_id);
+    }
+
+    let mut registry = load_health_registry_from_disk().ok()?;
+    let now = now_ms();
+    if prune_persisted_request_affinity_bindings(&mut registry, None, now) {
+        if let Err(err) = save_health_registry_to_disk(&registry) {
+            log_health_registry_update_error(&err);
+        }
+    }
+    request_affinity_account_from_registry(&registry, request, now)
 }
 
 async fn bind_response_affinity(response_id: &str, account_id: &str) {
@@ -7946,267 +13085,82 @@ async fn bind_response_affinity(response_id: &str, account_id: &str) {
     prune_runtime_routing_state(&mut runtime, now);
 }
 
-fn session_affinity_binding_key(value: &str) -> String {
-    format!("session:{}", value.trim())
-}
-
-fn extract_body_string_path(value: &Value, path: &[&str]) -> Option<String> {
-    let mut cursor = value;
-    for key in path {
-        cursor = cursor.get(*key)?;
-    }
-    cursor
-        .as_str()
-        .map(str::trim)
-        .filter(|item| !item.is_empty())
-        .map(str::to_string)
-}
-
-fn extract_session_affinity_key(request: &ParsedRequest) -> Option<String> {
-    for header in [
-        "session_id",
-        "x-session-id",
-        "x-client-request-id",
-        "x-amp-thread-id",
-    ] {
-        if let Some(value) = request
-            .headers
-            .get(header)
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|item| !item.is_empty())
-        {
-            return Some(format!("{}={}", header, value));
-        }
-    }
-
-    let body = parse_request_body_json(&request.body)?;
-    extract_body_string_path(&body, &["metadata", "user_id"])
-        .or_else(|| extract_body_string_path(&body, &["conversation_id"]))
-        .or_else(|| extract_body_string_path(&body, &["thread_id"]))
-        .map(|value| format!("body={}", value))
-}
-
-fn header_value<'a>(headers: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
-    headers
-        .get(&name.to_ascii_lowercase())
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-}
-
-fn stable_uuid_from_text(value: &str) -> String {
-    let mut hasher = Sha1::new();
-    hasher.update(value.as_bytes());
-    let digest = hasher.finalize();
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x50;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0],
-        bytes[1],
-        bytes[2],
-        bytes[3],
-        bytes[4],
-        bytes[5],
-        bytes[6],
-        bytes[7],
-        bytes[8],
-        bytes[9],
-        bytes[10],
-        bytes[11],
-        bytes[12],
-        bytes[13],
-        bytes[14],
-        bytes[15]
-    )
-}
-
-fn stable_prompt_cache_key(api_key: &ResolvedLocalApiKey) -> String {
-    stable_uuid_from_text(&format!("agtools:codex:prompt-cache:{}", api_key.id))
-}
-
-fn stable_codex_installation_id(api_key: &ResolvedLocalApiKey) -> String {
-    stable_uuid_from_text(&format!("agtools:codex:installation:{}", api_key.id))
-}
-
-fn stable_codex_turn_id(api_key: &ResolvedLocalApiKey, session_id: &str) -> String {
-    stable_uuid_from_text(&format!("agtools:codex:turn:{}:{}", api_key.id, session_id))
-}
-
-fn extract_prompt_cache_key_from_value(value: &Value) -> Option<String> {
-    value
-        .get("prompt_cache_key")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn resolve_prompt_cache_key(
-    headers: &HashMap<String, String>,
-    body_value: Option<&Value>,
-    api_key: &ResolvedLocalApiKey,
-) -> String {
-    body_value
-        .and_then(extract_prompt_cache_key_from_value)
-        .or_else(|| header_value(headers, "session_id").map(str::to_string))
-        .unwrap_or_else(|| stable_prompt_cache_key(api_key))
-}
-
-fn is_valid_gpt_reasoning_signature(raw_signature: &str) -> bool {
-    if raw_signature.is_empty()
-        || raw_signature.len() > MAX_GPT_REASONING_SIGNATURE_LEN
-        || raw_signature != raw_signature.trim()
-        || !raw_signature.starts_with("gAAAA")
-        || raw_signature
-            .chars()
-            .any(|ch| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_' && ch != '=')
-    {
-        return false;
-    }
-
-    let decoded = general_purpose::URL_SAFE_NO_PAD
-        .decode(raw_signature)
-        .or_else(|_| general_purpose::URL_SAFE.decode(raw_signature));
-    let Ok(decoded) = decoded else {
-        return false;
+async fn bind_request_affinity(request: &ParsedRequest, account_id: &str) {
+    let Some(request_id) = request_affinity_key(request) else {
+        return;
     };
-    if decoded.len() < 73 || decoded.first().copied() != Some(0x80) {
-        return false;
-    }
-    let ciphertext_len = decoded.len().saturating_sub(1 + 8 + 16 + 32);
-    ciphertext_len > 0 && ciphertext_len % 16 == 0
+    bind_request_affinity_key(request_id, account_id).await;
 }
 
-fn sanitize_codex_reasoning_encrypted_content(body_value: &mut Value) -> bool {
-    let Some(input_items) = body_value.get_mut("input").and_then(Value::as_array_mut) else {
-        return false;
-    };
-
-    let mut changed = false;
-    for item in input_items {
-        let Some(item_obj) = item.as_object_mut() else {
-            continue;
-        };
-        if item_obj.get("type").and_then(Value::as_str).map(str::trim) != Some("reasoning") {
-            continue;
-        }
-
-        let should_remove = match item_obj.get("encrypted_content") {
-            Some(Value::String(value)) => !is_valid_gpt_reasoning_signature(value),
-            Some(_) => true,
-            None => false,
-        };
-        if should_remove {
-            item_obj.remove("encrypted_content");
-            changed = true;
-        }
-    }
-    changed
-}
-
-fn build_codex_turn_metadata(session_id: &str, turn_id: &str) -> String {
-    let window_id = format!("{}:0", session_id);
-    serde_json::to_string(&json!({
-        "prompt_cache_key": session_id,
-        "turn_id": turn_id,
-        "window_id": window_id,
-    }))
-    .unwrap_or_else(|_| "{}".to_string())
-}
-
-fn apply_codex_client_metadata(
-    body_obj: &mut Map<String, Value>,
-    request: &mut ParsedRequest,
-    api_key: &ResolvedLocalApiKey,
-    session_id: &str,
-) {
-    let installation_id = stable_codex_installation_id(api_key);
-    let turn_id = stable_codex_turn_id(api_key, session_id);
-    let window_id = format!("{}:0", session_id);
-    let turn_metadata = build_codex_turn_metadata(session_id, &turn_id);
-
-    let client_metadata = body_obj
-        .entry("client_metadata".to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    if !client_metadata.is_object() {
-        *client_metadata = Value::Object(Map::new());
-    }
-    if let Some(metadata_obj) = client_metadata.as_object_mut() {
-        metadata_obj
-            .entry("x-codex-installation-id".to_string())
-            .or_insert_with(|| Value::String(installation_id));
-        metadata_obj.insert(
-            "x-codex-window-id".to_string(),
-            Value::String(window_id.clone()),
-        );
-        metadata_obj.insert(
-            "x-codex-turn-metadata".to_string(),
-            Value::String(turn_metadata.clone()),
-        );
-    }
-
-    request
-        .headers
-        .insert("x-client-request-id".to_string(), session_id.to_string());
-    request
-        .headers
-        .insert("x-codex-window-id".to_string(), window_id);
-    request
-        .headers
-        .insert("x-codex-turn-metadata".to_string(), turn_metadata);
-}
-
-fn ensure_request_header(headers: &mut HashMap<String, String>, name: &str, value: &str) {
-    headers
-        .entry(name.to_ascii_lowercase())
-        .or_insert_with(|| value.to_string());
-}
-
-fn apply_codex_official_headers(request: &mut ParsedRequest) {
-    if !(is_responses_request(&request.target) || is_responses_compact_request(&request.target)) {
+async fn bind_request_affinity_key(request_id: String, account_id: &str) {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
         return;
     }
 
-    for header in CODEX_OFFICIAL_EMPTY_HEADERS {
-        ensure_request_header(&mut request.headers, header, "");
-    }
+    let mut runtime = gateway_runtime().lock().await;
+    let now = now_ms();
+    prune_runtime_routing_state(&mut runtime, now);
+    runtime.request_affinity.insert(
+        request_id,
+        ResponseAffinityBinding {
+            account_id: account_id.to_string(),
+            updated_at_ms: now,
+        },
+    );
+    prune_runtime_routing_state(&mut runtime, now);
 }
 
-fn align_codex_prompt_cache(
-    request: &mut ParsedRequest,
-    api_key: &ResolvedLocalApiKey,
-) -> Result<Option<String>, String> {
-    if !(is_responses_request(&request.target) || is_responses_compact_request(&request.target)) {
-        return Ok(None);
+async fn clear_model_cooldown(account_id: &str, model_key: &str) -> bool {
+    let Some(cooldown_key) = build_cooldown_key(account_id, model_key) else {
+        return false;
+    };
+
+    let mut runtime = gateway_runtime().lock().await;
+    let now = now_ms();
+    prune_runtime_routing_state(&mut runtime, now);
+    runtime.model_cooldowns.remove(&cooldown_key).is_some()
+}
+
+async fn clear_account_model_cooldowns(account_id: &str) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
     }
 
-    let mut body_value = parse_request_body_json(&request.body);
-    let session_id = resolve_prompt_cache_key(&request.headers, body_value.as_ref(), api_key);
-    request
-        .headers
-        .insert("session_id".to_string(), session_id.clone());
-    request
-        .headers
-        .insert("conversation_id".to_string(), session_id.clone());
+    let mut runtime = gateway_runtime().lock().await;
+    let now = now_ms();
+    prune_runtime_routing_state(&mut runtime, now);
+    let prefix = format!("{}\u{1f}", account_id);
+    let before_len = runtime.model_cooldowns.len();
+    runtime
+        .model_cooldowns
+        .retain(|cooldown_key, _| !cooldown_key.starts_with(&prefix));
+    runtime.model_cooldowns.len() != before_len
+}
 
-    if let Some(Value::Object(body_obj)) = body_value.as_mut() {
-        body_obj.insert(
-            "prompt_cache_key".to_string(),
-            Value::String(session_id.clone()),
-        );
-        apply_codex_client_metadata(body_obj, request, api_key, &session_id);
-    }
-    if let Some(body_value) = body_value.as_mut() {
-        sanitize_codex_reasoning_encrypted_content(body_value);
-        request.body = serde_json::to_vec(body_value)
-            .map_err(|e| format!("序列化 prompt_cache_key 请求体失败: {}", e))?;
+async fn clear_runtime_account_affinity(account_id: &str) -> bool {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return false;
     }
 
-    Ok(Some(session_id))
+    let mut runtime = gateway_runtime().lock().await;
+    let now = now_ms();
+    prune_runtime_routing_state(&mut runtime, now);
+
+    let before_response_len = runtime.response_affinity.len();
+    runtime
+        .response_affinity
+        .retain(|_, binding| binding.account_id.trim() != account_id);
+
+    let before_request_len = runtime.request_affinity.len();
+    runtime
+        .request_affinity
+        .retain(|_, binding| binding.account_id.trim() != account_id);
+
+    runtime.response_affinity.len() != before_response_len
+        || runtime.request_affinity.len() != before_request_len
 }
 
 async fn touch_local_access_api_key(api_key_id: &str) {
@@ -8214,6 +13168,7 @@ async fn touch_local_access_api_key(api_key_id: &str) {
     if api_key_id.is_empty() || api_key_id == "legacy" {
         return;
     }
+
     let mut collection_to_save = None;
     {
         let mut runtime = gateway_runtime().lock().await;
@@ -8232,6 +13187,7 @@ async fn touch_local_access_api_key(api_key_id: &str) {
             collection_to_save = Some(collection.clone());
         }
     }
+
     if let Some(collection) = collection_to_save {
         if let Err(err) = save_collection_to_disk(&collection) {
             logger::log_codex_api_warn(&format!(
@@ -8240,17 +13196,6 @@ async fn touch_local_access_api_key(api_key_id: &str) {
             ));
         }
     }
-}
-
-async fn clear_model_cooldown(account_id: &str, model_key: &str) {
-    let Some(cooldown_key) = build_cooldown_key(account_id, model_key) else {
-        return;
-    };
-
-    let mut runtime = gateway_runtime().lock().await;
-    let now = now_ms();
-    prune_runtime_routing_state(&mut runtime, now);
-    runtime.model_cooldowns.remove(&cooldown_key);
 }
 
 async fn set_model_cooldown(
@@ -8428,6 +13373,224 @@ fn is_local_access_eligible_account(account: &CodexAccount, restrict_free_accoun
         return false;
     }
     true
+}
+
+fn validate_local_access_routable_pool(
+    collection: &CodexLocalAccessCollection,
+) -> Result<(), String> {
+    let account_ids = build_effective_local_access_account_ids(collection);
+    if account_ids.is_empty() {
+        return Err(
+            "API 服务实际调度池为空；请先把 OAuth 或 API Key 账号加入 API 服务".to_string(),
+        );
+    }
+
+    for account_id in account_ids {
+        let Some(account) = codex_account::load_account(&account_id) else {
+            return Err(format!(
+                "API 服务成员 {} 不存在，无法写入 API 服务投影",
+                account_id
+            ));
+        };
+        if !is_local_access_eligible_account(&account, collection.restrict_free_accounts) {
+            continue;
+        }
+        if account.is_api_key_auth() {
+            if account
+                .openai_api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .is_some()
+            {
+                return Ok(());
+            }
+            continue;
+        }
+        if codex_account::account_has_refresh_token(&account) {
+            return Ok(());
+        }
+    }
+
+    Err("API 服务实际调度池没有可路由账号；请加入带 refresh_token 的 OAuth 账号或带上游 API Key 的 API Key 账号".to_string())
+}
+
+fn clamp_u32_field(value: &mut u32, default_value: u32, min_value: u32, max_value: u32) -> bool {
+    let original = *value;
+    if *value == 0 {
+        *value = default_value;
+    }
+    *value = (*value).clamp(min_value, max_value);
+    *value != original
+}
+
+fn clamp_u64_field(value: &mut u64, default_value: u64, min_value: u64, max_value: u64) -> bool {
+    let original = *value;
+    if *value == 0 {
+        *value = default_value;
+    }
+    *value = (*value).clamp(min_value, max_value);
+    *value != original
+}
+
+fn normalize_local_api_safety_config(collection: &mut CodexLocalAccessCollection) -> bool {
+    if collection.safety_config.schema_version > CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION {
+        collection.safety_config = CodexLocalApiSafetyConfig::default();
+        return true;
+    }
+
+    let mut changed = false;
+    let defaults = CodexLocalApiSafetyConfig::default();
+    let config = &mut collection.safety_config;
+
+    if config.schema_version != CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION {
+        config.schema_version = CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION;
+        changed = true;
+    }
+    if !config.hardened_local_mode {
+        config.hardened_local_mode = defaults.hardened_local_mode;
+        changed = true;
+    }
+    changed |= clamp_u32_field(
+        &mut config.max_concurrent_requests,
+        defaults.max_concurrent_requests,
+        1,
+        4,
+    );
+    changed |= clamp_u64_field(
+        &mut config.min_request_interval_seconds,
+        defaults.min_request_interval_seconds,
+        1,
+        3600,
+    );
+    changed |= clamp_u64_field(
+        &mut config.max_queue_wait_seconds,
+        defaults.max_queue_wait_seconds,
+        1,
+        300,
+    );
+    let minimum_queue_wait_seconds =
+        local_api_queue_wait_seconds_for_start_interval(config.min_request_interval_seconds);
+    if config.max_queue_wait_seconds < minimum_queue_wait_seconds {
+        config.max_queue_wait_seconds = minimum_queue_wait_seconds;
+        changed = true;
+    }
+    changed |= clamp_u64_field(
+        &mut config.request_timeout_seconds,
+        defaults.request_timeout_seconds,
+        30,
+        3600,
+    );
+    changed |= clamp_u32_field(
+        &mut config.max_request_body_mb,
+        defaults.max_request_body_mb,
+        1,
+        (MAX_HTTP_REQUEST_BYTES / (1024 * 1024)) as u32,
+    );
+    changed |= clamp_u32_field(&mut config.max_retries, defaults.max_retries, 1, 3);
+    changed |= clamp_u32_field(
+        &mut config.max_retry_accounts,
+        defaults.max_retry_accounts,
+        1,
+        MAX_RETRY_CREDENTIALS_PER_REQUEST as u32,
+    );
+    if config.max_retry_accounts < 2 {
+        config.max_retry_accounts = 2;
+        changed = true;
+    }
+    if matches!(config.fallback_mode, CodexLocalApiFallbackMode::Unknown) {
+        config.fallback_mode = defaults.fallback_mode;
+        changed = true;
+    }
+
+    if !config.logging.redact_sensitive_values {
+        config.logging.redact_sensitive_values = true;
+        changed = true;
+    }
+    if config.logging.include_prompt_response {
+        config.logging.include_prompt_response = false;
+        changed = true;
+    }
+    if config.logging.include_raw_upstream_body {
+        config.logging.include_raw_upstream_body = false;
+        changed = true;
+    }
+
+    changed
+}
+
+fn local_api_queue_wait_seconds_for_start_interval(min_request_interval_seconds: u64) -> u64 {
+    min_request_interval_seconds.saturating_add(1).clamp(1, 300)
+}
+
+fn local_api_safety_config_for_preset(
+    preset: CodexLocalApiSafetyPresetId,
+) -> CodexLocalApiSafetyConfig {
+    let mut config = CodexLocalApiSafetyConfig::default();
+
+    match preset {
+        CodexLocalApiSafetyPresetId::MaximumSafety => {
+            config.min_request_interval_seconds = 60;
+            config.max_retry_accounts = 2;
+            config.fallback_mode = CodexLocalApiFallbackMode::Disabled;
+        }
+        CodexLocalApiSafetyPresetId::BalancedSelfUse => {
+            config.min_request_interval_seconds = 20;
+            config.max_retry_accounts = 2;
+            config.fallback_mode = CodexLocalApiFallbackMode::Disabled;
+        }
+        CodexLocalApiSafetyPresetId::QuotaDrainCareful => {
+            config.min_request_interval_seconds = 30;
+            config.max_retry_accounts = 2;
+            config.fallback_mode = CodexLocalApiFallbackMode::NextRequestOnly;
+        }
+    }
+
+    config.max_queue_wait_seconds =
+        local_api_queue_wait_seconds_for_start_interval(config.min_request_interval_seconds);
+    config
+}
+
+fn local_api_routing_strategy_for_preset(
+    _preset: CodexLocalApiSafetyPresetId,
+) -> CodexLocalAccessRoutingStrategy {
+    CodexLocalAccessRoutingStrategy::Auto
+}
+
+fn apply_local_api_safety_preset_to_collection(
+    collection: &mut CodexLocalAccessCollection,
+    preset: CodexLocalApiSafetyPresetId,
+) -> bool {
+    let original_safety_config = collection.safety_config.clone();
+    let original_routing_strategy = collection.routing_strategy;
+
+    collection.safety_config = local_api_safety_config_for_preset(preset);
+    collection.routing_strategy = local_api_routing_strategy_for_preset(preset);
+    let changed = original_safety_config != collection.safety_config
+        || original_routing_strategy != collection.routing_strategy;
+
+    let normalized = normalize_local_api_safety_config(collection);
+    changed || normalized
+}
+
+fn filter_local_access_account_ids<I>(
+    account_ids: I,
+    valid_account_ids: &HashSet<String>,
+) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut filtered = Vec::new();
+    let mut seen = HashSet::new();
+    for account_id in account_ids {
+        if !valid_account_ids.contains(&account_id) {
+            continue;
+        }
+        if seen.insert(account_id.clone()) {
+            filtered.push(account_id);
+        }
+    }
+    filtered
 }
 
 fn normalize_upstream_proxy_url(upstream_proxy_url: Option<String>) -> Option<String> {
@@ -8658,9 +13821,11 @@ fn sanitize_collection(
     collection: &mut CodexLocalAccessCollection,
 ) -> Result<(bool, HashSet<String>), String> {
     let mut changed = false;
+    changed |= normalize_local_api_safety_config(collection);
 
-    if collection.port == 0 {
-        collection.port = allocate_initial_local_port(bind_host_for_collection(collection))?;
+    if collection.port == 0 || collection.port == LEGACY_DEFAULT_CODEX_LOCAL_ACCESS_PORT {
+        collection.port =
+            allocate_stable_local_access_port(bind_host_for_collection(collection), None)?;
         changed = true;
     }
     if collection.api_key.trim().is_empty() {
@@ -8674,6 +13839,10 @@ fn sanitize_collection(
     }
     if collection.updated_at <= 0 {
         collection.updated_at = now_ms();
+        changed = true;
+    }
+    if collection.follow_current_account {
+        collection.follow_current_account = false;
         changed = true;
     }
     let normalized_upstream_proxy_url =
@@ -8712,32 +13881,11 @@ fn sanitize_collection(
         }
     }
 
-    let mut deduped = Vec::new();
-    let mut seen = HashSet::new();
-    for account_id in &collection.account_ids {
-        if !valid_account_ids.contains(account_id) {
-            changed = true;
-            continue;
-        }
-        if !seen.insert(account_id.clone()) {
-            changed = true;
-            continue;
-        }
-        deduped.push(account_id.clone());
-    }
+    let deduped =
+        filter_local_access_account_ids(collection.account_ids.iter().cloned(), &valid_account_ids);
     if deduped != collection.account_ids {
         collection.account_ids = deduped;
         changed = true;
-    }
-
-    for api_key in &mut collection.api_keys {
-        let before = api_key.account_ids.clone();
-        api_key
-            .account_ids
-            .retain(|account_id| valid_account_ids.contains(account_id));
-        if api_key.account_ids != before {
-            changed = true;
-        }
     }
 
     let original_custom_routing_rules = std::mem::take(&mut collection.custom_routing_rules);
@@ -8809,10 +13957,41 @@ fn sanitize_collection(
     Ok((changed, valid_account_ids))
 }
 
+async fn sanitize_loaded_runtime_collection_if_needed() -> Result<(), String> {
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        if !runtime.loaded {
+            return Ok(());
+        }
+        runtime.collection.clone()
+    };
+
+    let Some(mut collection) = maybe_collection else {
+        return Ok(());
+    };
+
+    let (changed, _) = sanitize_collection(&mut collection)?;
+    if !changed {
+        return Ok(());
+    }
+
+    collection.updated_at = now_ms();
+    save_collection_to_disk(&collection)?;
+
+    let mut runtime = gateway_runtime().lock().await;
+    if runtime.loaded {
+        sync_runtime_collection(&mut runtime, collection);
+    }
+
+    Ok(())
+}
+
 async fn ensure_runtime_loaded_without_start() -> Result<(), String> {
     {
         let runtime = gateway_runtime().lock().await;
         if runtime.loaded {
+            drop(runtime);
+            sanitize_loaded_runtime_collection_if_needed().await?;
             return Ok(());
         }
     }
@@ -8825,9 +14004,10 @@ async fn ensure_runtime_loaded_without_start() -> Result<(), String> {
     if next_collection.is_none() {
         next_collection = Some(CodexLocalAccessCollection {
             enabled: false,
-            port: allocate_initial_local_port(CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST)?,
+            port: allocate_stable_local_access_port(CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST, None)?,
             api_key: generate_local_api_key(),
             api_keys: Vec::new(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
             access_scope: CodexLocalAccessScope::Localhost,
             client_base_url_host: CodexLocalAccessClientBaseUrlHost::default(),
             image_generation_mode: CodexLocalAccessImageGenerationMode::default(),
@@ -8848,6 +14028,7 @@ async fn ensure_runtime_loaded_without_start() -> Result<(), String> {
             timeout_presets: Vec::new(),
             disable_cooling: false,
             restrict_free_accounts: true,
+            follow_current_account: false,
             debug_logs: true,
             bound_oauth_account_id: None,
             account_ids: Vec::new(),
@@ -8968,8 +14149,23 @@ async fn ensure_gateway_matches_runtime_locked() -> Result<(), String> {
         )
     };
 
-    if let Some(task) = stale_task {
-        let _ = task.await;
+    let had_stale_task = stale_task.is_some();
+    if let Some(mut task) = stale_task {
+        logger::log_codex_api_warn(
+            "[CodexLocalAccess] 检测到陈旧 API 服务 lifecycle task，已中止以避免阻塞网关同步",
+        );
+        task.abort();
+        if timeout(GATEWAY_SHUTDOWN_TIMEOUT, &mut task).await.is_err() {
+            logger::log_codex_api_warn(
+                "[CodexLocalAccess] 等待陈旧 API 服务 lifecycle task 结束超时，继续清理网关状态",
+            );
+        }
+    }
+
+    if had_stale_task {
+        if let Some(endpoint) = stop_gateway_locked().await {
+            wait_for_gateway_port_release(&endpoint.bind_host, endpoint.port).await?;
+        }
     }
 
     let Some(collection) = collection else {
@@ -9069,7 +14265,7 @@ async fn ensure_gateway_matches_runtime_locked() -> Result<(), String> {
             }
         }
         wait_for_gateway_port_release(bind_host, collection.port).await?;
-    }
+    };
 
     let binary = match sidecar_binary_path() {
         Ok(path) => path,
@@ -9083,7 +14279,6 @@ async fn ensure_gateway_matches_runtime_locked() -> Result<(), String> {
             return Err(message);
         }
     };
-
     let mut command = TokioCommand::new(&binary);
     command
         .arg("--config")
@@ -9526,7 +14721,9 @@ fn upsert_api_key_usage_stats(
     api_keys.push(api_key_stats);
 }
 
-fn build_account_health_snapshot(runtime: &GatewayRuntime) -> Vec<CodexLocalAccessAccountHealth> {
+fn build_account_health_snapshot(
+    runtime: &GatewayRuntime,
+) -> Vec<CodexLocalAccessAccountServiceHealth> {
     let now = now_ms();
     let Some(collection) = runtime.collection.as_ref() else {
         return Vec::new();
@@ -9568,7 +14765,7 @@ fn build_account_health_snapshot(runtime: &GatewayRuntime) -> Vec<CodexLocalAcce
                     .map(|item| item.image_generation_status)
                     .unwrap_or_default()
             };
-            CodexLocalAccessAccountHealth {
+            CodexLocalAccessAccountServiceHealth {
                 account_id: account_id.clone(),
                 email: health
                     .and_then(|item| {
@@ -9741,8 +14938,13 @@ async fn record_request_stats_with_meta(
 fn build_state_snapshot_inner(
     runtime: &GatewayRuntime,
     include_default_profile: bool,
+    mut trace: Option<&mut LocalAccessPerfTrace>,
 ) -> CodexLocalAccessState {
     let collection = runtime.collection.clone();
+    let effective_account_ids = collection
+        .as_ref()
+        .map(build_effective_local_access_account_ids_for_state)
+        .unwrap_or_default();
     let member_count = collection
         .as_ref()
         .map(|item| item.account_ids.len())
@@ -9751,6 +14953,9 @@ fn build_state_snapshot_inner(
         .as_ref()
         .map(|item| build_api_port_url(item.port));
     let base_url = collection.as_ref().map(build_collection_base_url);
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("basic_fields");
+    }
     let default_profile = if include_default_profile {
         collection.as_ref().map(|collection| {
             inspect_local_access_profile_attachment(
@@ -9761,6 +14966,9 @@ fn build_state_snapshot_inner(
     } else {
         None
     };
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("profile_attachment");
+    }
     let lan_base_url = collection.as_ref().and_then(|item| {
         if item.access_scope == CodexLocalAccessScope::Lan {
             build_lan_base_url(item.port)
@@ -9774,6 +14982,9 @@ fn build_state_snapshot_inner(
             visible_codex_model_ids_for_collection(collection, Some(&runtime.account_health))
         })
         .unwrap_or_else(supported_codex_model_ids);
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("model_ids");
+    }
     let mut stats = runtime.stats.clone();
     stats.events = stats
         .events
@@ -9782,7 +14993,19 @@ fn build_state_snapshot_inner(
         .take(STATE_RECENT_USAGE_EVENT_LIMIT)
         .cloned()
         .collect();
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("stats_recent_events");
+    }
+    let health =
+        build_health_summary_from_disk_for_accounts(&effective_account_ids, trace.as_deref_mut());
     let account_health = build_account_health_snapshot(runtime);
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("account_health");
+    }
+    let concurrency_diagnostics = build_concurrency_diagnostics(runtime);
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("concurrency_diagnostics");
+    }
 
     CodexLocalAccessState {
         collection,
@@ -9795,26 +15018,148 @@ fn build_state_snapshot_inner(
         model_pricing_presets: default_model_pricing_presets(),
         last_error: runtime.last_error.clone(),
         member_count,
+        effective_account_ids,
         stats,
+        health,
+        concurrency_diagnostics,
+        account_health,
+    }
+}
+
+fn build_concurrency_diagnostics(
+    runtime: &GatewayRuntime,
+) -> CodexLocalAccessConcurrencyDiagnostics {
+    let now = now_ms();
+    let audit_window_ms = CONCURRENCY_DIAGNOSTICS_AUDIT_WINDOW_MS;
+    let safety_config = runtime
+        .collection
+        .as_ref()
+        .map(|collection| collection.safety_config.clone())
+        .unwrap_or_default();
+    let backpressure = current_local_backpressure_snapshot();
+    let max_concurrent_requests = safety_config.max_concurrent_requests.max(1);
+    let active_request_count = backpressure.active_requests;
+    let start_interval_remaining_ms = duration_as_millis_u64(
+        local_backpressure_start_interval_remaining(&backpressure, &safety_config, Instant::now()),
+    );
+    let rollup = load_concurrency_audit_rollup(now, audit_window_ms);
+
+    CodexLocalAccessConcurrencyDiagnostics {
+        updated_at: now,
+        max_concurrent_requests,
+        active_request_count,
+        active_stream_count: active_stream_lease_count(),
+        request_capacity: max_concurrent_requests.saturating_sub(active_request_count),
+        min_request_interval_seconds: safety_config.min_request_interval_seconds,
+        max_queue_wait_seconds: safety_config.max_queue_wait_seconds,
+        start_interval_remaining_ms,
+        audit_window_ms,
+        recent_audit_event_count: rollup.recent_audit_event_count,
+        recent_request_count: rollup.recent_request_count,
+        recent_local_backpressure_count: rollup.recent_local_backpressure_count,
+        recent_pool_wait_count: rollup.recent_pool_wait_count,
+        recent_upstream_limit_count: rollup.recent_upstream_limit_count,
+        recent_stream_error_count: rollup.recent_stream_error_count,
+        last_problem_at_ms: rollup.last_problem_at_ms,
+        last_problem_kind: rollup.last_problem_kind,
+        audit_load_error: rollup.audit_load_error,
+    }
+}
+
+fn build_light_concurrency_diagnostics(
+    runtime: &GatewayRuntime,
+) -> CodexLocalAccessLightConcurrencyDiagnostics {
+    let safety_config = runtime
+        .collection
+        .as_ref()
+        .map(|collection| collection.safety_config.clone())
+        .unwrap_or_default();
+    let backpressure = current_local_backpressure_snapshot();
+    let max_concurrent_requests = safety_config.max_concurrent_requests.max(1);
+    let active_request_count = backpressure.active_requests;
+    let start_interval_remaining_ms = duration_as_millis_u64(
+        local_backpressure_start_interval_remaining(&backpressure, &safety_config, Instant::now()),
+    );
+
+    CodexLocalAccessLightConcurrencyDiagnostics {
+        updated_at: now_ms(),
+        max_concurrent_requests,
+        active_request_count,
+        active_stream_count: active_stream_lease_count(),
+        request_capacity: max_concurrent_requests.saturating_sub(active_request_count),
+        min_request_interval_seconds: safety_config.min_request_interval_seconds,
+        max_queue_wait_seconds: safety_config.max_queue_wait_seconds,
+        start_interval_remaining_ms,
+    }
+}
+
+fn build_light_state_snapshot(
+    runtime: &GatewayRuntime,
+    mut trace: Option<&mut LocalAccessPerfTrace>,
+) -> CodexLocalAccessLightState {
+    let collection = runtime.collection.as_ref();
+    let effective_account_ids = collection
+        .map(build_effective_local_access_account_ids)
+        .unwrap_or_default();
+    let member_count = collection.map(|item| item.account_ids.len()).unwrap_or(0);
+    let api_port_url = collection.map(|item| build_api_port_url(item.port));
+    let base_url = collection.map(build_collection_base_url);
+    let lan_base_url = collection.and_then(|item| {
+        if item.access_scope == CodexLocalAccessScope::Lan {
+            build_lan_base_url(item.port)
+        } else {
+            None
+        }
+    });
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("basic_fields");
+    }
+    let health =
+        build_health_summary_from_disk_for_accounts(&effective_account_ids, trace.as_deref_mut());
+    let account_health = build_account_health_snapshot(runtime);
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("account_health");
+    }
+    let concurrency_diagnostics = build_light_concurrency_diagnostics(runtime);
+    if let Some(trace) = trace.as_deref_mut() {
+        trace.mark("light_concurrency");
+    }
+
+    CodexLocalAccessLightState {
+        running: runtime.running,
+        api_port_url,
+        base_url,
+        lan_base_url,
+        last_error: runtime.last_error.clone(),
+        member_count,
+        effective_account_ids,
+        health,
+        concurrency_diagnostics,
         account_health,
     }
 }
 
 fn build_state_snapshot(runtime: &GatewayRuntime) -> CodexLocalAccessState {
-    build_state_snapshot_inner(runtime, true)
+    build_state_snapshot_inner(runtime, true, None)
 }
 
 fn build_request_state_snapshot(runtime: &GatewayRuntime) -> CodexLocalAccessState {
-    build_state_snapshot_inner(runtime, false)
+    build_state_snapshot_inner(runtime, false, None)
 }
 
 async fn snapshot_state() -> Result<CodexLocalAccessState, String> {
+    let mut trace = LocalAccessPerfTrace::new("state_full");
     ensure_runtime_loaded_without_start().await?;
+    trace.mark("ensure_runtime_loaded");
     if let Err(err) = ensure_gateway_matches_runtime().await {
+        trace.mark("ensure_gateway_matches_runtime");
         let mut runtime = gateway_runtime().lock().await;
         runtime.last_error = Some(err);
-        return Ok(build_state_snapshot(&runtime));
+        let state = build_state_snapshot_inner(&runtime, true, Some(&mut trace));
+        trace.finish(50);
+        return Ok(state);
     }
+    trace.mark("ensure_gateway_matches_runtime");
     let mut runtime = gateway_runtime().lock().await;
     if runtime
         .last_error
@@ -9827,11 +15172,29 @@ async fn snapshot_state() -> Result<CodexLocalAccessState, String> {
     {
         runtime.last_error = None;
     }
-    Ok(build_state_snapshot(&runtime))
+    trace.mark("runtime_lock");
+    let state = build_state_snapshot_inner(&runtime, true, Some(&mut trace));
+    trace.finish(50);
+    Ok(state)
 }
 
 pub async fn get_local_access_state() -> Result<CodexLocalAccessState, String> {
     snapshot_state().await
+}
+
+async fn snapshot_light_state() -> Result<CodexLocalAccessLightState, String> {
+    let mut trace = LocalAccessPerfTrace::new("state_light");
+    ensure_runtime_loaded_without_start().await?;
+    trace.mark("ensure_runtime_loaded");
+    let runtime = gateway_runtime().lock().await;
+    trace.mark("runtime_lock");
+    let state = build_light_state_snapshot(&runtime, Some(&mut trace));
+    trace.finish(25);
+    Ok(state)
+}
+
+pub async fn get_local_access_light_state() -> Result<CodexLocalAccessLightState, String> {
+    snapshot_light_state().await
 }
 
 pub async fn activate_local_access_for_dir(
@@ -9852,487 +15215,8 @@ pub async fn activate_local_access_for_dir(
         .collection
         .clone()
         .ok_or_else(|| "API 服务集合尚未创建".to_string())?;
-    write_local_access_profile_takeover(profile_dir, &collection, None).await?;
+    write_local_access_profile_takeover(profile_dir, &collection).await?;
     Ok(state)
-}
-
-fn new_empty_local_access_collection() -> Result<CodexLocalAccessCollection, String> {
-    Ok(CodexLocalAccessCollection {
-        enabled: false,
-        port: allocate_initial_local_port(CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST)?,
-        api_key: generate_local_api_key(),
-        api_keys: Vec::new(),
-        access_scope: CodexLocalAccessScope::Localhost,
-        client_base_url_host: CodexLocalAccessClientBaseUrlHost::default(),
-        image_generation_mode: CodexLocalAccessImageGenerationMode::default(),
-        gateway_mode: CodexLocalAccessGatewayMode::default(),
-        upstream_proxy_url: None,
-        routing_strategy: CodexLocalAccessRoutingStrategy::default(),
-        custom_routing_rules: Vec::new(),
-        account_model_rules: Vec::new(),
-        model_aliases: Vec::new(),
-        model_pricings: Vec::new(),
-        excluded_models: Vec::new(),
-        session_affinity: false,
-        session_affinity_ttl_ms: DEFAULT_SESSION_AFFINITY_TTL_MS,
-        max_retry_credentials: 0,
-        max_retry_interval_ms: DEFAULT_MAX_RETRY_INTERVAL_MS,
-        timeouts: CodexLocalAccessTimeouts::default(),
-        active_timeout_preset_id: BUILTIN_TIMEOUT_PRESET_LONG_WAIT_ID.to_string(),
-        timeout_presets: Vec::new(),
-        disable_cooling: false,
-        restrict_free_accounts: true,
-        debug_logs: true,
-        bound_oauth_account_id: None,
-        account_ids: Vec::new(),
-        created_at: now_ms(),
-        updated_at: now_ms(),
-    })
-}
-
-fn provider_gateway_api_key_id(account_id: &str) -> String {
-    format!("provider_gateway_{}", account_id)
-}
-
-fn normalize_provider_gateway_models(models: Vec<&str>) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut values = Vec::new();
-    for model in models {
-        let model = model.trim();
-        if model.is_empty() || !seen.insert(model.to_ascii_lowercase()) {
-            continue;
-        }
-        values.push(model.to_string());
-    }
-    values
-}
-
-fn provider_gateway_models_for_account(account: &CodexAccount) -> Vec<String> {
-    let account_catalog = normalize_provider_gateway_models(
-        account
-            .api_model_catalog
-            .iter()
-            .map(String::as_str)
-            .collect(),
-    );
-    if !account_catalog.is_empty() {
-        return account_catalog;
-    }
-    let provider_id = account
-        .api_provider_id
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let base_url = account
-        .api_base_url
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    if provider_id == "deepseek" || base_url.contains("api.deepseek.com") {
-        return normalize_provider_gateway_models(vec!["deepseek-v4-pro", "deepseek-v4-flash"]);
-    }
-    if provider_id == "moonshot" || base_url.contains("api.moonshot.cn") {
-        return normalize_provider_gateway_models(vec!["kimi-k2.6"]);
-    }
-    if provider_id == "zhipu_glm"
-        || provider_id == "zhipu_glm_en"
-        || base_url.contains("open.bigmodel.cn")
-        || base_url.contains("api.z.ai")
-    {
-        return normalize_provider_gateway_models(vec!["glm-5.1"]);
-    }
-    Vec::new()
-}
-
-fn provider_gateway_default_model_for_account(account: &CodexAccount) -> String {
-    provider_gateway_models_for_account(account)
-        .into_iter()
-        .next()
-        .unwrap_or_default()
-}
-
-fn provider_gateway_wire_api_for_account(account: &CodexAccount) -> String {
-    if account.auth_mode != CodexAuthMode::Apikey {
-        return "responses".to_string();
-    }
-    if let Some(wire_api) = account
-        .api_wire_api
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| *value == "responses" || *value == "chat_completions")
-    {
-        return wire_api.to_string();
-    }
-    let base_url = account
-        .api_base_url
-        .as_deref()
-        .unwrap_or(DEFAULT_OPENAI_RESPONSES_BASE_URL)
-        .trim()
-        .to_ascii_lowercase();
-    if base_url.contains("/chat/completions") {
-        return "chat_completions".to_string();
-    }
-    let host = Url::parse(&base_url)
-        .ok()
-        .and_then(|url| url.host_str().map(|host| host.to_ascii_lowercase()))
-        .unwrap_or_default();
-    let chat_hosts = [
-        "api.deepseek.com",
-        "api.moonshot.cn",
-        "api.siliconflow.cn",
-        "api.siliconflow.com",
-        "open.bigmodel.cn",
-        "api.z.ai",
-        "volces.com",
-        "bytepluses.com",
-        "qianfan.baidubce.com",
-        "dashscope.aliyuncs.com",
-        "api.stepfun.com",
-        "api.stepfun.ai",
-        "modelscope.cn",
-        "api.longcat.chat",
-        "api.minimax.io",
-        "api.mini-max.chat",
-        "api.minimaxi.com",
-        "api.tbox.cn",
-        "api.mimo.dev",
-        "api.xiaomimimo.com",
-        "token-plan-cn.xiaomimimo.com",
-        "api.novita.ai",
-        "integrate.api.nvidia.com",
-        "runapi.co",
-        "www.relaxycode.com",
-        "cp.compshare.cn",
-        "api.lemondata.cc",
-        "e-flowcode.cc",
-        "cc-api.pipellm.ai",
-        "openrouter.ai",
-        "api.therouter.ai",
-    ];
-    if chat_hosts.iter().any(|pattern| host.contains(pattern)) {
-        "chat_completions".to_string()
-    } else {
-        "responses".to_string()
-    }
-}
-
-fn provider_gateway_for_account(
-    account: &CodexAccount,
-) -> Result<CodexLocalAccessProviderGateway, String> {
-    let api_key = account
-        .openai_api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "供应商账号缺少上游 API Key".to_string())?;
-    let base_url = account
-        .api_base_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or(DEFAULT_OPENAI_RESPONSES_BASE_URL);
-    Ok(CodexLocalAccessProviderGateway {
-        base_url: base_url.to_string(),
-        api_key: api_key.to_string(),
-        upstream_model: provider_gateway_default_model_for_account(account),
-        upstream_models: provider_gateway_models_for_account(account),
-        wire_api: Some(provider_gateway_wire_api_for_account(account)),
-        supports_vision: account.api_supports_vision,
-        model_capabilities: account
-            .api_model_vision_support
-            .iter()
-            .filter_map(|(model, supports_vision)| {
-                let model = model.trim().to_lowercase();
-                if model.is_empty() {
-                    None
-                } else {
-                    Some((
-                        model,
-                        CodexLocalAccessProviderGatewayModelCapability {
-                            supports_vision: *supports_vision,
-                        },
-                    ))
-                }
-            })
-            .collect(),
-    })
-}
-
-fn write_local_access_profile_model_override(
-    profile_dir: &Path,
-    model: &str,
-) -> Result<(), String> {
-    let model = model.trim();
-    if model.is_empty() {
-        return Ok(());
-    }
-    let config_path = profile_config_path(profile_dir);
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let mut doc = if existing.trim().is_empty() {
-        Document::new()
-    } else {
-        existing
-            .parse::<Document>()
-            .map_err(|e| format!("解析 Codex config.toml 失败: {}", e))?
-    };
-    doc["model"] = value(model);
-    let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
-    write_string_atomic(&config_path, &content)
-}
-
-fn write_provider_gateway_model_catalog(
-    profile_dir: &Path,
-    models: &[String],
-) -> Result<(), String> {
-    let mut model_ids =
-        normalize_provider_gateway_models(models.iter().map(String::as_str).collect());
-    if !model_ids
-        .iter()
-        .any(|model| model.eq_ignore_ascii_case(CODEX_AUTO_REVIEW_MODEL_ID))
-    {
-        model_ids.push(CODEX_AUTO_REVIEW_MODEL_ID.to_string());
-    }
-
-    let client_models = codex_protocol::build_codex_client_models_response(&model_ids);
-    let catalog = json!({
-        "models": client_models
-            .get("models")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default(),
-    });
-    let content = serde_json::to_string_pretty(&catalog)
-        .map_err(|e| format!("生成 Codex 模型目录失败: {}", e))?;
-    write_string_atomic(
-        &profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE),
-        &content,
-    )
-    .map_err(|e| format!("写入 Codex 模型目录失败: {}", e))?;
-
-    let config_path = profile_config_path(profile_dir);
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    let mut doc = if existing.trim().is_empty() {
-        Document::new()
-    } else {
-        existing
-            .parse::<Document>()
-            .map_err(|e| format!("解析 Codex config.toml 失败: {}", e))?
-    };
-    doc["model_catalog_json"] = value(CODEX_PROVIDER_MODEL_CATALOG_FILE);
-    let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
-    write_string_atomic(&config_path, &content)
-}
-
-fn provider_model_backup_path(profile_dir: &Path) -> PathBuf {
-    profile_dir.join(CODEX_PROVIDER_MODEL_BACKUP_FILE)
-}
-
-fn read_provider_model_backup(profile_dir: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(provider_model_backup_path(profile_dir)).ok()?;
-    let parsed = serde_json::from_str::<Value>(&content).ok()?;
-    parsed
-        .get("model")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn save_provider_model_backup(profile_dir: &Path, model: &str) -> Result<(), String> {
-    let model = model.trim();
-    if model.is_empty() {
-        return Ok(());
-    }
-    let content = serde_json::to_string_pretty(&json!({ "model": model }))
-        .map_err(|e| format!("生成 Codex provider 模型备份失败: {}", e))?;
-    write_string_atomic(&provider_model_backup_path(profile_dir), &content)
-        .map_err(|e| format!("写入 Codex provider 模型备份失败: {}", e))
-}
-
-fn delete_provider_model_backup(profile_dir: &Path) -> Result<(), String> {
-    let path = provider_model_backup_path(profile_dir);
-    if path.exists() {
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("删除 Codex provider 模型备份失败: {}", e))?;
-    }
-    Ok(())
-}
-
-fn backup_current_profile_model_before_provider_gateway(
-    profile_dir: &Path,
-    provider_models: &[String],
-) -> Result<(), String> {
-    let config_path = profile_config_path(profile_dir);
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    if existing.trim().is_empty() {
-        delete_provider_model_backup(profile_dir)?;
-        return Ok(());
-    }
-    let doc = existing
-        .parse::<Document>()
-        .map_err(|e| format!("解析 Codex config.toml 失败: {}", e))?;
-    let Some(model) = doc
-        .get("model")
-        .and_then(|item| item.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        delete_provider_model_backup(profile_dir)?;
-        return Ok(());
-    };
-    if provider_models
-        .iter()
-        .any(|item| item.trim().eq_ignore_ascii_case(model))
-    {
-        delete_provider_model_backup(profile_dir)?;
-        return Ok(());
-    }
-    save_provider_model_backup(profile_dir, model)
-}
-
-pub fn cleanup_provider_gateway_profile_model_overrides(profile_dir: &Path) -> Result<(), String> {
-    let catalog_path = profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE);
-    let previous_model = read_provider_model_backup(profile_dir);
-    let mut managed_models = HashSet::new();
-    if let Ok(content) = std::fs::read_to_string(&catalog_path) {
-        if let Ok(parsed) = serde_json::from_str::<Value>(&content) {
-            if let Some(models) = parsed.get("models").and_then(Value::as_array) {
-                for model in models {
-                    if let Some(slug) = model.get("slug").and_then(Value::as_str) {
-                        let slug = slug.trim();
-                        if !slug.is_empty() {
-                            managed_models.insert(slug.to_ascii_lowercase());
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let config_path = profile_config_path(profile_dir);
-    let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
-    if !existing.trim().is_empty() {
-        let mut doc = existing
-            .parse::<Document>()
-            .map_err(|e| format!("解析 Codex config.toml 失败: {}", e))?;
-        let mut changed = false;
-        if doc.get("model_catalog_json").is_some() {
-            doc.remove("model_catalog_json");
-            changed = true;
-        }
-        if let Some(previous_model) = previous_model.as_deref() {
-            doc["model"] = value(previous_model);
-            changed = true;
-        } else {
-            let current_model = doc
-                .get("model")
-                .and_then(|item| item.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_ascii_lowercase);
-            if let Some(model) = current_model {
-                if managed_models.contains(&model) {
-                    doc.remove("model");
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
-            write_string_atomic(&config_path, &content)
-                .map_err(|e| format!("写入 Codex config.toml 失败: {}", e))?;
-        }
-    }
-
-    if catalog_path.exists() {
-        std::fs::remove_file(&catalog_path)
-            .map_err(|e| format!("删除 Codex provider 模型目录失败: {}", e))?;
-    }
-    delete_provider_model_backup(profile_dir)?;
-    Ok(())
-}
-
-pub async fn activate_provider_gateway_for_dir(
-    profile_dir: &Path,
-    account_id: &str,
-) -> Result<CodexLocalAccessState, String> {
-    let account_id = account_id.trim();
-    if account_id.is_empty() {
-        return Err("供应商网关账号不能为空".to_string());
-    }
-
-    ensure_runtime_loaded_without_start().await?;
-
-    let account = codex_account::load_account(account_id)
-        .ok_or_else(|| format!("供应商网关账号不存在: {}", account_id))?;
-    let mut collection = {
-        let runtime = gateway_runtime().lock().await;
-        runtime
-            .collection
-            .clone()
-            .map(Ok)
-            .unwrap_or_else(new_empty_local_access_collection)?
-    };
-    if !is_local_access_eligible_account(&account, collection.restrict_free_accounts) {
-        return Err("该供应商账号不符合本地网关使用条件".to_string());
-    }
-    let provider_gateway = provider_gateway_for_account(&account)?;
-
-    normalize_collection_api_keys(&mut collection);
-    let now = now_ms();
-    let api_key_id = provider_gateway_api_key_id(account_id);
-    let api_key_label = format!("Provider Gateway: {}", account.email);
-    let key = if let Some(api_key) = collection
-        .api_keys
-        .iter_mut()
-        .find(|item| item.id == api_key_id)
-    {
-        api_key.label = api_key_label;
-        api_key.provider_gateway = Some(provider_gateway.clone());
-        api_key.account_ids = vec![account.id.clone()];
-        api_key.enabled = true;
-        api_key.updated_at = now;
-        api_key.key.clone()
-    } else {
-        let mut api_key = build_local_access_api_key(Some(&api_key_label));
-        api_key.id = api_key_id;
-        api_key.provider_gateway = Some(provider_gateway.clone());
-        api_key.account_ids = vec![account.id.clone()];
-        let key = api_key.key.clone();
-        collection.api_keys.push(api_key);
-        key
-    };
-
-    collection.enabled = true;
-    collection.updated_at = now;
-    let (changed, _) = sanitize_collection(&mut collection)?;
-    if changed {
-        collection.updated_at = now_ms();
-    }
-    save_collection_to_disk(&collection)?;
-
-    {
-        let mut runtime = gateway_runtime().lock().await;
-        sync_runtime_collection(&mut runtime, collection.clone());
-    }
-
-    ensure_gateway_matches_runtime().await?;
-    save_profile_takeover_backup(profile_dir, &key)?;
-    write_local_access_profile_takeover(profile_dir, &collection, Some(&key)).await?;
-    cleanup_provider_gateway_profile_model_overrides(profile_dir)?;
-    backup_current_profile_model_before_provider_gateway(
-        profile_dir,
-        &provider_gateway.upstream_models,
-    )?;
-    if !provider_gateway.upstream_model.trim().is_empty() {
-        write_local_access_profile_model_override(profile_dir, &provider_gateway.upstream_model)?;
-    }
-    if !provider_gateway.upstream_models.is_empty() {
-        write_provider_gateway_model_catalog(profile_dir, &provider_gateway.upstream_models)?;
-    }
-    snapshot_state().await
 }
 
 #[derive(Debug, Clone)]
@@ -10360,6 +15244,48 @@ fn clean_diagnostic_text(value: impl Into<String>) -> Option<String> {
     } else {
         Some(truncate_diagnostic_text(&text, 4000))
     }
+}
+
+fn extract_upstream_error_message(body: &str) -> Option<String> {
+    let parsed = serde_json::from_str::<Value>(body).ok()?;
+
+    if let Some(message) = parsed
+        .get("error")
+        .and_then(|value| value.get("message"))
+        .and_then(Value::as_str)
+    {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if let Some(message) = parsed
+        .get("detail")
+        .and_then(|value| value.get("message"))
+        .and_then(Value::as_str)
+    {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if let Some(message) = parsed.get("message").and_then(Value::as_str) {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    if let Some(message) = parsed.get("error").and_then(Value::as_str) {
+        let trimmed = message.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    None
 }
 
 fn extract_gateway_error_message(body: &str) -> String {
@@ -10813,6 +15739,24 @@ fn is_image_generation_capability_message(status: Option<u16>, message: &str) ->
         || message.contains("未启用图片生成能力")
 }
 
+fn is_image_generation_capability_error(status: StatusCode, error_body: &str) -> bool {
+    is_image_generation_capability_message(Some(status.as_u16()), error_body)
+}
+
+fn classify_upstream_error_category(status: StatusCode, error_body: &str) -> Option<&'static str> {
+    if is_image_generation_capability_error(status, error_body) {
+        return Some("image_generation_not_enabled");
+    }
+
+    let classified = classify_codex_upstream_error(status, None, error_body);
+    let category = classified.error_type.as_str();
+    if category == "unknown" {
+        None
+    } else {
+        Some(category)
+    }
+}
+
 fn classify_gateway_probe_failure(
     model_id: &str,
     probe_failure: LocalAccessGatewayProbeFailure,
@@ -10957,12 +15901,7 @@ pub async fn test_local_access_with_dialog() -> Result<CodexLocalAccessTestResul
             None,
         )));
     }
-    let bound_oauth_account_id =
-        normalize_optional_account_ref(collection.bound_oauth_account_id.as_deref());
-    if let Some(bound_id) = bound_oauth_account_id.as_deref() {
-        let _ = validate_local_access_bound_oauth_account(bound_id)?;
-        let _ = codex_account::ensure_managed_account_fresh(bound_id).await?;
-    }
+    validate_local_access_routable_pool(&collection)?;
 
     match run_local_access_test_dialog(&base_url, &collection.api_key, &model_id).await {
         Ok((latency_ms, output)) => Ok(CodexLocalAccessTestResult {
@@ -11072,12 +16011,7 @@ pub async fn chat_local_access_with_dialog(
         .base_url
         .clone()
         .unwrap_or_else(|| build_collection_base_url(&collection));
-    let bound_oauth_account_id =
-        normalize_optional_account_ref(collection.bound_oauth_account_id.as_deref());
-    if let Some(bound_id) = bound_oauth_account_id.as_deref() {
-        let _ = validate_local_access_bound_oauth_account(bound_id)?;
-        let _ = codex_account::ensure_managed_account_fresh(bound_id).await?;
-    }
+    validate_local_access_routable_pool(&collection)?;
 
     match run_local_access_chat_dialog(
         &base_url,
@@ -11197,11 +16131,15 @@ pub async fn stream_chat_local_access_with_dialog(
         .base_url
         .clone()
         .unwrap_or_else(|| build_collection_base_url(&collection));
-    let bound_oauth_account_id =
-        normalize_optional_account_ref(collection.bound_oauth_account_id.as_deref());
-    if let Some(bound_id) = bound_oauth_account_id.as_deref() {
-        let _ = validate_local_access_bound_oauth_account(bound_id)?;
-        let _ = codex_account::ensure_managed_account_fresh(bound_id).await?;
+    if let Err(err) = validate_local_access_routable_pool(&collection) {
+        emit_failure(local_access_test_failure(
+            "账号池不可路由",
+            "账号池配置",
+            err,
+            "在 API 服务账号集合中加入可用的 Codex OAuth 或 API Key 账号后再对话。",
+            Some(model_id),
+        ));
+        return Ok(());
     }
 
     match run_local_access_chat_stream_dialog(
@@ -11235,9 +16173,13 @@ pub async fn save_local_access_accounts(
             .clone()
             .unwrap_or(CodexLocalAccessCollection {
                 enabled: false,
-                port: allocate_initial_local_port(CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST)?,
+                port: allocate_stable_local_access_port(
+                    CODEX_LOCAL_ACCESS_LOCALHOST_BIND_HOST,
+                    None,
+                )?,
                 api_key: generate_local_api_key(),
                 api_keys: Vec::new(),
+                safety_config: CodexLocalApiSafetyConfig::default(),
                 access_scope: CodexLocalAccessScope::Localhost,
                 client_base_url_host: CodexLocalAccessClientBaseUrlHost::default(),
                 image_generation_mode: CodexLocalAccessImageGenerationMode::default(),
@@ -11258,6 +16200,7 @@ pub async fn save_local_access_accounts(
                 timeout_presets: Vec::new(),
                 disable_cooling: false,
                 restrict_free_accounts: true,
+                follow_current_account: false,
                 debug_logs: true,
                 bound_oauth_account_id: None,
                 account_ids: Vec::new(),
@@ -11272,19 +16215,13 @@ pub async fn save_local_access_accounts(
         .map(|account| account.id)
         .collect();
 
-    let mut next_account_ids = Vec::new();
-    let mut seen = HashSet::new();
-    for account_id in account_ids {
-        if !valid_account_ids.contains(&account_id) {
-            continue;
-        }
-        if seen.insert(account_id.clone()) {
-            next_account_ids.push(account_id);
-        }
-    }
+    let next_account_ids = filter_local_access_account_ids(account_ids, &valid_account_ids);
 
     collection.restrict_free_accounts = restrict_free_accounts;
     collection.account_ids = next_account_ids;
+    collection.custom_routing_rules =
+        custom_routing_rules_from_account_order(&collection.account_ids);
+    collection.routing_strategy = CodexLocalAccessRoutingStrategy::Custom;
     collection.updated_at = now_ms();
     let (changed, _) = sanitize_collection(&mut collection)?;
     if changed {
@@ -11299,6 +16236,30 @@ pub async fn save_local_access_accounts(
 
     ensure_gateway_matches_runtime().await?;
     snapshot_state().await
+}
+
+pub async fn sync_local_access_to_current_account_on_switch(
+    _account_id: &str,
+) -> Result<(), String> {
+    ensure_runtime_loaded_without_start().await?;
+
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    };
+
+    let Some(collection) = maybe_collection else {
+        return Ok(());
+    };
+
+    let mode = load_runtime_mode_state()
+        .map(|state| state.mode)
+        .unwrap_or(CodexRuntimeIntegrationMode::DirectProjection);
+    if !should_sync_local_access_collection_on_account_switch(mode, &collection) {
+        return Ok(());
+    }
+
+    Ok(())
 }
 
 pub async fn update_local_access_routing_strategy(
@@ -11320,6 +16281,36 @@ pub async fn update_local_access_routing_strategy(
     }
 
     collection.routing_strategy = strategy;
+    collection.updated_at = now_ms();
+    save_collection_to_disk(&collection)?;
+
+    {
+        let mut runtime = gateway_runtime().lock().await;
+        sync_runtime_collection(&mut runtime, collection);
+    }
+
+    ensure_gateway_matches_runtime().await?;
+    snapshot_state().await
+}
+
+pub async fn apply_local_access_safety_preset(
+    preset: CodexLocalApiSafetyPresetId,
+) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded().await?;
+
+    let maybe_collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    };
+
+    let Some(mut collection) = maybe_collection else {
+        return Err("本地接入集合尚未创建".to_string());
+    };
+
+    if !apply_local_api_safety_preset_to_collection(&mut collection, preset) {
+        return snapshot_state().await;
+    }
+
     collection.updated_at = now_ms();
     save_collection_to_disk(&collection)?;
 
@@ -11740,12 +16731,6 @@ pub async fn update_local_access_image_generation_mode(
 pub async fn remove_local_access_account(
     account_id: &str,
 ) -> Result<CodexLocalAccessState, String> {
-    remove_local_access_accounts(&[account_id.to_string()]).await
-}
-
-pub async fn remove_local_access_accounts(
-    account_ids: &[String],
-) -> Result<CodexLocalAccessState, String> {
     ensure_runtime_loaded().await?;
 
     let maybe_collection = {
@@ -11757,29 +16742,13 @@ pub async fn remove_local_access_accounts(
         return snapshot_state().await;
     };
 
-    let remove_ids = account_ids
-        .iter()
-        .map(|id| id.trim())
-        .filter(|id| !id.is_empty())
-        .collect::<HashSet<_>>();
-    if remove_ids.is_empty() {
+    let before_len = collection.account_ids.len();
+    collection.account_ids.retain(|id| id != account_id);
+    if collection.account_ids.len() == before_len {
         return snapshot_state().await;
     }
-
-    let before_account_ids = collection.account_ids.clone();
-    collection
-        .account_ids
-        .retain(|id| !remove_ids.contains(id.as_str()));
 
     collection.updated_at = now_ms();
-    let (changed, _) = sanitize_collection(&mut collection)?;
-    let account_ids_changed = collection.account_ids != before_account_ids;
-    if !account_ids_changed && !changed {
-        return snapshot_state().await;
-    }
-    if changed || account_ids_changed {
-        collection.updated_at = now_ms();
-    }
     save_collection_to_disk(&collection)?;
 
     {
@@ -12039,6 +17008,83 @@ pub async fn clear_local_access_stats() -> Result<CodexLocalAccessState, String>
     snapshot_state().await
 }
 
+pub async fn recover_local_access_health(
+    account_id: &str,
+    model: Option<&str>,
+) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded_without_start().await?;
+
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return Err("账号 ID 不能为空".to_string());
+    }
+    let model = model.map(str::trim).filter(|value| !value.is_empty());
+
+    let collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    }
+    .ok_or_else(|| "API 服务集合尚未创建".to_string())?;
+
+    if !collection
+        .account_ids
+        .iter()
+        .any(|collection_account_id| collection_account_id == account_id)
+    {
+        return Err("账号不在 API 服务集合中".to_string());
+    }
+
+    let now = now_ms();
+    let mut registry = load_health_registry_from_disk()?;
+    let registry_changed = recover_health_registry_account(&mut registry, account_id, model, now);
+    if registry_changed {
+        save_health_registry_to_disk(&registry)?;
+    }
+
+    let runtime_changed = match model {
+        Some(model) => clear_model_cooldown(account_id, model).await,
+        None => clear_account_model_cooldowns(account_id).await,
+    };
+    record_manual_recovery_audit_event(account_id, model, registry_changed || runtime_changed);
+
+    snapshot_state().await
+}
+
+pub async fn pause_local_access_health(account_id: &str) -> Result<CodexLocalAccessState, String> {
+    ensure_runtime_loaded_without_start().await?;
+
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return Err("账号 ID 不能为空".to_string());
+    }
+
+    let collection = {
+        let runtime = gateway_runtime().lock().await;
+        runtime.collection.clone()
+    }
+    .ok_or_else(|| "API 服务集合尚未创建".to_string())?;
+
+    if !collection
+        .account_ids
+        .iter()
+        .any(|collection_account_id| collection_account_id == account_id)
+    {
+        return Err("账号不在 API 服务集合中".to_string());
+    }
+
+    let now = now_ms();
+    let mut registry = load_health_registry_from_disk()?;
+    let registry_changed = pause_health_registry_account(&mut registry, account_id, now);
+    if registry_changed {
+        save_health_registry_to_disk(&registry)?;
+    }
+
+    let runtime_changed = clear_runtime_account_affinity(account_id).await;
+    record_manual_pause_audit_event(account_id, registry_changed || runtime_changed);
+
+    snapshot_state().await
+}
+
 pub async fn prepare_local_access_gateway_for_restart() -> Result<CodexLocalAccessState, String> {
     ensure_runtime_loaded_without_start().await?;
     let stopped_endpoint = stop_gateway().await;
@@ -12116,42 +17162,128 @@ pub async fn update_local_access_port(port: u16) -> Result<CodexLocalAccessState
 }
 
 pub async fn set_local_access_enabled(enabled: bool) -> Result<CodexLocalAccessState, String> {
-    ensure_runtime_loaded().await?;
+    set_local_access_enabled_with_options(
+        enabled,
+        RuntimeProjectionChangeOptions::new("local_access_set_enabled", false),
+    )
+    .await
+}
 
-    let maybe_collection = {
-        let runtime = gateway_runtime().lock().await;
-        runtime.collection.clone()
-    };
+pub async fn set_local_access_enabled_with_options(
+    enabled: bool,
+    options: RuntimeProjectionChangeOptions,
+) -> Result<CodexLocalAccessState, String> {
+    let mut trace = LocalAccessPerfTrace::new(if enabled {
+        "set_enabled_start"
+    } else {
+        "set_enabled_stop"
+    });
+    ensure_runtime_loaded_traced(&mut trace, false).await?;
+
+    let maybe_collection = load_runtime_collection_snapshot();
+    trace.mark("collection_snapshot");
 
     let Some(mut collection) = maybe_collection else {
+        trace.finish(25);
         return Err("本地接入集合尚未创建".to_string());
     };
 
-    collection.enabled = enabled;
-    collection.updated_at = now_ms();
-    save_collection_to_disk(&collection)?;
+    let current_mode = load_runtime_mode_state()
+        .map(|state| state.mode)
+        .unwrap_or(CodexRuntimeIntegrationMode::DirectProjection);
+    let risk = if !enabled && current_mode == CodexRuntimeIntegrationMode::CockpitApiService {
+        Some(collect_runtime_projection_continuity_risk())
+    } else {
+        None
+    };
+    trace.mark("runtime_mode_risk");
+    if let Some(risk) = risk.as_ref() {
+        if should_block_direct_projection_change(
+            current_mode,
+            CodexRuntimeIntegrationMode::DirectProjection,
+            options.force,
+            risk,
+        ) {
+            record_runtime_projection_audit_event(
+                "local_access_enabled_transition",
+                "blocked",
+                options.source,
+                options.force,
+                Some(current_mode),
+                Some(CodexRuntimeIntegrationMode::DirectProjection),
+                Some(risk),
+            );
+            trace.finish(25);
+            return Err(format!(
+                "API 服务仍处于 Codex 连续性保护窗口（{}）。如确需停用，请在确认没有运行中任务后使用强制停用。",
+                risk.blocking_reasons().join(", ")
+            ));
+        }
+    }
+
+    let was_enabled = collection.enabled;
+    if was_enabled != enabled {
+        collection.enabled = enabled;
+        collection.updated_at = now_ms();
+        save_collection_to_disk(&collection)?;
+    }
+    trace.mark("persist_collection");
     let next_collection = collection.clone();
 
     {
         let mut runtime = gateway_runtime().lock().await;
         sync_runtime_collection(&mut runtime, collection);
     }
+    trace.mark("runtime_sync");
 
     ensure_gateway_matches_runtime().await?;
+    trace.mark(if enabled {
+        "gateway_ensure_start"
+    } else {
+        "gateway_ensure_stop"
+    });
+    if was_enabled != enabled {
+        record_runtime_projection_audit_event(
+            "local_access_enabled_transition",
+            if enabled { "enabled" } else { "disabled" },
+            options.source,
+            options.force,
+            Some(current_mode),
+            Some(if enabled {
+                CodexRuntimeIntegrationMode::CockpitApiService
+            } else {
+                CodexRuntimeIntegrationMode::DirectProjection
+            }),
+            risk.as_ref(),
+        );
+    }
+    trace.mark("audit_event");
     if enabled {
+        repair_runtime_projection_history_visibility_if_needed("API 服务启用");
+        trace.mark("history_visibility");
         ensure_local_access_profile_takeovers(&next_collection).await?;
+        trace.mark("profile_takeover");
     } else {
         restore_takeover_profiles_after_disable(&next_collection)?;
+        trace.mark("profile_restore");
     }
-    snapshot_state().await
+    let state = snapshot_state().await?;
+    trace.mark("ui_snapshot");
+    trace.finish(50);
+    Ok(state)
 }
 
 pub async fn restore_local_access_gateway() {
-    if let Err(err) = ensure_runtime_loaded().await {
-        let mut runtime = gateway_runtime().lock().await;
-        runtime.loaded = true;
-        runtime.last_error = Some(err.clone());
-        logger::log_codex_api_warn(&format!("[CodexLocalAccess] 初始化失败: {}", err));
+    match ensure_runtime_loaded().await {
+        Ok(()) => {
+            repair_runtime_projection_history_visibility_if_needed("Cockpit 启动恢复");
+        }
+        Err(err) => {
+            let mut runtime = gateway_runtime().lock().await;
+            runtime.loaded = true;
+            runtime.last_error = Some(err.clone());
+            logger::log_codex_api_warn(&format!("[CodexLocalAccess] 初始化失败: {}", err));
+        }
     }
 }
 
@@ -12190,13 +17322,31 @@ fn parse_content_length(header_bytes: &[u8]) -> Result<usize, String> {
     Ok(0)
 }
 
+fn request_body_limit_bytes_from_safety_config(config: &CodexLocalApiSafetyConfig) -> usize {
+    let max_mb = (MAX_HTTP_REQUEST_BYTES / (1024 * 1024)) as u32;
+    (config.max_request_body_mb.clamp(1, max_mb) as usize) * 1024 * 1024
+}
+
+fn configured_request_body_limit_bytes() -> usize {
+    load_collection_from_disk()
+        .ok()
+        .flatten()
+        .map(|mut collection| {
+            normalize_local_api_safety_config(&mut collection);
+            request_body_limit_bytes_from_safety_config(&collection.safety_config)
+        })
+        .unwrap_or(DEFAULT_HTTP_REQUEST_BYTES)
+}
+
 async fn read_http_request<R>(
     stream: &mut R,
+    max_request_bytes: usize,
     request_read_timeout: Duration,
-) -> Result<Vec<u8>, String>
+) -> Result<Vec<u8>, HttpRequestReadError>
 where
     R: AsyncRead + Unpin,
 {
+    let max_request_bytes = max_request_bytes.clamp(1, MAX_HTTP_REQUEST_BYTES);
     let mut buffer = Vec::with_capacity(4096);
     let mut chunk = [0u8; 2048];
     let mut header_end: Option<usize> = None;
@@ -12205,23 +17355,40 @@ where
     loop {
         let bytes_read = timeout(request_read_timeout, stream.read(&mut chunk))
             .await
-            .map_err(|_| "读取请求超时".to_string())?
-            .map_err(|e| format!("读取请求失败: {}", e))?;
+            .map_err(|_| HttpRequestReadError::other("读取请求超时"))?
+            .map_err(|e| HttpRequestReadError::other(format!("读取请求失败: {}", e)))?;
 
         if bytes_read == 0 {
             break;
         }
 
         buffer.extend_from_slice(&chunk[..bytes_read]);
-        if buffer.len() > MAX_HTTP_REQUEST_BYTES {
-            return Err("请求体过大".to_string());
-        }
 
         if header_end.is_none() {
             if let Some(end) = find_header_end(&buffer) {
-                content_length = parse_content_length(&buffer[..end])?;
+                content_length =
+                    parse_content_length(&buffer[..end]).map_err(HttpRequestReadError::other)?;
+                if end.saturating_add(content_length) > max_request_bytes {
+                    return Err(HttpRequestReadError::RequestTooLarge {
+                        limit_bytes: max_request_bytes,
+                        observed_bytes: buffer.len(),
+                        content_length: Some(content_length),
+                    });
+                }
                 header_end = Some(end);
             }
+        }
+
+        if buffer.len() > max_request_bytes {
+            return Err(HttpRequestReadError::RequestTooLarge {
+                limit_bytes: max_request_bytes,
+                observed_bytes: buffer.len(),
+                content_length: if content_length == 0 {
+                    None
+                } else {
+                    Some(content_length)
+                },
+            });
         }
 
         if let Some(end) = header_end {
@@ -12231,7 +17398,7 @@ where
         }
     }
 
-    Err("请求不完整".to_string())
+    Err(HttpRequestReadError::other("请求不完整"))
 }
 
 fn parse_http_request(raw: &[u8]) -> Result<ParsedRequest, String> {
@@ -12264,6 +17431,7 @@ fn parse_http_request(raw: &[u8]) -> Result<ParsedRequest, String> {
         target,
         headers,
         body: raw[header_end..].to_vec(),
+        gateway_request_id: next_gateway_request_id(),
     })
 }
 
@@ -12492,6 +17660,8 @@ impl ResponseUsageCollector {
             stream_buffer: Vec::new(),
             usage: None,
             response_id: None,
+            response_completed_seen: false,
+            compaction_summary_seen: false,
             terminal_error: None,
         }
     }
@@ -12514,15 +17684,21 @@ impl ResponseUsageCollector {
             ResponseCapture {
                 usage: self.usage,
                 response_id: self.response_id,
+                response_completed_seen: self.response_completed_seen,
+                compaction_summary_seen: self.compaction_summary_seen,
                 terminal_error: self.terminal_error,
             }
         } else {
             let parsed = serde_json::from_slice::<Value>(&self.body).ok();
-            ResponseCapture {
+            let mut response_capture = ResponseCapture {
                 usage: parsed.as_ref().and_then(extract_usage_capture),
                 response_id: parsed.as_ref().and_then(extract_response_id),
-                terminal_error: None,
+                ..Default::default()
+            };
+            if let Some(parsed) = parsed.as_ref() {
+                update_response_capture_trace(&mut response_capture, parsed, None);
             }
+            response_capture
         }
     }
 
@@ -12601,6 +17777,18 @@ impl ResponseUsageCollector {
             if self.response_id.is_none() {
                 self.response_id = extract_response_id(&value);
             }
+            let mut response_capture = ResponseCapture {
+                usage: self.usage.clone(),
+                response_id: self.response_id.clone(),
+                response_completed_seen: self.response_completed_seen,
+                compaction_summary_seen: self.compaction_summary_seen,
+                terminal_error: self.terminal_error.clone(),
+            };
+            update_response_capture_trace(&mut response_capture, &value, event_name.as_deref());
+            self.usage = response_capture.usage;
+            self.response_id = response_capture.response_id;
+            self.response_completed_seen = response_capture.response_completed_seen;
+            self.compaction_summary_seen = response_capture.compaction_summary_seen;
         }
     }
 }
@@ -12688,154 +17876,151 @@ fn resolve_upstream_account_id(account: &CodexAccount) -> Option<String> {
         })
 }
 
-fn extract_upstream_error_message(body: &str) -> Option<String> {
-    let parsed = serde_json::from_str::<Value>(body).ok()?;
-
-    if let Some(message) = parsed
-        .get("error")
-        .and_then(|value| value.get("message"))
-        .and_then(Value::as_str)
-    {
-        let trimmed = message.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    if let Some(message) = parsed
-        .get("detail")
-        .and_then(|value| value.get("message"))
-        .and_then(Value::as_str)
-    {
-        let trimmed = message.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    if let Some(message) = parsed.get("message").and_then(Value::as_str) {
-        let trimmed = message.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    if let Some(message) = parsed.get("error").and_then(Value::as_str) {
-        let trimmed = message.trim();
-        if !trimmed.is_empty() {
-            return Some(trimmed.to_string());
-        }
-    }
-
-    None
-}
-
-fn summarize_upstream_error(status: StatusCode, body: &str) -> String {
-    let detail = extract_upstream_error_message(body).unwrap_or_else(|| {
-        let trimmed = body.trim();
-        if trimmed.is_empty() {
-            format!("上游接口返回状态 {}", status.as_u16())
-        } else {
-            trimmed.to_string()
-        }
-    });
-
-    format!("{}: {}", status.as_u16(), detail)
-}
-
-fn is_image_generation_capability_error(status: StatusCode, body: &str) -> bool {
-    if !matches!(
-        status,
-        StatusCode::BAD_REQUEST | StatusCode::FORBIDDEN | StatusCode::UNPROCESSABLE_ENTITY
-    ) {
-        return false;
-    }
-    let lower = body.to_ascii_lowercase();
-    lower.contains("image generation is not enabled")
-        || lower.contains("image_generation is not enabled")
-        || (lower.contains("image_generation") && lower.contains("not enabled"))
-}
-
-fn friendly_image_generation_capability_error(account_email: &str) -> String {
-    let account_email = account_email.trim();
-    if account_email.is_empty() {
-        return "当前上游账号未启用图片生成能力。请在 API 服务里将 image_generation 改为“仅图片接口启用”或“禁用”，或换用具备图片能力的账号。".to_string();
-    }
-    format!(
-        "账号 {} 未启用图片生成能力。请在 API 服务里将 image_generation 改为“仅图片接口启用”或“禁用”，或换用具备图片能力的账号。",
-        account_email
-    )
-}
-
-fn classify_upstream_error_category(status: StatusCode, body: &str) -> Option<&'static str> {
-    if is_image_generation_capability_error(status, body) {
-        return Some("image_generation_not_enabled");
-    }
-    if status == StatusCode::UNAUTHORIZED {
-        return Some("auth_unavailable");
-    }
-    if parse_codex_retry_after(status, body).is_some() {
-        return Some("usage_limit_reached");
-    }
-    let lower = body.to_ascii_lowercase();
-    if lower.contains("context length")
-        || lower.contains("context_length")
-        || lower.contains("context_too_large")
-        || lower.contains("too many tokens")
-    {
-        return Some("context_too_large");
-    }
-    if lower.contains("selected model is at capacity") || lower.contains("model is at capacity") {
-        return Some("model_capacity");
-    }
-    None
-}
-
+#[cfg(test)]
 fn should_try_next_account(status: StatusCode, body: &str) -> bool {
-    if status == StatusCode::UNAUTHORIZED {
-        return true;
-    }
-    if is_image_generation_capability_error(status, body) {
-        return true;
-    }
-    if matches!(
-        status,
-        StatusCode::REQUEST_TIMEOUT
-            | StatusCode::INTERNAL_SERVER_ERROR
-            | StatusCode::BAD_GATEWAY
-            | StatusCode::SERVICE_UNAVAILABLE
-            | StatusCode::GATEWAY_TIMEOUT
-    ) {
-        return true;
-    }
-
-    let lower = body.to_ascii_lowercase();
-    let quota_exhausted = lower.contains("usage_limit_reached")
-        || lower.contains("limit reached")
-        || lower.contains("insufficient_quota")
-        || lower.contains("quota exceeded")
-        || lower.contains("quota exceeded");
-    let model_capacity =
-        lower.contains("selected model is at capacity") || lower.contains("model is at capacity");
-
-    matches!(
-        status,
-        StatusCode::TOO_MANY_REQUESTS | StatusCode::FORBIDDEN
-    ) && (quota_exhausted || model_capacity)
+    classify_codex_upstream_error(status, None, body).safe_for_request_failover()
 }
 
-fn json_response(status: u16, status_text: &str, body: &Value) -> Vec<u8> {
+fn json_response_with_extra_headers(
+    status: u16,
+    status_text: &str,
+    body: &Value,
+    extra_headers: &[(&str, String)],
+) -> Vec<u8> {
     let body_bytes = serde_json::to_vec(body).unwrap_or_else(|_| b"{}".to_vec());
-    let headers = format!(
+    let mut headers = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: {}\r\n\r\n",
         status,
         status_text,
         body_bytes.len(),
         CORS_ALLOW_HEADERS
     );
+    if !extra_headers.is_empty() {
+        let mut head = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: {}\r\n",
+            status,
+            status_text,
+            body_bytes.len(),
+            CORS_ALLOW_HEADERS
+        );
+        for (name, value) in extra_headers {
+            if !name.trim().is_empty() && !value.trim().is_empty() {
+                head.push_str(name.trim());
+                head.push_str(": ");
+                head.push_str(value.trim());
+                head.push_str("\r\n");
+            }
+        }
+        head.push_str("\r\n");
+        headers = head;
+    }
     let mut response = headers.into_bytes();
     response.extend_from_slice(&body_bytes);
     response
+}
+
+fn json_response(status: u16, status_text: &str, body: &Value) -> Vec<u8> {
+    json_response_with_extra_headers(status, status_text, body, &[])
+}
+
+fn request_body_too_large_response(error: &HttpRequestReadError) -> Vec<u8> {
+    let mut detail = BTreeMap::new();
+    if let HttpRequestReadError::RequestTooLarge {
+        limit_bytes,
+        observed_bytes,
+        content_length,
+        ..
+    } = error
+    {
+        detail.insert("limit_bytes".to_string(), limit_bytes.to_string());
+        detail.insert(
+            "max_request_body_mb".to_string(),
+            (limit_bytes / (1024 * 1024)).to_string(),
+        );
+        detail.insert("observed_bytes".to_string(), observed_bytes.to_string());
+        if let Some(content_length) = content_length {
+            detail.insert("content_length".to_string(), content_length.to_string());
+        }
+    }
+
+    json_response(
+        StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+        "Payload Too Large",
+        &json!({
+            "error": {
+                "type": "request_body_too_large",
+                "code": "request_body_too_large",
+                "message": "Cockpit API service request body exceeds the local safety limit.",
+                "detail": detail,
+            }
+        }),
+    )
+}
+
+fn json_response_with_retry_after(
+    status: u16,
+    status_text: &str,
+    body: &Value,
+    retry_after: Option<Duration>,
+) -> Vec<u8> {
+    let Some(wait) = retry_after else {
+        return json_response(status, status_text, body);
+    };
+    json_response_with_extra_headers(
+        status,
+        status_text,
+        body,
+        &[("Retry-After", wait.as_secs().max(1).to_string())],
+    )
+}
+
+fn sanitize_response_header_value(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if value
+        .bytes()
+        .any(|byte| matches!(byte, b'\r' | b'\n') || byte.is_ascii_control())
+    {
+        return None;
+    }
+    Some(value.to_string())
+}
+
+fn upstream_response_header_value(
+    headers: &reqwest::header::HeaderMap,
+    header_name: &str,
+) -> Option<String> {
+    headers
+        .get(header_name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(sanitize_response_header_value)
+}
+
+fn should_emit_codex_turn_state_for_response(request: &ParsedRequest, status: StatusCode) -> bool {
+    status.is_success() && is_responses_request(&request.target)
+}
+
+fn codex_turn_state_response_header(
+    request: &ParsedRequest,
+    upstream_headers: &reqwest::header::HeaderMap,
+    status: StatusCode,
+) -> Option<ResponseHeaderValue> {
+    if !should_emit_codex_turn_state_for_response(request, status) {
+        return None;
+    }
+
+    let value = upstream_response_header_value(upstream_headers, X_CODEX_TURN_STATE_HEADER)
+        .or_else(|| {
+            request_header_value(request, X_CODEX_TURN_STATE_HEADER)
+                .and_then(sanitize_response_header_value)
+        })
+        .unwrap_or_else(generated_codex_turn_state);
+    Some(ResponseHeaderValue {
+        name: X_CODEX_TURN_STATE_HEADER,
+        value,
+    })
 }
 
 fn gateway_error_code(status: u16) -> &'static str {
@@ -12953,48 +18138,866 @@ fn options_response() -> Vec<u8> {
     headers.into_bytes()
 }
 
-fn log_field_or_dash(value: Option<&str>) -> &str {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("-")
+fn truncate_log_field(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let mut truncated: String = value.chars().take(max_chars.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
+fn safe_log_field(value: Option<&str>, max_chars: usize) -> String {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "-".to_string();
+    };
+
+    let sanitized: String = value
+        .chars()
+        .map(|ch| match ch {
+            '\r' | '\n' | '\t' => '_',
+            _ if ch.is_control() => '_',
+            _ => ch,
+        })
+        .collect();
+
+    truncate_log_field(&sanitized, max_chars)
 }
 
 fn escape_failure_detail(detail: &str) -> String {
     detail.replace('\r', "\\r").replace('\n', "\\n")
 }
 
-fn log_codex_api_failure(
-    addr: Option<&std::net::SocketAddr>,
+fn request_header_value<'a>(request: &'a ParsedRequest, header_name: &str) -> Option<&'a str> {
+    request
+        .headers
+        .get(header_name)
+        .or_else(|| {
+            request
+                .headers
+                .iter()
+                .find(|(key, _)| key.eq_ignore_ascii_case(header_name))
+                .map(|(_, value)| value)
+        })
+        .map(String::as_str)
+}
+
+fn failure_log_route(request: Option<&ParsedRequest>) -> String {
+    let route = request
+        .map(|value| {
+            value
+                .target
+                .split('?')
+                .next()
+                .unwrap_or(value.target.as_str())
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    safe_log_field(route, 128)
+}
+
+fn failure_log_request_id_with_source(request: Option<&ParsedRequest>) -> (String, &'static str) {
+    let Some(request) = request else {
+        return ("-".to_string(), "none");
+    };
+
+    if let Some(value) = codex_turn_state_request_id(request) {
+        return (value, "codex_turn_state");
+    }
+    if let Some((value, source)) = codex_turn_metadata_request_id_with_source(request) {
+        return (value, source);
+    }
+
+    for header_name in [
+        "x-client-request-id",
+        "x-request-id",
+        "request-id",
+        "openai-request-id",
+    ] {
+        if let Some(value) = request_header_value(request, header_name) {
+            let source = match header_name {
+                "x-client-request-id" => "client_request_id",
+                "x-request-id" => "x_request_id",
+                "request-id" => "request_id_header",
+                "openai-request-id" => "openai_request_id",
+                _ => "header_request_id",
+            };
+            return (safe_log_field(Some(value), 96), source);
+        }
+    }
+
+    ("-".to_string(), "none")
+}
+
+fn failure_log_request_id(request: Option<&ParsedRequest>) -> String {
+    failure_log_request_id_with_source(request).0
+}
+
+fn failure_log_model(request: Option<&ParsedRequest>) -> String {
+    let Some(request) = request else {
+        return "-".to_string();
+    };
+
+    let hint = build_request_routing_hint(request);
+    safe_log_field(Some(hint.model_key.as_str()), 96)
+}
+
+fn failure_log_account_hash(account_id: Option<&str>) -> String {
+    let Some(account_id) = account_id.map(str::trim).filter(|value| !value.is_empty()) else {
+        return "-".to_string();
+    };
+
+    let digest = Sha256::digest(account_id.as_bytes());
+    let hex = format!("{:x}", digest);
+    format!("sha256:{}", &hex[..12])
+}
+
+fn build_audit_context(request: &ParsedRequest, account_id: Option<&str>) -> AuditContext {
+    let (request_id, request_id_source) = failure_log_request_id_with_source(Some(request));
+    let (turn_lineage_id, turn_lineage_source) = request_lineage_id_with_source(request);
+    let previous_response_id_hash = previous_response_id_hash(request);
+    let sticky_boundary = official_codex_sticky_routing_boundary(request)
+        .map(|boundary| boundary.reason().to_string());
+    AuditContext {
+        request_id,
+        request_id_source: request_id_source.to_string(),
+        route: failure_log_route(Some(request)),
+        model: failure_log_model(Some(request)),
+        account_hash: failure_log_account_hash(account_id),
+        gateway_request_id: request.gateway_request_id.clone(),
+        turn_lineage_id,
+        turn_lineage_source: turn_lineage_source.map(str::to_string),
+        sticky_boundary,
+        is_continuation: previous_response_id_hash.is_some(),
+        is_sticky_continuation: official_codex_sticky_routing_boundary(request).is_some(),
+        is_auto_compact_candidate: request_body_is_auto_compact_candidate(request),
+        previous_response_id_hash,
+    }
+}
+
+fn audit_key_is_sensitive(key: &str) -> bool {
+    let lower = key.to_ascii_lowercase();
+    [
+        "authorization",
+        "api_key",
+        "apikey",
+        "x-api-key",
+        "openai_api_key",
+        "access_token",
+        "refresh_token",
+        "id_token",
+        "oauth_token",
+        "prompt",
+        "content",
+        "messages",
+        "request_body",
+        "response_body",
+        "upstream_body",
+        "raw_body",
+        "body",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
+}
+
+fn audit_value_is_sensitive(value: &str) -> bool {
+    let lower = value.to_ascii_lowercase();
+    lower.contains("bearer ")
+        || lower.contains("sk-")
+        || lower.contains("raw prompt")
+        || lower.contains("authorization")
+        || value.contains('@')
+}
+
+fn safe_audit_detail_value(key: &str, value: &str) -> Option<String> {
+    if audit_key_is_sensitive(key) {
+        return Some("[redacted]".to_string());
+    }
+
+    if audit_value_is_sensitive(value) {
+        return Some("[redacted]".to_string());
+    }
+
+    let safe = safe_log_field(Some(value), 160);
+    (safe != "-").then_some(safe)
+}
+
+fn safe_audit_label(value: Option<&str>, max_chars: usize) -> Option<String> {
+    let value = safe_log_field(value, max_chars);
+    (value != "-").then_some(value)
+}
+
+fn build_audit_event(
+    timestamp: i64,
+    context: &AuditContext,
+    phase: &str,
+    status: Option<u16>,
+    error_type: Option<&str>,
+    stream_state: Option<&str>,
+    outcome: Option<&str>,
+    detail: BTreeMap<String, String>,
+) -> CodexLocalAccessAuditEvent {
+    let mut detail: BTreeMap<String, String> = detail
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let key = safe_log_field(Some(&key), 64);
+            if key == "-" {
+                return None;
+            }
+            safe_audit_detail_value(&key, &value).map(|value| (key, value))
+        })
+        .collect();
+    let request_id_source = safe_log_field(Some(&context.request_id_source), 64);
+    if request_id_source != "-" {
+        detail
+            .entry("request_id_source".to_string())
+            .or_insert(request_id_source);
+    }
+    let gateway_request_id = safe_log_field(Some(&context.gateway_request_id), 96);
+    if gateway_request_id != "-" {
+        detail
+            .entry("gateway_request_id".to_string())
+            .or_insert(gateway_request_id);
+    }
+    if let Some(value) = context
+        .turn_lineage_id
+        .as_deref()
+        .and_then(|value| safe_audit_label(Some(value), 128))
+    {
+        detail.entry("turn_lineage_id".to_string()).or_insert(value);
+    }
+    if let Some(value) = context
+        .turn_lineage_source
+        .as_deref()
+        .and_then(|value| safe_audit_label(Some(value), 64))
+    {
+        detail
+            .entry("turn_lineage_source".to_string())
+            .or_insert(value);
+    }
+    if let Some(value) = context
+        .previous_response_id_hash
+        .as_deref()
+        .and_then(|value| safe_audit_label(Some(value), 128))
+    {
+        detail
+            .entry("previous_response_id_hash".to_string())
+            .or_insert(value);
+    }
+    if let Some(value) = context
+        .sticky_boundary
+        .as_deref()
+        .and_then(|value| safe_audit_label(Some(value), 64))
+    {
+        detail.entry("sticky_boundary".to_string()).or_insert(value);
+        detail
+            .entry("sticky_boundary_present".to_string())
+            .or_insert("true".to_string());
+    }
+    detail
+        .entry("is_continuation".to_string())
+        .or_insert(context.is_continuation.to_string());
+    detail
+        .entry("is_sticky_continuation".to_string())
+        .or_insert(context.is_sticky_continuation.to_string());
+    detail
+        .entry("is_auto_compact_candidate".to_string())
+        .or_insert(context.is_auto_compact_candidate.to_string());
+
+    CodexLocalAccessAuditEvent {
+        schema_version: CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+        timestamp,
+        request_id: context.request_id.clone(),
+        phase: safe_log_field(Some(phase), 64),
+        route: context.route.clone(),
+        model: context.model.clone(),
+        account_hash: context.account_hash.clone(),
+        status,
+        error_type: safe_audit_label(error_type, 96),
+        stream_state: safe_audit_label(stream_state, 64),
+        outcome: safe_audit_label(outcome, 64),
+        detail,
+    }
+}
+
+fn audit_rotated_path(path: &Path) -> PathBuf {
+    path.with_extension("jsonl.1")
+}
+
+fn audit_day_bucket(timestamp_ms: i64) -> i64 {
+    timestamp_ms.div_euclid(DAY_WINDOW_MS)
+}
+
+fn first_audit_timestamp_from_path(path: &Path) -> Result<Option<i64>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("读取审计日志轮转状态失败: {}", e))?;
+    let Some(line) = content.lines().find(|line| !line.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let mut values = serde_json::Deserializer::from_str(line).into_iter::<Value>();
+    let value = match values.next() {
+        Some(Ok(value)) => value,
+        Some(Err(err)) => return Err(format!("解析审计日志轮转状态失败: {}", err)),
+        None => return Ok(None),
+    };
+    Ok(value.get("timestamp").and_then(Value::as_i64))
+}
+
+fn should_rotate_audit_by_day(
+    path: &Path,
+    event: &CodexLocalAccessAuditEvent,
+) -> Result<bool, String> {
+    let Some(first_timestamp) = first_audit_timestamp_from_path(path)? else {
+        return Ok(false);
+    };
+    Ok(audit_day_bucket(first_timestamp) != audit_day_bucket(event.timestamp))
+}
+
+fn append_audit_event_to_path(
+    path: &Path,
+    event: &CodexLocalAccessAuditEvent,
+    max_bytes: usize,
+) -> Result<(), String> {
+    let _append_guard = audit_trail_append_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let parent = path.parent().ok_or("无法定位审计日志目录")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("创建审计日志目录失败: {}", e))?;
+
+    let should_rotate_by_size = path
+        .metadata()
+        .map(|metadata| metadata.len() as usize > max_bytes)
+        .unwrap_or(false);
+    let should_rotate_by_day = should_rotate_audit_by_day(path, event)?;
+
+    if should_rotate_by_size || should_rotate_by_day {
+        let rotated_path = audit_rotated_path(path);
+        if rotated_path.exists() {
+            std::fs::remove_file(&rotated_path)
+                .map_err(|e| format!("删除旧审计日志轮转文件失败: {}", e))?;
+        }
+        std::fs::rename(path, &rotated_path).map_err(|e| format!("轮转审计日志失败: {}", e))?;
+    }
+
+    let mut line =
+        serde_json::to_string(event).map_err(|e| format!("序列化审计事件失败: {}", e))?;
+    line.push('\n');
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("打开审计日志失败: {}", e))?;
+    file.write_all(line.as_bytes())
+        .map_err(|e| format!("写入审计事件失败: {}", e))
+}
+
+fn append_audit_event_to_disk(event: &CodexLocalAccessAuditEvent) -> Result<(), String> {
+    let path = local_access_audit_file_path()?;
+    append_audit_event_to_path(&path, event, CODEX_LOCAL_ACCESS_AUDIT_MAX_BYTES)
+}
+
+fn record_audit_event(event: CodexLocalAccessAuditEvent) {
+    match append_audit_event_to_disk(&event) {
+        Ok(()) => mark_audit_trail_healthy(),
+        Err(err) => {
+            mark_audit_trail_degraded(&err);
+            logger::log_warn(&format!(
+                "[CodexLocalAccess][AuditTrail] 写入审计事件失败: {}",
+                err
+            ));
+        }
+    }
+}
+
+fn record_audit_event_from_context(
+    context: &AuditContext,
+    phase: &str,
+    status: Option<u16>,
+    error_type: Option<&str>,
+    stream_state: Option<&str>,
+    outcome: Option<&str>,
+    detail: BTreeMap<String, String>,
+) {
+    record_audit_event(build_audit_event(
+        now_ms(),
+        context,
+        phase,
+        status,
+        error_type,
+        stream_state,
+        outcome,
+        detail,
+    ));
+}
+
+fn record_manual_recovery_audit_event(account_id: &str, model: Option<&str>, changed: bool) {
+    let model = model.map(str::trim).filter(|value| !value.is_empty());
+    let context = AuditContext {
+        request_id: "manual_recovery".to_string(),
+        request_id_source: "manual".to_string(),
+        route: "manual_recovery".to_string(),
+        model: safe_log_field(model, 96),
+        account_hash: failure_log_account_hash(Some(account_id)),
+        gateway_request_id: "manual_recovery".to_string(),
+        turn_lineage_id: None,
+        turn_lineage_source: None,
+        previous_response_id_hash: None,
+        sticky_boundary: None,
+        is_continuation: false,
+        is_sticky_continuation: false,
+        is_auto_compact_candidate: false,
+    };
+    record_audit_event_from_context(
+        &context,
+        "manual_recovery",
+        None,
+        None,
+        None,
+        Some("recovered"),
+        BTreeMap::from([
+            (
+                "scope".to_string(),
+                if model.is_some() { "model" } else { "account" }.to_string(),
+            ),
+            ("changed".to_string(), changed.to_string()),
+        ]),
+    );
+}
+
+fn record_manual_pause_audit_event(account_id: &str, changed: bool) {
+    let context = AuditContext {
+        request_id: "manual_pause".to_string(),
+        request_id_source: "manual".to_string(),
+        route: "manual_pause".to_string(),
+        model: "-".to_string(),
+        account_hash: failure_log_account_hash(Some(account_id)),
+        gateway_request_id: "manual_pause".to_string(),
+        turn_lineage_id: None,
+        turn_lineage_source: None,
+        previous_response_id_hash: None,
+        sticky_boundary: None,
+        is_continuation: false,
+        is_sticky_continuation: false,
+        is_auto_compact_candidate: false,
+    };
+    record_audit_event_from_context(
+        &context,
+        "manual_pause",
+        None,
+        Some("manual_paused"),
+        None,
+        Some("paused"),
+        BTreeMap::from([
+            ("scope".to_string(), "account".to_string()),
+            ("changed".to_string(), changed.to_string()),
+        ]),
+    );
+}
+
+fn record_runtime_projection_audit_event(
+    phase: &str,
+    outcome: &str,
+    source: &str,
+    force: bool,
+    from_mode: Option<CodexRuntimeIntegrationMode>,
+    to_mode: Option<CodexRuntimeIntegrationMode>,
+    risk: Option<&RuntimeProjectionContinuityRisk>,
+) {
+    let context = AuditContext {
+        request_id: "runtime_projection".to_string(),
+        request_id_source: "runtime_projection".to_string(),
+        route: "runtime_projection".to_string(),
+        model: "-".to_string(),
+        account_hash: "-".to_string(),
+        gateway_request_id: "runtime_projection".to_string(),
+        turn_lineage_id: None,
+        turn_lineage_source: None,
+        previous_response_id_hash: None,
+        sticky_boundary: None,
+        is_continuation: false,
+        is_sticky_continuation: false,
+        is_auto_compact_candidate: false,
+    };
+    let mut detail = BTreeMap::from([
+        ("source".to_string(), source.to_string()),
+        ("force".to_string(), force.to_string()),
+    ]);
+    if let Some(mode) = from_mode {
+        detail.insert("from_mode".to_string(), format!("{:?}", mode));
+    }
+    if let Some(mode) = to_mode {
+        detail.insert("to_mode".to_string(), format!("{:?}", mode));
+    }
+    if let Some(risk) = risk {
+        detail.extend(risk.audit_detail());
+    }
+    record_audit_event_from_context(&context, phase, None, None, None, Some(outcome), detail);
+}
+
+fn classified_audit_outcome(classified: &ClassifiedCodexUpstreamError) -> &'static str {
+    if classified.manual_required {
+        "manual_required"
+    } else if classified.safe_for_request_failover() {
+        "failover"
+    } else if classified.retry_after.is_some() {
+        "cooldown"
+    } else {
+        "error"
+    }
+}
+
+fn classified_audit_detail(classified: &ClassifiedCodexUpstreamError) -> BTreeMap<String, String> {
+    let mut detail = classified.log_fields.clone();
+    detail.extend(BTreeMap::from([
+        ("source".to_string(), classified.source.as_str().to_string()),
+        ("scope".to_string(), classified.scope.as_str().to_string()),
+        (
+            "manual_required".to_string(),
+            classified.manual_required.to_string(),
+        ),
+        (
+            "failover_safe".to_string(),
+            classified.safe_for_request_failover().to_string(),
+        ),
+    ]));
+
+    if let Some(provider_code) = classified.provider_code.as_deref() {
+        detail.insert("provider_code".to_string(), provider_code.to_string());
+    }
+    if let Some(retry_after) = classified.retry_after {
+        detail.insert(
+            "retry_after_ms".to_string(),
+            retry_after.as_millis().to_string(),
+        );
+    }
+
+    detail
+}
+
+fn should_record_quota_classification_trace(classified: &ClassifiedCodexUpstreamError) -> bool {
+    classified.status == StatusCode::TOO_MANY_REQUESTS.as_u16()
+        || matches!(
+            classified.error_type,
+            CodexLocalAccessErrorType::UsageLimitReached
+                | CodexLocalAccessErrorType::InsufficientQuota
+                | CodexLocalAccessErrorType::UpstreamRateLimit
+                | CodexLocalAccessErrorType::ModelCapacity
+        )
+}
+
+fn quota_classification_trace_detail(
+    classified: &ClassifiedCodexUpstreamError,
+) -> BTreeMap<String, String> {
+    let mut detail = classified_audit_detail(classified);
+    detail.insert(
+        "reset_hint_present".to_string(),
+        classified.retry_after.is_some().to_string(),
+    );
+    if let Some(reset_source) = health_registry_reset_source(classified) {
+        detail.insert("reset_source".to_string(), reset_source);
+    }
+    detail
+}
+
+fn persist_health_registry_with_audit(
+    account_id: &str,
+    model_key: Option<&str>,
+    request: &ParsedRequest,
+    classified: &ClassifiedCodexUpstreamError,
+) {
+    let context = build_audit_context(request, Some(account_id));
+    let classified_detail = classified_audit_detail(classified);
+    record_audit_event_from_context(
+        &context,
+        "classifier",
+        Some(classified.status),
+        Some(classified.error_type.as_str()),
+        None,
+        Some(classified_audit_outcome(classified)),
+        classified_detail.clone(),
+    );
+    if should_record_quota_classification_trace(classified) {
+        record_audit_event_from_context(
+            &context,
+            "quota_classification",
+            Some(classified.status),
+            Some(classified.error_type.as_str()),
+            None,
+            Some("classified"),
+            quota_classification_trace_detail(classified),
+        );
+    }
+
+    match persist_health_registry_from_classified_error(account_id, model_key, request, classified)
+    {
+        Ok(()) => {
+            record_audit_event_from_context(
+                &context,
+                "health_update",
+                Some(classified.status),
+                Some(classified.error_type.as_str()),
+                None,
+                Some("recorded"),
+                classified_detail.clone(),
+            );
+            if classified.retry_after.is_some()
+                || matches!(
+                    classified.error_type,
+                    CodexLocalAccessErrorType::UpstreamRateLimit
+                        | CodexLocalAccessErrorType::UsageLimitReached
+                        | CodexLocalAccessErrorType::InsufficientQuota
+                        | CodexLocalAccessErrorType::ModelCapacity
+                )
+            {
+                let phase = if is_model_scoped_cooldown(classified, model_key) {
+                    "model_cooldown_applied"
+                } else {
+                    "account_cooldown_applied"
+                };
+                record_audit_event_from_context(
+                    &context,
+                    phase,
+                    Some(classified.status),
+                    Some(classified.error_type.as_str()),
+                    None,
+                    Some("recorded"),
+                    classified_detail,
+                );
+            }
+        }
+        Err(err) => {
+            log_health_registry_update_error(&err);
+            record_audit_event_from_context(
+                &context,
+                "health_update",
+                Some(classified.status),
+                Some(classified.error_type.as_str()),
+                None,
+                Some("write_failed"),
+                BTreeMap::from([("reason".to_string(), "persist_error".to_string())]),
+            );
+        }
+    }
+}
+
+fn record_stream_audit_event(
+    context: Option<&AuditContext>,
+    status: StatusCode,
+    stream_state: &str,
+    outcome: &str,
+    content_type: &str,
+) {
+    record_stream_audit_event_with_detail(
+        context,
+        status,
+        None,
+        stream_state,
+        outcome,
+        content_type,
+        BTreeMap::new(),
+    );
+}
+
+fn record_stream_audit_event_with_detail(
+    context: Option<&AuditContext>,
+    status: StatusCode,
+    error_type: Option<&str>,
+    stream_state: &str,
+    outcome: &str,
+    content_type: &str,
+    mut detail: BTreeMap<String, String>,
+) {
+    if let Some(context) = context {
+        detail
+            .entry("content_type".to_string())
+            .or_insert_with(|| content_type.to_string());
+        record_audit_event_from_context(
+            context,
+            "stream_write",
+            Some(status.as_u16()),
+            error_type,
+            Some(stream_state),
+            Some(outcome),
+            detail,
+        );
+    }
+}
+
+fn stream_terminal_audit_detail(
+    content_type: &str,
+    response_capture: &ResponseCapture,
+) -> BTreeMap<String, String> {
+    let mut detail = BTreeMap::from([
+        ("content_type".to_string(), content_type.to_string()),
+        (
+            "response_completed_seen".to_string(),
+            response_capture.response_completed_seen.to_string(),
+        ),
+        (
+            "compaction_summary_seen".to_string(),
+            response_capture.compaction_summary_seen.to_string(),
+        ),
+        (
+            "usage_seen".to_string(),
+            response_capture.usage.is_some().to_string(),
+        ),
+    ]);
+    if let Some(response_id_hash) = response_capture
+        .response_id
+        .as_deref()
+        .and_then(|response_id| hashed_request_correlation_id("response", response_id))
+    {
+        detail.insert("response_id_hash".to_string(), response_id_hash);
+    }
+    detail
+}
+
+fn record_stream_terminal_audit_event(
+    context: Option<&AuditContext>,
+    status: StatusCode,
+    stream_state: &str,
+    outcome: &str,
+    content_type: &str,
+    response_capture: &ResponseCapture,
+) {
+    if let Some(context) = context {
+        record_audit_event_from_context(
+            context,
+            "stream_terminal",
+            Some(status.as_u16()),
+            None,
+            Some(stream_state),
+            Some(outcome),
+            stream_terminal_audit_detail(content_type, response_capture),
+        );
+    }
+}
+
+fn record_stream_terminal_error_audit_event(
+    context: Option<&AuditContext>,
+    status: StatusCode,
+    content_type: &str,
+    terminal_origin: &str,
+    message: &str,
+    response_capture: &ResponseCapture,
+    terminal_contract: &str,
+) {
+    if let Some(context) = context {
+        let mut detail = stream_terminal_audit_detail(content_type, response_capture);
+        detail.insert("terminal_origin".to_string(), terminal_origin.to_string());
+        detail.insert("message".to_string(), safe_log_field(Some(message), 512));
+        detail.insert(
+            "terminal_contract".to_string(),
+            terminal_contract.to_string(),
+        );
+        record_audit_event_from_context(
+            context,
+            "stream_terminal",
+            Some(status.as_u16()),
+            Some("upstream_stream_error"),
+            Some("upstream_error"),
+            Some("error"),
+            detail,
+        );
+    }
+}
+
+fn classify_codex_api_failure(status: Option<u16>, detail: &str) -> &'static str {
+    let detail = detail.to_ascii_lowercase();
+
+    if status == Some(StatusCode::UNAUTHORIZED.as_u16())
+        || detail.contains("unauthorized")
+        || detail.contains("鉴权")
+    {
+        "auth_failed"
+    } else if detail.contains("api 服务号池")
+        || detail.contains("api 服务账号均在冷却")
+        || detail.contains("可用账号均在冷却")
+        || detail.contains("本地接入集合暂无可用账号")
+    {
+        "pool_unavailable"
+    } else if detail.contains("websocket") || detail.contains("web socket") {
+        "unsupported_websocket"
+    } else if detail.contains("本地接入队列")
+        || detail.contains("本地接入请求超时")
+        || detail.contains("local backpressure")
+    {
+        "local_backpressure"
+    } else if status == Some(StatusCode::PAYLOAD_TOO_LARGE.as_u16())
+        || detail.contains("请求体过大")
+        || detail.contains("request body")
+        || detail.contains("payload too large")
+    {
+        "request_body_too_large"
+    } else if status == Some(StatusCode::TOO_MANY_REQUESTS.as_u16())
+        || detail.contains("rate limit")
+        || detail.contains("usage_limit")
+        || detail.contains("quota")
+        || detail.contains("额度")
+    {
+        "rate_limited"
+    } else if detail.contains("预处理") || detail.contains("prepare") {
+        "account_prepare_failed"
+    } else if detail.contains("刷新") || detail.contains("refresh") {
+        "account_refresh_failed"
+    } else if detail.contains("free 账号") || detail.contains("free account") {
+        "free_account_restricted"
+    } else if detail.contains("暂无账号") || detail.contains("no account") {
+        "no_account"
+    } else if detail.contains("timeout") || detail.contains("超时") {
+        "timeout"
+    } else if detail.contains("上游请求") || detail.contains("upstream request") {
+        "upstream_request_failed"
+    } else if detail.contains("上游返回") || detail.contains("upstream") || status.is_some() {
+        "upstream_status"
+    } else {
+        "proxy_error"
+    }
+}
+
+fn build_codex_api_failure_log(
     request: Option<&ParsedRequest>,
     status: Option<u16>,
     account_id: Option<&str>,
-    account_email: Option<&str>,
     latency_ms: Option<u64>,
     detail: &str,
-) {
-    let addr_text = addr
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "-".to_string());
+) -> String {
     let status_text = status
         .map(|value| value.to_string())
         .unwrap_or_else(|| "-".to_string());
     let latency_text = latency_ms
         .map(|value| value.to_string())
         .unwrap_or_else(|| "-".to_string());
-    let method = request.map(|value| value.method.as_str()).unwrap_or("-");
-    let target = request.map(|value| value.target.as_str()).unwrap_or("-");
 
-    logger::log_codex_api_warn(&format!(
-        "[CodexLocalAccess][Failure] addr={} method={} target={} status={} account_id={} account_email={} latency_ms={} detail={}",
-        addr_text,
-        method,
-        target,
+    format!(
+        "[CodexLocalAccess][Failure] error_type={} status={} route={} model={} latency_ms={} account_hash={} request_id={}",
+        classify_codex_api_failure(status, detail),
         status_text,
-        log_field_or_dash(account_id),
-        log_field_or_dash(account_email),
+        failure_log_route(request),
+        failure_log_model(request),
         latency_text,
-        escape_failure_detail(detail),
+        failure_log_account_hash(account_id),
+        failure_log_request_id(request),
+    )
+}
+
+fn log_codex_api_failure(
+    _addr: Option<&std::net::SocketAddr>,
+    request: Option<&ParsedRequest>,
+    status: Option<u16>,
+    account_id: Option<&str>,
+    _account_email: Option<&str>,
+    latency_ms: Option<u64>,
+    detail: &str,
+) {
+    logger::log_codex_api_warn(&build_codex_api_failure_log(
+        request, status, account_id, latency_ms, detail,
     ));
 }
 
@@ -13019,6 +19022,23 @@ async fn write_json_error_response(
         message,
     );
 
+    if let Some(request) = request {
+        let context = build_audit_context(request, account_id);
+        let mut detail = BTreeMap::new();
+        if let Some(latency_ms) = latency_ms {
+            detail.insert("latency_ms".to_string(), latency_ms.to_string());
+        }
+        record_audit_event_from_context(
+            &context,
+            "final_response",
+            Some(status),
+            Some(classify_codex_api_failure(Some(status), message)),
+            None,
+            Some("error"),
+            detail,
+        );
+    }
+
     let response = json_response(
         status,
         status_text,
@@ -13030,6 +19050,92 @@ async fn write_json_error_response(
         .map_err(|e| format!("写入错误响应失败: {}", e))
 }
 
+fn build_proxy_dispatch_error_body(
+    request: &ParsedRequest,
+    status: u16,
+    message: &str,
+    retry_after: Option<Duration>,
+) -> Value {
+    if status == StatusCode::TOO_MANY_REQUESTS.as_u16()
+        && request_has_codex_sticky_routing_boundary(request)
+    {
+        let resets_in_seconds = retry_after.map(duration_to_ceiled_seconds_i64);
+        return json!({
+            "error": {
+                "type": "usage_limit_reached",
+                "code": "usage_limit_reached",
+                "message": message,
+                "resets_at": resets_in_seconds.map(|seconds| chrono::Utc::now().timestamp().saturating_add(seconds)),
+                "resets_in_seconds": resets_in_seconds,
+            }
+        });
+    }
+
+    json!({ "error": message })
+}
+
+fn proxy_dispatch_final_error_type(
+    request: &ParsedRequest,
+    status: u16,
+    message: &str,
+) -> &'static str {
+    if status == StatusCode::TOO_MANY_REQUESTS.as_u16()
+        && request_has_codex_sticky_routing_boundary(request)
+    {
+        return CodexLocalAccessErrorType::UsageLimitReached.as_str();
+    }
+
+    classify_codex_api_failure(Some(status), message)
+}
+
+fn proxy_dispatch_final_error_detail(
+    request: &ParsedRequest,
+    status: u16,
+    message: &str,
+    retry_after: Option<Duration>,
+    latency_ms: u64,
+) -> BTreeMap<String, String> {
+    let mut detail = BTreeMap::from([("latency_ms".to_string(), latency_ms.to_string())]);
+    if let Some(retry_after) = retry_after {
+        detail.insert(
+            "retry_after_ms".to_string(),
+            retry_after.as_millis().to_string(),
+        );
+    }
+    detail.insert("message".to_string(), safe_log_field(Some(message), 512));
+
+    if status == StatusCode::TOO_MANY_REQUESTS.as_u16() {
+        if let Some(boundary) = official_codex_sticky_routing_boundary(request) {
+            detail.insert(
+                "provider_code".to_string(),
+                "usage_limit_reached".to_string(),
+            );
+            detail.insert(
+                "terminal_origin".to_string(),
+                "upstream_quota_error".to_string(),
+            );
+            detail.insert("sticky_boundary".to_string(), boundary.reason().to_string());
+            detail.insert("sticky_boundary_present".to_string(), "true".to_string());
+            detail.insert("is_sticky_continuation".to_string(), "true".to_string());
+            detail.insert(
+                "admission_stage".to_string(),
+                "upstream_admission_rejected".to_string(),
+            );
+            detail.insert(
+                "admission_outcome".to_string(),
+                "terminal_quota_before_stream".to_string(),
+            );
+            detail.insert("safe_account_switch".to_string(), "false".to_string());
+            detail.insert(
+                "account_switch_block_reason".to_string(),
+                "hard_affinity_terminal_quota".to_string(),
+            );
+        }
+    }
+
+    detail
+}
+
 async fn write_http_response(
     stream: &mut TcpStream,
     status: u16,
@@ -13037,14 +19143,35 @@ async fn write_http_response(
     content_type: &str,
     body: &[u8],
 ) -> Result<(), String> {
-    let headers = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: {}\r\n\r\n",
+    write_http_response_with_extra_headers(stream, status, status_text, content_type, body, &[])
+        .await
+}
+
+async fn write_http_response_with_extra_headers(
+    stream: &mut TcpStream,
+    status: u16,
+    status_text: &str,
+    content_type: &str,
+    body: &[u8],
+    extra_headers: &[ResponseHeaderValue],
+) -> Result<(), String> {
+    let mut headers = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: {}\r\n",
         status,
         status_text,
         content_type,
         body.len(),
         CORS_ALLOW_HEADERS
     );
+    for header in extra_headers {
+        if let Some(value) = sanitize_response_header_value(&header.value) {
+            headers.push_str(header.name);
+            headers.push_str(": ");
+            headers.push_str(&value);
+            headers.push_str("\r\n");
+        }
+    }
+    headers.push_str("\r\n");
     stream
         .write_all(headers.as_bytes())
         .await
@@ -13062,6 +19189,7 @@ async fn write_chunked_response_headers(
     status_text: &str,
     content_type: &str,
     upstream_headers: &reqwest::header::HeaderMap,
+    extra_headers: &[ResponseHeaderValue],
 ) -> Result<(), String> {
     let mut response_headers = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: {}\r\n",
@@ -13077,6 +19205,14 @@ async fn write_chunked_response_headers(
             .and_then(|item| item.to_str().ok())
         {
             response_headers.push_str(&format!("{}: {}\r\n", header_name, value));
+        }
+    }
+    for header in extra_headers {
+        if let Some(value) = sanitize_response_header_value(&header.value) {
+            response_headers.push_str(header.name);
+            response_headers.push_str(": ");
+            response_headers.push_str(&value);
+            response_headers.push_str("\r\n");
         }
     }
 
@@ -13528,13 +19664,9 @@ impl ImageStreamTransformer {
         if self.response_capture.response_id.is_none() {
             self.response_capture.response_id = extract_response_id(&event);
         }
+        update_response_capture_trace(&mut self.response_capture, &event, event_name.as_deref());
 
-        match event
-            .get("type")
-            .and_then(Value::as_str)
-            .or(event_name.as_deref())
-            .unwrap_or("")
-        {
+        match response_event_type(&event, event_name.as_deref()) {
             "response.image_generation_call.partial_image" => {
                 let Some(b64) = event
                     .get("partial_image_b64")
@@ -13609,6 +19741,8 @@ async fn write_chat_completions_compatible_response(
     stream_mode: bool,
     requested_model: &str,
     original_request_body: &[u8],
+    response_headers: &[ResponseHeaderValue],
+    audit_context: Option<&AuditContext>,
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
@@ -13619,18 +19753,30 @@ async fn write_chat_completions_compatible_response(
     let upstream_headers = upstream.headers().clone();
 
     if stream_mode {
+        let mut write_state = StreamWriteState::default();
         write_chunked_response_headers(
             stream,
             status,
             status_text,
             "text/event-stream; charset=utf-8",
             &upstream_headers,
+            response_headers,
         )
         .await?;
+        write_state.mark_headers_written();
+        debug_assert!(!write_state.can_attempt_account_fallback());
+        record_stream_audit_event(
+            audit_context,
+            status,
+            "headers_written",
+            "ok",
+            "text/event-stream; charset=utf-8",
+        );
 
         let mut transformer =
             ChatCompletionStreamTransformer::new(original_request_body, requested_model);
         let mut body_stream = upstream.bytes_stream();
+        let mut wrote_first_chunk = false;
         let stream_started_at = Instant::now();
         let mut first_chunk_logged = false;
         loop {
@@ -13682,7 +19828,19 @@ async fn write_chat_completions_compatible_response(
             let Some(chunk_result) = next_chunk else {
                 break;
             };
-            let chunk = chunk_result.map_err(|e| format!("读取上游响应失败: {}", e))?;
+            let chunk = match chunk_result {
+                Ok(chunk) => chunk,
+                Err(e) => {
+                    record_stream_audit_event(
+                        audit_context,
+                        status,
+                        "upstream_error",
+                        "error",
+                        "text/event-stream; charset=utf-8",
+                    );
+                    return Err(format!("读取上游响应失败: {}", e));
+                }
+            };
             if chunk.is_empty() {
                 continue;
             }
@@ -13701,10 +19859,31 @@ async fn write_chat_completions_compatible_response(
             }
             let transformed = transformer.feed(&chunk);
             write_chunked_response_chunk(stream, &transformed).await?;
+            if !wrote_first_chunk && !transformed.is_empty() {
+                wrote_first_chunk = true;
+                write_state.mark_first_chunk_written();
+                record_stream_audit_event(
+                    audit_context,
+                    status,
+                    "first_chunk_written",
+                    "ok",
+                    "text/event-stream; charset=utf-8",
+                );
+            }
         }
 
         let (tail, response_capture) = transformer.finish();
         write_chunked_response_chunk(stream, &tail).await?;
+        if !wrote_first_chunk && !tail.is_empty() {
+            write_state.mark_first_chunk_written();
+            record_stream_audit_event(
+                audit_context,
+                status,
+                "first_chunk_written",
+                "ok",
+                "text/event-stream; charset=utf-8",
+            );
+        }
         finish_chunked_response(stream).await?;
         if let Some(terminal_error) = response_capture.terminal_error.as_deref() {
             legacy_debug_log(
@@ -13715,11 +19894,35 @@ async fn write_chat_completions_compatible_response(
                     request.target,
                     status.as_u16(),
                     started_at.elapsed().as_millis(),
-                    escape_failure_detail(&terminal_error)
+                    escape_failure_detail(terminal_error)
                 ),
+            );
+            record_stream_terminal_error_audit_event(
+                audit_context,
+                status,
+                "text/event-stream; charset=utf-8",
+                "upstream_response_failed",
+                terminal_error,
+                &response_capture,
+                "response_failed_sse",
             );
             return Err(terminal_error.to_string());
         }
+        record_stream_audit_event(
+            audit_context,
+            status,
+            "finished",
+            "ok",
+            "text/event-stream; charset=utf-8",
+        );
+        record_stream_terminal_audit_event(
+            audit_context,
+            status,
+            "finished",
+            "ok",
+            "text/event-stream; charset=utf-8",
+            &response_capture,
+        );
         legacy_debug_log(
             debug_logs,
             format!(
@@ -13738,24 +19941,40 @@ async fn write_chat_completions_compatible_response(
         .await
         .map_err(|e| format!("读取上游 responses 响应失败: {}", e))?;
     let parsed = parse_responses_payload_from_upstream(&body_bytes)?;
-    let response_capture = ResponseCapture {
+    let mut response_capture = ResponseCapture {
         usage: extract_usage_capture(&parsed),
         response_id: extract_response_id(&parsed),
-        terminal_error: None,
+        ..Default::default()
     };
+    update_response_capture_trace(&mut response_capture, &parsed, None);
     let chat_payload =
         build_chat_completion_payload(&parsed, requested_model, original_request_body);
 
     let payload_bytes = serde_json::to_vec(&chat_payload)
         .map_err(|e| format!("序列化 chat/completions 响应失败: {}", e))?;
-    write_http_response(
+    write_http_response_with_extra_headers(
         stream,
         status.as_u16(),
         status_text,
         "application/json; charset=utf-8",
         &payload_bytes,
+        response_headers,
     )
     .await?;
+    if let Some(context) = audit_context {
+        record_audit_event_from_context(
+            context,
+            "final_response",
+            Some(status.as_u16()),
+            None,
+            None,
+            Some("ok"),
+            BTreeMap::from([(
+                "content_type".to_string(),
+                "application/json; charset=utf-8".to_string(),
+            )]),
+        );
+    }
 
     Ok(response_capture)
 }
@@ -13766,6 +19985,8 @@ async fn write_images_compatible_response(
     stream_mode: bool,
     response_format: &str,
     stream_prefix: &str,
+    response_headers: &[ResponseHeaderValue],
+    audit_context: Option<&AuditContext>,
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
@@ -13776,17 +19997,29 @@ async fn write_images_compatible_response(
     let upstream_headers = upstream.headers().clone();
 
     if stream_mode {
+        let mut write_state = StreamWriteState::default();
         write_chunked_response_headers(
             stream,
             status,
             status_text,
             "text/event-stream; charset=utf-8",
             &upstream_headers,
+            response_headers,
         )
         .await?;
+        write_state.mark_headers_written();
+        debug_assert!(!write_state.can_attempt_account_fallback());
+        record_stream_audit_event(
+            audit_context,
+            status,
+            "headers_written",
+            "ok",
+            "text/event-stream; charset=utf-8",
+        );
 
         let mut transformer = ImageStreamTransformer::new(response_format, stream_prefix);
         let mut body_stream = upstream.bytes_stream();
+        let mut wrote_first_chunk = false;
         let stream_started_at = Instant::now();
         let mut first_chunk_logged = false;
         loop {
@@ -13838,7 +20071,19 @@ async fn write_images_compatible_response(
             let Some(chunk_result) = next_chunk else {
                 break;
             };
-            let chunk = chunk_result.map_err(|e| format!("读取上游图片响应失败: {}", e))?;
+            let chunk = match chunk_result {
+                Ok(chunk) => chunk,
+                Err(e) => {
+                    record_stream_audit_event(
+                        audit_context,
+                        status,
+                        "upstream_error",
+                        "error",
+                        "text/event-stream; charset=utf-8",
+                    );
+                    return Err(format!("读取上游图片响应失败: {}", e));
+                }
+            };
             if chunk.is_empty() {
                 continue;
             }
@@ -13857,10 +20102,31 @@ async fn write_images_compatible_response(
             }
             let transformed = transformer.feed(&chunk);
             write_chunked_response_chunk(stream, &transformed).await?;
+            if !wrote_first_chunk && !transformed.is_empty() {
+                wrote_first_chunk = true;
+                write_state.mark_first_chunk_written();
+                record_stream_audit_event(
+                    audit_context,
+                    status,
+                    "first_chunk_written",
+                    "ok",
+                    "text/event-stream; charset=utf-8",
+                );
+            }
         }
 
         let (tail, response_capture) = transformer.finish();
         write_chunked_response_chunk(stream, &tail).await?;
+        if !wrote_first_chunk && !tail.is_empty() {
+            write_state.mark_first_chunk_written();
+            record_stream_audit_event(
+                audit_context,
+                status,
+                "first_chunk_written",
+                "ok",
+                "text/event-stream; charset=utf-8",
+            );
+        }
         finish_chunked_response(stream).await?;
         if let Some(terminal_error) = response_capture.terminal_error.as_deref() {
             legacy_debug_log(
@@ -13871,11 +20137,35 @@ async fn write_images_compatible_response(
                     request.target,
                     status.as_u16(),
                     started_at.elapsed().as_millis(),
-                    escape_failure_detail(&terminal_error)
+                    escape_failure_detail(terminal_error)
                 ),
+            );
+            record_stream_terminal_error_audit_event(
+                audit_context,
+                status,
+                "text/event-stream; charset=utf-8",
+                "upstream_response_failed",
+                terminal_error,
+                &response_capture,
+                "response_failed_sse",
             );
             return Err(terminal_error.to_string());
         }
+        record_stream_audit_event(
+            audit_context,
+            status,
+            "finished",
+            "ok",
+            "text/event-stream; charset=utf-8",
+        );
+        record_stream_terminal_audit_event(
+            audit_context,
+            status,
+            "finished",
+            "ok",
+            "text/event-stream; charset=utf-8",
+            &response_capture,
+        );
         legacy_debug_log(
             debug_logs,
             format!(
@@ -13894,23 +20184,39 @@ async fn write_images_compatible_response(
         .await
         .map_err(|e| format!("读取上游图片响应失败: {}", e))?;
     let parsed = parse_responses_payload_from_upstream(&body_bytes)?;
-    let response_capture = ResponseCapture {
+    let mut response_capture = ResponseCapture {
         usage: extract_usage_capture(&parsed),
         response_id: extract_response_id(&parsed),
-        terminal_error: None,
+        ..Default::default()
     };
+    update_response_capture_trace(&mut response_capture, &parsed, None);
     let images_payload = build_images_api_payload(&parsed, response_format)?;
     let payload_bytes = serde_json::to_vec(&images_payload)
         .map_err(|e| format!("序列化 images 响应失败: {}", e))?;
 
-    write_http_response(
+    write_http_response_with_extra_headers(
         stream,
         status.as_u16(),
         status_text,
         "application/json; charset=utf-8",
         &payload_bytes,
+        response_headers,
     )
     .await?;
+    if let Some(context) = audit_context {
+        record_audit_event_from_context(
+            context,
+            "final_response",
+            Some(status.as_u16()),
+            None,
+            None,
+            Some("ok"),
+            BTreeMap::from([(
+                "content_type".to_string(),
+                "application/json; charset=utf-8".to_string(),
+            )]),
+        );
+    }
 
     Ok(response_capture)
 }
@@ -13919,6 +20225,8 @@ async fn write_gateway_response(
     stream: &mut TcpStream,
     upstream: reqwest::Response,
     response_adapter: GatewayResponseAdapter,
+    response_headers: &[ResponseHeaderValue],
+    audit_context: Option<&AuditContext>,
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
@@ -13930,6 +20238,8 @@ async fn write_gateway_response(
                 stream,
                 upstream,
                 request_is_stream,
+                response_headers,
+                audit_context,
                 debug_logs,
                 request,
                 started_at,
@@ -13948,6 +20258,8 @@ async fn write_gateway_response(
                 stream_mode,
                 requested_model.as_str(),
                 original_request_body.as_slice(),
+                response_headers,
+                audit_context,
                 debug_logs,
                 request,
                 started_at,
@@ -13966,6 +20278,8 @@ async fn write_gateway_response(
                 stream_mode,
                 response_format.as_str(),
                 stream_prefix.as_str(),
+                response_headers,
+                audit_context,
                 debug_logs,
                 request,
                 started_at,
@@ -13980,6 +20294,8 @@ async fn write_upstream_response(
     stream: &mut TcpStream,
     upstream: reqwest::Response,
     request_is_stream: bool,
+    response_headers: &[ResponseHeaderValue],
+    audit_context: Option<&AuditContext>,
     debug_logs: bool,
     request: &ParsedRequest,
     started_at: Instant,
@@ -13992,11 +20308,53 @@ async fn write_upstream_response(
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("application/json; charset=utf-8");
+    write_chunked_response_headers(
+        stream,
+        status,
+        status_text,
+        content_type,
+        &headers,
+        response_headers,
+    )
+    .await?;
+    write_upstream_response_body_chunks(
+        stream,
+        upstream,
+        request_is_stream,
+        audit_context,
+        debug_logs,
+        request,
+        started_at,
+        timeouts,
+    )
+    .await
+}
+
+async fn write_upstream_response_body_chunks(
+    stream: &mut TcpStream,
+    upstream: reqwest::Response,
+    request_is_stream: bool,
+    audit_context: Option<&AuditContext>,
+    debug_logs: bool,
+    request: &ParsedRequest,
+    started_at: Instant,
+    timeouts: &CodexLocalAccessTimeouts,
+) -> Result<ResponseCapture, String> {
+    let status = upstream.status();
+    let headers = upstream.headers().clone();
+    let content_type = headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/json; charset=utf-8");
     let is_stream = should_treat_response_as_stream(content_type, request_is_stream);
-    write_chunked_response_headers(stream, status, status_text, content_type, &headers).await?;
+    let mut write_state = StreamWriteState::default();
+    write_state.mark_headers_written();
+    debug_assert!(!write_state.can_attempt_account_fallback());
+    record_stream_audit_event(audit_context, status, "headers_written", "ok", content_type);
 
     let mut usage_collector = ResponseUsageCollector::new(is_stream);
     let mut body_stream = upstream.bytes_stream();
+    let mut wrote_first_chunk = false;
     let stream_started_at = Instant::now();
     let mut first_chunk_logged = false;
     loop {
@@ -14010,7 +20368,7 @@ async fn write_upstream_response(
                 stream_total_timeout.as_secs()
             );
             legacy_debug_log(
-                debug_logs && is_stream,
+                debug_logs,
                 format!(
                     "stream_total_timeout method={} target={} latency_ms={} detail={}",
                     request.method,
@@ -14047,7 +20405,77 @@ async fn write_upstream_response(
         let Some(chunk_result) = next_chunk else {
             break;
         };
-        let chunk = chunk_result.map_err(|e| format!("读取上游响应失败: {}", e))?;
+        let chunk = match chunk_result {
+            Ok(chunk) => chunk,
+            Err(e) => {
+                let message = format!("读取上游响应失败: {}", e);
+                let response_capture = usage_collector.finish();
+                let mut detail = stream_terminal_audit_detail(content_type, &response_capture);
+                detail.insert(
+                    "terminal_origin".to_string(),
+                    "upstream_stream_error".to_string(),
+                );
+                detail.insert(
+                    "message".to_string(),
+                    safe_log_field(Some(message.as_str()), 512),
+                );
+                detail.insert(
+                    "terminal_contract".to_string(),
+                    if is_stream {
+                        "response_failed_sse"
+                    } else {
+                        "transport_error"
+                    }
+                    .to_string(),
+                );
+                record_stream_audit_event_with_detail(
+                    audit_context,
+                    status,
+                    Some("upstream_stream_error"),
+                    "upstream_error",
+                    "error",
+                    content_type,
+                    detail,
+                );
+                if is_stream {
+                    let terminal_sse = build_responses_upstream_stream_error_sse(&message);
+                    let write_result =
+                        match write_chunked_response_chunk(stream, &terminal_sse).await {
+                            Ok(()) => finish_chunked_response(stream).await,
+                            Err(err) => Err(err),
+                        };
+                    match write_result {
+                        Ok(()) => {
+                            record_stream_terminal_error_audit_event(
+                                audit_context,
+                                status,
+                                content_type,
+                                "upstream_stream_error",
+                                &message,
+                                &response_capture,
+                                "response_failed_sse",
+                            );
+                        }
+                        Err(write_err) => {
+                            record_stream_terminal_error_audit_event(
+                                audit_context,
+                                status,
+                                content_type,
+                                "upstream_stream_error",
+                                &format!(
+                                    "{}; 写入 downstream terminal SSE 失败: {}",
+                                    message, write_err
+                                ),
+                                &response_capture,
+                                "response_failed_sse_write_failed",
+                            );
+                            return Err(format!("{}; 写入下游失败: {}", message, write_err));
+                        }
+                    }
+                }
+                return Err(message);
+            }
+        };
         if chunk.is_empty() {
             continue;
         }
@@ -14065,10 +20493,22 @@ async fn write_upstream_response(
             );
         }
         write_chunked_response_chunk(stream, &chunk).await?;
+        if !wrote_first_chunk {
+            wrote_first_chunk = true;
+            write_state.mark_first_chunk_written();
+            record_stream_audit_event(
+                audit_context,
+                status,
+                "first_chunk_written",
+                "ok",
+                content_type,
+            );
+        }
         usage_collector.feed(&chunk);
     }
 
     finish_chunked_response(stream).await?;
+    record_stream_audit_event(audit_context, status, "finished", "ok", content_type);
     let response_capture = usage_collector.finish();
     if let Some(terminal_error) = response_capture.terminal_error.as_deref() {
         legacy_debug_log(
@@ -14079,11 +20519,28 @@ async fn write_upstream_response(
                 request.target,
                 status.as_u16(),
                 started_at.elapsed().as_millis(),
-                escape_failure_detail(&terminal_error)
+                escape_failure_detail(terminal_error)
             ),
+        );
+        record_stream_terminal_error_audit_event(
+            audit_context,
+            status,
+            content_type,
+            "upstream_response_failed",
+            terminal_error,
+            &response_capture,
+            "response_failed_sse",
         );
         return Err(terminal_error.to_string());
     }
+    record_stream_terminal_audit_event(
+        audit_context,
+        status,
+        "finished",
+        "ok",
+        content_type,
+        &response_capture,
+    );
     legacy_debug_log(
         debug_logs && is_stream,
         format!(
@@ -14155,6 +20612,61 @@ fn should_retry_single_account_upstream_status(status: StatusCode) -> bool {
     )
 }
 
+fn hard_affinity_inline_retry_wait_limit(_config: &CodexLocalApiSafetyConfig) -> Duration {
+    MAX_INLINE_ACCOUNT_RETRY_WAIT
+}
+
+fn should_retry_hard_affinity_upstream_failure(
+    hard_affinity_active: bool,
+    classified: &ClassifiedCodexUpstreamError,
+    retry_attempt: usize,
+    max_retry_attempts: usize,
+    retry_wait_limit: Duration,
+) -> Option<Duration> {
+    if !hard_affinity_active
+        || retry_attempt >= max_retry_attempts
+        || !classified.safe_for_request_failover()
+    {
+        return None;
+    }
+
+    classified
+        .retry_after
+        .filter(|wait| *wait <= retry_wait_limit)
+}
+
+fn single_account_status_retry_delay(retry_attempt: usize) -> Duration {
+    let multiplier = match retry_attempt {
+        0 | 1 => 1u32,
+        2 => 2u32,
+        _ => 4u32,
+    };
+    let delay = SINGLE_ACCOUNT_STATUS_RETRY_BASE_DELAY.saturating_mul(multiplier);
+    if delay > SINGLE_ACCOUNT_STATUS_RETRY_MAX_DELAY {
+        SINGLE_ACCOUNT_STATUS_RETRY_MAX_DELAY
+    } else {
+        delay
+    }
+}
+
+fn build_api_key_upstream_url(account: &CodexAccount, target: &str) -> Result<String, String> {
+    let base_url = account
+        .api_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("https://api.openai.com/v1");
+    let base_url = base_url.trim_end_matches('/');
+    let target = if target.starts_with('/') {
+        target.to_string()
+    } else {
+        format!("/{}", target)
+    };
+    Url::parse(&format!("{}{}", base_url, target))
+        .map(|url| url.to_string())
+        .map_err(|err| format!("API Key 账号的 Base URL 无效: {}", err))
+}
+
 fn build_account_scoped_upstream_body<'a>(
     target: &str,
     body: &'a [u8],
@@ -14207,8 +20719,24 @@ async fn send_upstream_request(
 ) -> Result<reqwest::Response, String> {
     let method =
         Method::from_bytes(method.as_bytes()).map_err(|e| format!("不支持的请求方法: {}", e))?;
-    let url = build_upstream_url(account, target)?;
-    let upstream_token = account_upstream_token(account)?;
+    let api_key = account
+        .openai_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let use_api_key_upstream = account.is_api_key_auth() || api_key.is_some();
+    let url = if use_api_key_upstream {
+        build_api_key_upstream_url(account, target)?
+    } else {
+        build_upstream_url(account, target)?
+    };
+    let upstream_token = if use_api_key_upstream {
+        api_key
+            .map(str::to_string)
+            .ok_or_else(|| "API Key 账号缺少上游 API Key".to_string())?
+    } else {
+        account_upstream_token(account)?
+    };
     let client = upstream_http_client(upstream_proxy_url, connect_timeout)?;
     let upstream_body = build_account_scoped_upstream_body(
         target,
@@ -14229,7 +20757,11 @@ async fn send_upstream_request(
                     | "content-length"
                     | "connection"
                     | "accept-encoding"
-                    | "proxy-connection"
+                    | "upgrade"
+                    | "sec-websocket-key"
+                    | "sec-websocket-version"
+                    | "sec-websocket-protocol"
+                    | "sec-websocket-extensions"
                     | "x-api-key"
                     | "x-agtools-local-request-kind"
             ) {
@@ -14243,7 +20775,7 @@ async fn send_upstream_request(
         }
 
         request = request.header(AUTHORIZATION, format!("Bearer {}", upstream_token));
-        if !account.is_api_key_auth() && !headers.contains_key("user-agent") {
+        if !headers.contains_key("user-agent") {
             request = request.header(USER_AGENT, DEFAULT_CODEX_USER_AGENT);
         }
         if !account.is_api_key_auth()
@@ -14259,7 +20791,7 @@ async fn send_upstream_request(
         if !account.is_api_key_auth() && !headers.contains_key("originator") {
             request = request.header("Originator", DEFAULT_CODEX_ORIGINATOR);
         }
-        if !account.is_api_key_auth() {
+        if !use_api_key_upstream {
             if let Some(account_id) = resolve_upstream_account_id(account) {
                 request = request.header("ChatGPT-Account-Id", account_id);
             }
@@ -14306,19 +20838,9 @@ async fn send_upstream_request(
 async fn proxy_request_with_account_pool(
     request: &ParsedRequest,
     collection: &CodexLocalAccessCollection,
-    api_key: &ResolvedLocalApiKey,
     request_kind: CodexLocalAccessRequestKind,
 ) -> Result<ProxyDispatchSuccess, ProxyDispatchError> {
-    let scoped_account_ids = scoped_collection_account_ids(collection, api_key);
-    if scoped_account_ids.is_empty() {
-        return Err(ProxyDispatchError {
-            status: 503,
-            message: "本地接入集合暂无账号".to_string(),
-            account_id: None,
-            account_email: None,
-            error_category: Some("no_accounts".to_string()),
-        });
-    }
+    let mut routing_account_ids = build_routing_pool_account_ids(collection);
 
     let upstream_target =
         resolve_upstream_target(&request.target).map_err(|err| ProxyDispatchError {
@@ -14327,6 +20849,8 @@ async fn proxy_request_with_account_pool(
             account_id: None,
             account_email: None,
             error_category: Some("bad_request".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
         })?;
     let timeouts = collection_timeouts(collection);
     let upstream_connect_timeout = duration_from_millis(
@@ -14334,28 +20858,101 @@ async fn proxy_request_with_account_pool(
         DEFAULT_UPSTREAM_CONNECT_TIMEOUT,
     );
     let routing_hint = build_request_routing_hint(request);
-    let total = scoped_account_ids.len();
-    let configured_max_credentials = collection.max_retry_credentials as usize;
-    let max_credential_attempts = if configured_max_credentials == 0 {
-        total
-    } else {
-        configured_max_credentials.min(total)
-    }
-    .min(MAX_RETRY_CREDENTIALS_PER_REQUEST)
-    .max(1);
-    let session_affinity_key = routing_hint
-        .session_affinity_key
-        .as_deref()
-        .filter(|_| collection.session_affinity)
-        .map(session_affinity_binding_key);
-    let affinity_account_id = if let Some(session_key) = session_affinity_key.as_deref() {
-        resolve_affinity_account(session_key).await
-    } else {
-        match routing_hint.previous_response_id.as_deref() {
-            Some(previous_response_id) => resolve_affinity_account(previous_response_id).await,
-            None => None,
+    let mut health_registry =
+        load_health_registry_from_disk().map_err(|err| ProxyDispatchError {
+            status: 503,
+            message: format!("API 服务健康状态不可用，请手动检查后重试: {}", err),
+            account_id: None,
+            account_email: None,
+            error_category: Some("health_registry_unavailable".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
+        })?;
+    let now = now_ms();
+    let sticky_pruned = prune_process_sticky_binding(
+        &mut health_registry,
+        &routing_account_ids,
+        Some(&routing_hint.model_key),
+        now,
+    );
+    let request_affinity_pruned =
+        prune_persisted_request_affinity_bindings(&mut health_registry, None, now);
+    if sticky_pruned || request_affinity_pruned {
+        if let Err(err) = save_health_registry_to_disk(&health_registry) {
+            log_health_registry_update_error(&err);
         }
+    }
+    let active_stream_affinity_account_id = active_stream_affinity_account_for_request(request);
+    let response_affinity_account_id = match routing_hint.previous_response_id.as_deref() {
+        Some(previous_response_id) => resolve_affinity_account(previous_response_id)
+            .await
+            .or_else(|| {
+                infer_single_account_continuation_affinity(
+                    Some(previous_response_id),
+                    &routing_account_ids,
+                )
+            }),
+        None => None,
     };
+    let request_affinity_account_id = resolve_request_affinity_account_from_runtime(request)
+        .await
+        .or_else(|| request_affinity_account_from_registry(&health_registry, request, now));
+    let hard_affinity_account_id = active_stream_affinity_account_id
+        .clone()
+        .or(response_affinity_account_id.clone())
+        .or(request_affinity_account_id.clone());
+    let affinity_account_id = hard_affinity_account_id.clone();
+    let hard_affinity_source = if active_stream_affinity_account_id.is_some() {
+        "active_stream"
+    } else if response_affinity_account_id.is_some() {
+        "previous_response_id"
+    } else if request_affinity_account_id.is_some() {
+        "codex_turn_state"
+    } else {
+        "none"
+    };
+    let request_affinity_mode = if request_affinity_account_id.is_some() {
+        if active_stream_affinity_account_id.is_some() {
+            "active_stream_hard"
+        } else {
+            "turn_state_hard"
+        }
+    } else {
+        "absent"
+    };
+    if let Some(account_id) = affinity_account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !routing_account_ids
+            .iter()
+            .any(|candidate| candidate == account_id)
+            && !health_registry_account_has_hard_block(&health_registry, account_id)
+        {
+            routing_account_ids.push(account_id.to_string());
+        }
+    }
+
+    if routing_account_ids.is_empty() {
+        return Err(ProxyDispatchError {
+            status: 503,
+            message: "本地接入集合暂无账号".to_string(),
+            account_id: None,
+            account_email: None,
+            error_category: Some("no_accounts".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
+        });
+    }
+
+    let total = routing_account_ids.len();
+    let mut max_credential_attempts = total
+        .min(retry_failover_account_attempt_limit(
+            &collection.safety_config,
+        ))
+        .max(1);
+    let max_retry_attempts = retry_failover_max_retries(&collection.safety_config);
     let mut last_status = 503u16;
     let mut last_error = "本地接入集合暂无可用账号".to_string();
     let mut last_error_category: Option<String> = None;
@@ -14366,26 +20963,44 @@ async fn proxy_request_with_account_pool(
     let mut earliest_cooldown_wait: Option<Duration>;
 
     loop {
-        let start = GATEWAY_ROUND_ROBIN_CURSOR.fetch_add(1, Ordering::Relaxed);
-        let ordered_account_ids = request_ordered_account_ids(
-            collection,
-            &scoped_account_ids,
+        let start = next_routing_start_index(collection);
+        let ordered_account_ids =
+            build_ordered_account_ids(&routing_account_ids, start, affinity_account_id.as_deref());
+        let mut strategy_account_ids = apply_routing_strategy(
+            &ordered_account_ids,
+            collection.routing_strategy,
+            &collection.custom_routing_rules,
             start,
-            affinity_account_id.as_deref(),
         );
-        let strategy = if scoped_account_ids == collection.account_ids {
-            collection.routing_strategy
-        } else {
-            CodexLocalAccessRoutingStrategy::Auto
-        };
-        let strategy_account_ids = pin_account_to_front(
-            apply_routing_strategy(
-                &ordered_account_ids,
-                strategy,
-                &collection.custom_routing_rules,
-                start,
-            ),
+        let selector_now = now_ms();
+        sort_account_ids_by_health_estimate(
+            &mut strategy_account_ids,
+            &health_registry,
+            selector_now,
+        );
+        let process_sticky_account_id = process_sticky_account_id(
+            &health_registry,
+            &strategy_account_ids,
+            Some(&routing_hint.model_key),
+            selector_now,
+        );
+        let strategy_account_ids =
+            pin_account_to_front(strategy_account_ids, process_sticky_account_id.as_deref());
+        let strategy_account_ids =
+            pin_account_to_front(strategy_account_ids, affinity_account_id.as_deref());
+        let strategy_account_ids = constrain_previous_response_affinity(
+            strategy_account_ids,
+            hard_affinity_account_id.as_deref(),
+        );
+        let selector_candidate_ids = strategy_account_ids.clone();
+        let mut selector_audit_summary = build_selector_audit_summary(
+            &selector_candidate_ids,
+            &health_registry,
+            Some(&routing_hint.model_key),
+            selector_now,
+            max_credential_attempts,
             affinity_account_id.as_deref(),
+            sticky_pruned,
         );
         let mut attempted_in_round = false;
         let mut round_cooldown_wait: Option<Duration> = None;
@@ -14414,9 +21029,39 @@ async fn proxy_request_with_account_pool(
                 continue;
             }
 
-            if !collection.disable_cooling {
-                if let Some(wait) =
-                    get_model_cooldown_wait(&account_id, &routing_hint.model_key).await
+            let now = now_ms();
+            let is_hard_affinity_continuation =
+                hard_affinity_account_id.as_deref() == Some(account_id.as_str());
+            let has_hard_block =
+                health_registry_account_has_hard_block(&health_registry, &account_id);
+            // A bound continuation may still be accepted upstream even while
+            // new admissions for the same account/model are cooling down.
+            if let Some(wait) = health_registry_account_cooldown_wait(
+                &health_registry,
+                &account_id,
+                Some(&routing_hint.model_key),
+                now,
+            ) {
+                if !is_hard_affinity_continuation || has_hard_block {
+                    round_cooldown_wait = min_cooldown_wait(round_cooldown_wait, wait);
+                    continue;
+                }
+            }
+
+            if (!is_hard_affinity_continuation || has_hard_block)
+                && !health_registry_account_is_schedulable(
+                    &health_registry,
+                    &account_id,
+                    Some(&routing_hint.model_key),
+                    now,
+                )
+            {
+                continue;
+            }
+
+            if let Some(wait) = get_model_cooldown_wait(&account_id, &routing_hint.model_key).await
+            {
+                if !collection.disable_cooling && (!is_hard_affinity_continuation || has_hard_block)
                 {
                     round_cooldown_wait = Some(match round_cooldown_wait {
                         Some(current) if current <= wait => current,
@@ -14430,8 +21075,33 @@ async fn proxy_request_with_account_pool(
             attempts += 1;
 
             let mut account = match get_prepared_account(&account_id).await {
-                Ok(account) => account,
+                Ok(account) => {
+                    let context = build_audit_context(request, Some(account_id.as_str()));
+                    record_audit_event_from_context(
+                        &context,
+                        "auth_projection",
+                        None,
+                        None,
+                        None,
+                        Some("prepared"),
+                        BTreeMap::from([("source".to_string(), "prepared_account".to_string())]),
+                    );
+                    account
+                }
                 Err(err) => {
+                    let context = build_audit_context(request, Some(account_id.as_str()));
+                    record_audit_event_from_context(
+                        &context,
+                        "auth_projection",
+                        None,
+                        Some("auth_projection_error"),
+                        None,
+                        Some("prepare_failed"),
+                        BTreeMap::from([(
+                            "reason".to_string(),
+                            "prepare_account_failed".to_string(),
+                        )]),
+                    );
                     invalidate_prepared_account(&account_id).await;
                     log_codex_api_failure(
                         None,
@@ -14490,6 +21160,28 @@ async fn proxy_request_with_account_pool(
 
             let mut single_account_status_retry_attempt = 0usize;
             loop {
+                let admission_context = build_audit_context(request, Some(account.id.as_str()));
+                record_audit_event_from_context(
+                    &admission_context,
+                    "admission_attempt",
+                    None,
+                    None,
+                    None,
+                    Some("started"),
+                    BTreeMap::from([
+                        ("attempt".to_string(), attempts.to_string()),
+                        ("model_key".to_string(), routing_hint.model_key.clone()),
+                    ]),
+                );
+                record_audit_event_from_context(
+                    &admission_context,
+                    "upstream_forward",
+                    None,
+                    None,
+                    None,
+                    Some("send_started"),
+                    BTreeMap::from([("model_key".to_string(), routing_hint.model_key.clone())]),
+                );
                 let upstream_send_started_at = Instant::now();
                 legacy_debug_log(
                     collection.debug_logs,
@@ -14519,6 +21211,18 @@ async fn proxy_request_with_account_pool(
 
                 let mut response = match first_response {
                     Ok(response) => {
+                        record_audit_event_from_context(
+                            &admission_context,
+                            "upstream_forward",
+                            Some(response.status().as_u16()),
+                            None,
+                            None,
+                            Some("response_received"),
+                            BTreeMap::from([(
+                                "model_key".to_string(),
+                                routing_hint.model_key.clone(),
+                            )]),
+                        );
                         legacy_debug_log(
                             collection.debug_logs,
                             format!(
@@ -14547,14 +21251,15 @@ async fn proxy_request_with_account_pool(
                             ),
                         );
                         last_status = StatusCode::BAD_GATEWAY.as_u16();
-                        mark_account_failure(
-                            &account,
-                            Some(last_status),
-                            Some("upstream_network"),
-                            &err,
-                            request_kind,
-                        )
-                        .await;
+                        record_audit_event_from_context(
+                            &admission_context,
+                            "upstream_forward",
+                            None,
+                            Some("network_error"),
+                            None,
+                            Some("send_failed"),
+                            BTreeMap::from([("reason".to_string(), "send_error".to_string())]),
+                        );
                         log_codex_api_failure(
                             None,
                             Some(request),
@@ -14630,6 +21335,31 @@ async fn proxy_request_with_account_pool(
                     match force_refresh_gateway_account(&account_id).await {
                         Ok(refreshed_account) => {
                             account = refreshed_account;
+                            let context = build_audit_context(request, Some(account.id.as_str()));
+                            record_audit_event_from_context(
+                                &context,
+                                "auth_projection",
+                                Some(StatusCode::UNAUTHORIZED.as_u16()),
+                                None,
+                                None,
+                                Some("refreshed"),
+                                BTreeMap::from([(
+                                    "source".to_string(),
+                                    "force_refresh".to_string(),
+                                )]),
+                            );
+                            record_audit_event_from_context(
+                                &context,
+                                "upstream_forward",
+                                None,
+                                None,
+                                None,
+                                Some("send_started_after_refresh"),
+                                BTreeMap::from([(
+                                    "model_key".to_string(),
+                                    routing_hint.model_key.clone(),
+                                )]),
+                            );
                             response = match send_upstream_request(
                                 &request.method,
                                 &upstream_target,
@@ -14644,9 +21374,35 @@ async fn proxy_request_with_account_pool(
                             )
                             .await
                             {
-                                Ok(response) => response,
+                                Ok(response) => {
+                                    record_audit_event_from_context(
+                                        &context,
+                                        "upstream_forward",
+                                        Some(response.status().as_u16()),
+                                        None,
+                                        None,
+                                        Some("response_received_after_refresh"),
+                                        BTreeMap::from([(
+                                            "model_key".to_string(),
+                                            routing_hint.model_key.clone(),
+                                        )]),
+                                    );
+                                    response
+                                }
                                 Err(err) => {
                                     last_status = StatusCode::BAD_GATEWAY.as_u16();
+                                    record_audit_event_from_context(
+                                        &context,
+                                        "upstream_forward",
+                                        None,
+                                        Some("network_error"),
+                                        None,
+                                        Some("send_failed_after_refresh"),
+                                        BTreeMap::from([(
+                                            "reason".to_string(),
+                                            "send_error".to_string(),
+                                        )]),
+                                    );
                                     log_codex_api_failure(
                                         None,
                                         Some(request),
@@ -14663,7 +21419,17 @@ async fn proxy_request_with_account_pool(
                             };
 
                             if response.status() == StatusCode::UNAUTHORIZED {
-                                last_status = StatusCode::UNAUTHORIZED.as_u16();
+                                let auth_failure = classify_codex_upstream_error(
+                                    StatusCode::UNAUTHORIZED,
+                                    None,
+                                    "",
+                                );
+                                persist_health_registry_with_audit(
+                                    &account.id,
+                                    Some(&routing_hint.model_key),
+                                    request,
+                                    &auth_failure,
+                                );
                                 invalidate_prepared_account(&account_id).await;
                                 mark_account_failure(
                                     &account,
@@ -14676,28 +21442,33 @@ async fn proxy_request_with_account_pool(
                                 log_codex_api_failure(
                                     None,
                                     Some(request),
-                                    Some(last_status),
+                                    Some(StatusCode::UNAUTHORIZED.as_u16()),
                                     Some(account.id.as_str()),
                                     Some(account.email.as_str()),
                                     None,
-                                    format!("账号 {} 鉴权失败", account.email).as_str(),
+                                    auth_failure.safe_message.as_str(),
                                 );
-                                last_error = format!("账号 {} 鉴权失败", account.email);
-                                last_error_category = Some("auth_unavailable".to_string());
-                                break;
+                                return Err(ProxyDispatchError {
+                                    status: StatusCode::UNAUTHORIZED.as_u16(),
+                                    message: auth_failure.safe_message,
+                                    account_id: Some(account.id.clone()),
+                                    account_email: Some(account.email.clone()),
+                                    error_category: Some("auth_unavailable".to_string()),
+                                    retry_after: None,
+                                    defer_until_pool_available: false,
+                                });
                             }
                         }
                         Err(err) => {
-                            last_status = StatusCode::UNAUTHORIZED.as_u16();
                             invalidate_prepared_account(&account_id).await;
-                            mark_account_failure(
-                                &account,
-                                Some(last_status),
-                                Some("auth_refresh_failed"),
-                                &err,
-                                request_kind,
-                            )
-                            .await;
+                            let auth_failure =
+                                classify_codex_upstream_error(StatusCode::UNAUTHORIZED, None, "");
+                            persist_health_registry_with_audit(
+                                &account.id,
+                                Some(&routing_hint.model_key),
+                                request,
+                                &auth_failure,
+                            );
                             log_codex_api_failure(
                                 None,
                                 Some(request),
@@ -14707,16 +21478,92 @@ async fn proxy_request_with_account_pool(
                                 None,
                                 format!("账号刷新失败: {}", err).as_str(),
                             );
-                            last_error = err;
-                            last_error_category = Some("auth_refresh_failed".to_string());
-                            break;
+                            return Err(ProxyDispatchError {
+                                status: StatusCode::UNAUTHORIZED.as_u16(),
+                                message: auth_failure.safe_message,
+                                account_id: Some(account.id.clone()),
+                                account_email: Some(account.email.clone()),
+                                error_category: Some("auth_refresh_failed".to_string()),
+                                retry_after: None,
+                                defer_until_pool_available: false,
+                            });
                         }
                     }
                 }
 
                 if response.status().is_success() {
                     clear_model_cooldown(&account.id, &routing_hint.model_key).await;
-                    mark_account_success(&account, request_kind).await;
+                    bind_request_affinity(request, &account.id).await;
+                    persist_successful_routing_state(
+                        &account.id,
+                        request,
+                        Some(&routing_hint.model_key),
+                        affinity_account_id.is_none(),
+                    );
+                    let context = build_audit_context(request, Some(account.id.as_str()));
+                    record_audit_event_from_context(
+                        &context,
+                        "upstream_admitted",
+                        Some(response.status().as_u16()),
+                        None,
+                        None,
+                        Some("admitted"),
+                        BTreeMap::from([("model_key".to_string(), routing_hint.model_key.clone())]),
+                    );
+                    let selected_reason = selector_selected_reason(
+                        account.id.as_str(),
+                        active_stream_affinity_account_id.as_deref(),
+                        response_affinity_account_id.as_deref(),
+                        request_affinity_account_id.as_deref(),
+                        process_sticky_account_id.as_deref(),
+                    );
+                    let mut selector_detail = selector_audit_detail(
+                        &selector_audit_summary,
+                        selected_reason,
+                        &routing_hint.model_key,
+                    );
+                    selector_detail.insert(
+                        "hard_affinity_bound".to_string(),
+                        hard_affinity_account_id.is_some().to_string(),
+                    );
+                    selector_detail.insert(
+                        "active_stream_affinity_present".to_string(),
+                        active_stream_affinity_account_id.is_some().to_string(),
+                    );
+                    selector_detail.insert(
+                        "previous_response_affinity_present".to_string(),
+                        response_affinity_account_id.is_some().to_string(),
+                    );
+                    selector_detail.insert(
+                        "request_affinity_present".to_string(),
+                        request_affinity_account_id.is_some().to_string(),
+                    );
+                    selector_detail.insert(
+                        "request_affinity_mode".to_string(),
+                        request_affinity_mode.to_string(),
+                    );
+                    selector_detail.insert(
+                        "hard_affinity_source".to_string(),
+                        hard_affinity_source.to_string(),
+                    );
+                    record_audit_event_from_context(
+                        &context,
+                        "routing_decision",
+                        Some(response.status().as_u16()),
+                        None,
+                        None,
+                        Some("selected"),
+                        selector_detail.clone(),
+                    );
+                    record_audit_event_from_context(
+                        &context,
+                        "selector",
+                        Some(response.status().as_u16()),
+                        None,
+                        None,
+                        Some("selected"),
+                        selector_detail,
+                    );
                     return Ok(ProxyDispatchSuccess {
                         upstream: response,
                         account_id: account.id.clone(),
@@ -14725,21 +21572,32 @@ async fn proxy_request_with_account_pool(
                 }
 
                 let status = response.status();
+                let upstream_headers = response.headers().clone();
                 let body = response.text().await.unwrap_or_default();
-                let category = classify_upstream_error_category(status, &body);
-                let message = if category == Some("image_generation_not_enabled") {
-                    friendly_image_generation_capability_error(&account.email)
-                } else {
-                    summarize_upstream_error(status, &body)
-                };
-                mark_account_failure(
-                    &account,
-                    Some(status.as_u16()),
-                    category,
-                    &message,
-                    request_kind,
-                )
-                .await;
+                let classified =
+                    classify_codex_upstream_error(status, Some(&upstream_headers), &body);
+                let request_id = health_registry_request_id_from_request(request);
+                update_health_registry_from_classified_error(
+                    &mut health_registry,
+                    &account.id,
+                    Some(&routing_hint.model_key),
+                    request_id.as_deref(),
+                    &classified,
+                    now_ms(),
+                );
+                persist_account_quota_exhaustion_with_audit(
+                    &account.id,
+                    request,
+                    &classified,
+                    &body,
+                );
+                persist_health_registry_with_audit(
+                    &account.id,
+                    Some(&routing_hint.model_key),
+                    request,
+                    &classified,
+                );
+                let message = classified.safe_message.clone();
                 log_codex_api_failure(
                     None,
                     Some(request),
@@ -14747,28 +21605,32 @@ async fn proxy_request_with_account_pool(
                     Some(account.id.as_str()),
                     Some(account.email.as_str()),
                     None,
-                    format!("上游返回失败: {}", message).as_str(),
+                    format!(
+                        "上游返回失败: {} error_type={}",
+                        message,
+                        classified.error_type.as_str()
+                    )
+                    .as_str(),
                 );
 
-                if !collection.disable_cooling {
-                    if let Some(retry_after) = parse_codex_retry_after(status, &body) {
-                        set_model_cooldown(
-                            &account.id,
-                            &routing_hint.model_key,
-                            retry_after,
-                            "usage_limit_reached",
-                        )
-                        .await;
-                        round_cooldown_wait = Some(match round_cooldown_wait {
-                            Some(current) if current <= retry_after => current,
-                            _ => retry_after,
-                        });
-                    }
+                if let Some(retry_after) = classified.retry_after {
+                    set_model_cooldown(
+                        &account.id,
+                        &routing_hint.model_key,
+                        retry_after,
+                        "usage_limit_reached",
+                    )
+                    .await;
+                    round_cooldown_wait = Some(match round_cooldown_wait {
+                        Some(current) if current <= retry_after => current,
+                        _ => retry_after,
+                    });
                 }
 
                 let can_retry_single_account = total == 1
                     && single_account_status_retry_attempt
-                        < timeouts.single_account_status_retry_attempts as usize
+                        < max_retry_attempts
+                            .min(timeouts.single_account_status_retry_attempts as usize)
                     && should_retry_single_account_upstream_status(status);
                 if can_retry_single_account {
                     single_account_status_retry_attempt += 1;
@@ -14781,14 +21643,140 @@ async fn proxy_request_with_account_pool(
                     continue;
                 }
 
-                if should_try_next_account(status, &body) {
+                if classified.safe_for_request_failover() {
+                    let context = build_audit_context(request, Some(account.id.as_str()));
+                    let mut detail = classified_audit_detail(&classified);
+                    detail.insert("attempt".to_string(), attempts.to_string());
+                    let hard_affinity_bound = hard_affinity_account_id.is_some();
+                    let hard_affinity_active =
+                        hard_affinity_account_id.as_deref() == Some(account.id.as_str());
+                    let hard_affinity_retry_wait_limit =
+                        hard_affinity_inline_retry_wait_limit(&collection.safety_config);
+                    let extended_attempt_limit = should_extend_usage_limit_failover_attempts(
+                        hard_affinity_bound,
+                        &classified,
+                        attempts,
+                        max_credential_attempts,
+                        total,
+                    );
+                    if let Some(next_limit) = extended_attempt_limit {
+                        max_credential_attempts = next_limit;
+                        selector_audit_summary = build_selector_audit_summary(
+                            &selector_candidate_ids,
+                            &health_registry,
+                            Some(&routing_hint.model_key),
+                            selector_now,
+                            max_credential_attempts,
+                            affinity_account_id.as_deref(),
+                            sticky_pruned,
+                        );
+                    }
+                    detail.insert(
+                        "hard_affinity_bound".to_string(),
+                        hard_affinity_bound.to_string(),
+                    );
+                    detail.insert(
+                        "hard_affinity_source".to_string(),
+                        hard_affinity_source.to_string(),
+                    );
+                    detail.insert(
+                        "request_affinity_mode".to_string(),
+                        request_affinity_mode.to_string(),
+                    );
+                    if let Some(next_limit) = extended_attempt_limit {
+                        detail.insert(
+                            "usage_limit_rescue_extended".to_string(),
+                            "true".to_string(),
+                        );
+                        detail.insert(
+                            "usage_limit_rescue_cap_limit".to_string(),
+                            next_limit.to_string(),
+                        );
+                    }
+                    detail.insert(
+                        "max_credential_attempts".to_string(),
+                        max_credential_attempts.to_string(),
+                    );
+                    if hard_affinity_bound {
+                        detail.insert(
+                            "max_hard_affinity_inline_retry_wait_ms".to_string(),
+                            hard_affinity_retry_wait_limit.as_millis().to_string(),
+                        );
+                        detail.insert(
+                            "hard_affinity_inline_retry_wait_limit_ms".to_string(),
+                            hard_affinity_retry_wait_limit.as_millis().to_string(),
+                        );
+                    }
+                    let can_try_next_account =
+                        !hard_affinity_bound && attempts < max_credential_attempts;
+                    record_audit_event_from_context(
+                        &context,
+                        if can_try_next_account {
+                            "fallback_selected"
+                        } else {
+                            "fallback_blocked"
+                        },
+                        Some(status.as_u16()),
+                        Some(classified.error_type.as_str()),
+                        None,
+                        Some(if can_try_next_account {
+                            "next_account"
+                        } else if hard_affinity_bound {
+                            "hard_affinity"
+                        } else {
+                            "attempt_limit"
+                        }),
+                        detail,
+                    );
+                    if let Some(wait) = should_retry_hard_affinity_upstream_failure(
+                        hard_affinity_active,
+                        &classified,
+                        single_account_status_retry_attempt,
+                        max_retry_attempts,
+                        hard_affinity_retry_wait_limit,
+                    ) {
+                        single_account_status_retry_attempt += 1;
+                        record_hard_affinity_retry_wait_audit(
+                            request,
+                            account.id.as_str(),
+                            status,
+                            &classified,
+                            wait,
+                            hard_affinity_retry_wait_limit,
+                            "sleeping",
+                        );
+                        tokio::time::sleep(wait).await;
+                        record_hard_affinity_retry_wait_audit(
+                            request,
+                            account.id.as_str(),
+                            status,
+                            &classified,
+                            wait,
+                            hard_affinity_retry_wait_limit,
+                            "retrying",
+                        );
+                        continue;
+                    }
+                    if hard_affinity_bound {
+                        return Err(ProxyDispatchError {
+                            status: status.as_u16(),
+                            message,
+                            account_id: Some(account.id.clone()),
+                            account_email: Some(account.email.clone()),
+                            error_category: Some(classified.error_type.as_str().to_string()),
+                            retry_after: classified.retry_after,
+                            defer_until_pool_available: false,
+                        });
+                    }
                     last_status = status.as_u16();
-                    last_error = if category == Some("image_generation_not_enabled") {
-                        message.clone()
-                    } else {
+                    last_error = if can_try_next_account {
                         format!("账号 {} 当前不可用，已尝试轮转: {}", account.email, message)
+                    } else {
+                        format!(
+                            "账号 {} 当前不可用，已达到本次请求切号上限: {}",
+                            account.email, message
+                        )
                     };
-                    last_error_category = category.map(str::to_string);
                     break;
                 }
 
@@ -14797,7 +21785,9 @@ async fn proxy_request_with_account_pool(
                     message,
                     account_id: Some(account.id.clone()),
                     account_email: Some(account.email.clone()),
-                    error_category: category.map(str::to_string),
+                    error_category: Some(classified.error_type.as_str().to_string()),
+                    retry_after: None,
+                    defer_until_pool_available: false,
                 });
             }
         }
@@ -14806,24 +21796,40 @@ async fn proxy_request_with_account_pool(
         let Some(wait) = earliest_cooldown_wait else {
             break;
         };
-        let max_retry_wait = Duration::from_millis(
-            collection
-                .max_retry_interval_ms
-                .clamp(MAX_RETRY_INTERVAL_MIN_MS, MAX_RETRY_INTERVAL_MAX_MS),
-        );
+        if !attempted_in_round {
+            let pool_summary = summarize_pool_unavailability(
+                &health_registry,
+                &routing_account_ids,
+                Some(&routing_hint.model_key),
+                now_ms(),
+            );
+            let use_pool_unavailable_summary = should_use_pool_unavailable_summary(&pool_summary);
+            return Err(ProxyDispatchError {
+                status: if use_pool_unavailable_summary {
+                    status_for_pool_unavailable(&pool_summary)
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE.as_u16()
+                },
+                message: if use_pool_unavailable_summary {
+                    build_pool_unavailable_message(&routing_hint.model_key, &pool_summary)
+                } else {
+                    build_cooldown_unavailable_message(&routing_hint.model_key, wait)
+                },
+                account_id: affinity_account_id.clone(),
+                account_email: None,
+                error_category: if use_pool_unavailable_summary {
+                    Some("pool_unavailable".to_string())
+                } else {
+                    Some("cooldown_unavailable".to_string())
+                },
+                retry_after: Some(wait),
+                defer_until_pool_available: true,
+            });
+        }
         if attempts >= max_credential_attempts
-            || retry_round >= MAX_REQUEST_RETRY_ATTEMPTS
-            || wait > max_retry_wait
+            || retry_round >= max_retry_attempts
+            || wait > MAX_INLINE_ACCOUNT_RETRY_WAIT
         {
-            if !attempted_in_round {
-                return Err(ProxyDispatchError {
-                    status: StatusCode::TOO_MANY_REQUESTS.as_u16(),
-                    message: build_cooldown_unavailable_message(&routing_hint.model_key, wait),
-                    account_id: affinity_account_id.clone(),
-                    account_email: None,
-                    error_category: Some("cooldown".to_string()),
-                });
-            }
             break;
         }
 
@@ -14831,15 +21837,32 @@ async fn proxy_request_with_account_pool(
         retry_round += 1;
     }
 
+    let pool_summary = summarize_pool_unavailability(
+        &health_registry,
+        &routing_account_ids,
+        Some(&routing_hint.model_key),
+        now_ms(),
+    );
+    let use_pool_unavailable_summary = should_use_pool_unavailable_summary(&pool_summary);
+    let pool_retry_after = if use_pool_unavailable_summary {
+        pool_summary.nearest_wait
+    } else {
+        None
+    };
+
     Err(ProxyDispatchError {
-        status: if last_status == 503 {
+        status: if use_pool_unavailable_summary {
+            status_for_pool_unavailable(&pool_summary)
+        } else if last_status == 503 {
             earliest_cooldown_wait
                 .map(|_| StatusCode::TOO_MANY_REQUESTS.as_u16())
                 .unwrap_or(last_status)
         } else {
             last_status
         },
-        message: if matches!(last_status, 429 | 503) {
+        message: if use_pool_unavailable_summary {
+            build_pool_unavailable_message(&routing_hint.model_key, &pool_summary)
+        } else if matches!(last_status, 429 | 503) {
             earliest_cooldown_wait
                 .map(|wait| build_cooldown_unavailable_message(&routing_hint.model_key, wait))
                 .unwrap_or(last_error)
@@ -14848,7 +21871,14 @@ async fn proxy_request_with_account_pool(
         },
         account_id: last_account_id,
         account_email: last_account_email,
-        error_category: last_error_category,
+        error_category: if use_pool_unavailable_summary {
+            Some("pool_unavailable".to_string())
+        } else {
+            last_error_category
+        },
+        retry_after: earliest_cooldown_wait.or(pool_retry_after),
+        defer_until_pool_available: use_pool_unavailable_summary
+            && should_defer_pool_unavailable(&pool_summary),
     })
 }
 
@@ -14864,6 +21894,12 @@ fn is_websocket_upgrade_request(request: &ParsedRequest) -> bool {
         })
         .unwrap_or(false);
     upgrade && connection && header_value(&request.headers, "sec-websocket-key").is_some()
+}
+
+fn is_responses_websocket_upgrade_request(request: &ParsedRequest) -> bool {
+    request.method.eq_ignore_ascii_case("GET")
+        && is_responses_request(&request.target)
+        && is_websocket_upgrade_request(request)
 }
 
 fn websocket_accept_value(sec_websocket_key: &str) -> String {
@@ -15265,15 +22301,19 @@ fn websocket_connect_error_from_http_response(
     status: StatusCode,
     body: String,
 ) -> WebSocketConnectError {
-    let category = classify_upstream_error_category(status, &body)
-        .unwrap_or("upstream_websocket")
-        .to_string();
+    let classified = classify_codex_upstream_error(status, None, &body);
+    let category = if status == StatusCode::UNAUTHORIZED {
+        "auth_unavailable"
+    } else {
+        classified.error_type.as_str()
+    }
+    .to_string();
     let message = if body.trim().is_empty() {
         format!("Codex 上游 WebSocket 握手失败: HTTP {}", status.as_u16())
     } else {
         format!(
             "Codex 上游 WebSocket 握手失败: {}",
-            summarize_upstream_error(status, &body)
+            extract_gateway_error_message(&body)
         )
     };
     WebSocketConnectError {
@@ -15386,17 +22426,17 @@ async fn connect_upstream_websocket(
 async fn proxy_websocket_with_account_pool(
     request: &ParsedRequest,
     collection: &CodexLocalAccessCollection,
-    api_key: &ResolvedLocalApiKey,
     request_kind: CodexLocalAccessRequestKind,
 ) -> Result<WebSocketDispatchSuccess, ProxyDispatchError> {
-    let scoped_account_ids = scoped_collection_account_ids(collection, api_key);
-    if scoped_account_ids.is_empty() {
+    if collection.account_ids.is_empty() {
         return Err(ProxyDispatchError {
             status: 503,
             message: "本地接入集合暂无账号".to_string(),
             account_id: None,
             account_email: None,
             error_category: Some("no_accounts".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
         });
     }
 
@@ -15407,6 +22447,8 @@ async fn proxy_websocket_with_account_pool(
             account_id: None,
             account_email: None,
             error_category: Some("bad_request".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
         })?;
     let timeouts = collection_timeouts(collection);
     let websocket_connect_timeout = duration_from_millis(
@@ -15414,7 +22456,7 @@ async fn proxy_websocket_with_account_pool(
         CODEX_WEBSOCKET_CONNECT_TIMEOUT,
     );
     let routing_hint = build_request_routing_hint(request);
-    let total = scoped_account_ids.len();
+    let total = collection.account_ids.len();
     let configured_max_credentials = collection.max_retry_credentials as usize;
     let max_credential_attempts = if configured_max_credentials == 0 {
         total
@@ -15434,21 +22476,20 @@ async fn proxy_websocket_with_account_pool(
     } else {
         None
     };
-    let ordered_account_ids = request_ordered_account_ids(
-        collection,
-        &scoped_account_ids,
-        start,
-        affinity_account_id.as_deref(),
-    );
-    let strategy = if scoped_account_ids == collection.account_ids {
-        collection.routing_strategy
-    } else {
-        CodexLocalAccessRoutingStrategy::Auto
-    };
+    let ordered_account_ids =
+        if collection.routing_strategy == CodexLocalAccessRoutingStrategy::Custom {
+            collection.account_ids.clone()
+        } else {
+            build_ordered_account_ids(
+                &collection.account_ids,
+                start,
+                affinity_account_id.as_deref(),
+            )
+        };
     let strategy_account_ids = pin_account_to_front(
         apply_routing_strategy(
             &ordered_account_ids,
-            strategy,
+            collection.routing_strategy,
             &collection.custom_routing_rules,
             start,
         ),
@@ -15669,6 +22710,8 @@ async fn proxy_websocket_with_account_pool(
         account_id: last_account_id,
         account_email: last_account_email,
         error_category: last_error_category,
+        retry_after: None,
+        defer_until_pool_available: false,
     })
 }
 
@@ -15943,13 +22986,7 @@ async fn handle_websocket_connection(
     };
     let routing_hint = build_request_routing_hint(&parsed);
 
-    match proxy_websocket_with_account_pool(
-        &parsed,
-        &collection,
-        &resolved_api_key,
-        stats_context.request_kind,
-    )
-    .await
+    match proxy_websocket_with_account_pool(&parsed, &collection, stats_context.request_kind).await
     {
         Ok(success) => {
             let account_id = success.account_id.clone();
@@ -16087,10 +23124,672 @@ async fn handle_websocket_connection(
     }
 }
 
+async fn pool_unavailable_from_snapshot(
+    request: &ParsedRequest,
+    collection: &CodexLocalAccessCollection,
+) -> Option<ProxyDispatchError> {
+    let routing_account_ids = build_routing_pool_account_ids(collection);
+    if routing_account_ids.is_empty() {
+        return None;
+    }
+
+    // Continuation turns must reach the affinity router; pre-admission pool
+    // snapshots are only allowed to reject genuinely new Responses requests.
+    if build_request_routing_hint(request)
+        .previous_response_id
+        .is_some()
+        || resolve_request_affinity_account(request).await.is_some()
+    {
+        return None;
+    }
+
+    let routing_hint = build_request_routing_hint(request);
+    let health_registry = load_health_registry_from_disk().ok()?;
+    let pool_summary = summarize_pool_unavailability(
+        &health_registry,
+        &routing_account_ids,
+        Some(&routing_hint.model_key),
+        now_ms(),
+    );
+    if !should_use_pool_unavailable_summary(&pool_summary) {
+        return None;
+    }
+    let defer_until_pool_available = should_defer_pool_unavailable(&pool_summary);
+
+    Some(ProxyDispatchError {
+        status: status_for_pool_unavailable(&pool_summary),
+        message: build_pool_unavailable_message(&routing_hint.model_key, &pool_summary),
+        account_id: None,
+        account_email: None,
+        error_category: Some("pool_unavailable".to_string()),
+        retry_after: pool_summary.nearest_wait,
+        defer_until_pool_available,
+    })
+}
+
+async fn deferred_pool_unavailable_from_snapshot(
+    request: &ParsedRequest,
+    collection: &CodexLocalAccessCollection,
+) -> Option<ProxyDispatchError> {
+    pool_unavailable_from_snapshot(request, collection)
+        .await
+        .filter(|error| error.defer_until_pool_available && error.retry_after.is_some())
+}
+
+fn record_hard_affinity_retry_wait_audit(
+    request: &ParsedRequest,
+    account_id: &str,
+    status: StatusCode,
+    classified: &ClassifiedCodexUpstreamError,
+    wait: Duration,
+    retry_wait_limit: Duration,
+    outcome: &str,
+) {
+    let context = build_audit_context(request, Some(account_id));
+    record_audit_event_from_context(
+        &context,
+        "pool_wait",
+        Some(status.as_u16()),
+        Some(classified.error_type.as_str()),
+        None,
+        Some(outcome),
+        BTreeMap::from([
+            (
+                "reason".to_string(),
+                "hard_affinity_same_account_retry".to_string(),
+            ),
+            ("retry_after_ms".to_string(), wait.as_millis().to_string()),
+            (
+                "max_inline_wait_ms".to_string(),
+                retry_wait_limit.as_millis().to_string(),
+            ),
+            (
+                "inline_wait_limit_ms".to_string(),
+                retry_wait_limit.as_millis().to_string(),
+            ),
+            (
+                "message".to_string(),
+                safe_log_field(Some(classified.safe_message.as_str()), 512),
+            ),
+        ]),
+    );
+}
+
+fn record_pool_wait_audit(
+    request: &ParsedRequest,
+    error: &ProxyDispatchError,
+    wait: Duration,
+    remaining_timeout: Duration,
+    outcome: &str,
+) {
+    let context = build_audit_context(request, error.account_id.as_deref());
+    let error_type = classify_codex_api_failure(Some(error.status), error.message.as_str());
+    record_audit_event_from_context(
+        &context,
+        "pool_wait",
+        Some(error.status),
+        Some(error_type),
+        None,
+        Some(outcome),
+        BTreeMap::from([
+            ("retry_after_ms".to_string(), wait.as_millis().to_string()),
+            (
+                "remaining_timeout_ms".to_string(),
+                remaining_timeout.as_millis().to_string(),
+            ),
+            (
+                "message".to_string(),
+                safe_log_field(Some(error.message.as_str()), 512),
+            ),
+        ]),
+    );
+}
+
+fn is_pool_unavailable_dispatch_error(error: &ProxyDispatchError) -> bool {
+    classify_codex_api_failure(Some(error.status), error.message.as_str()) == "pool_unavailable"
+}
+
+fn request_has_codex_sticky_routing_boundary(request: &ParsedRequest) -> bool {
+    official_codex_sticky_routing_boundary(request).is_some()
+}
+
+async fn request_has_resolved_hard_affinity(request: &ParsedRequest) -> bool {
+    if active_stream_affinity_account_for_request(request).is_some() {
+        return true;
+    }
+
+    let routing_hint = build_request_routing_hint(request);
+    if let Some(previous_response_id) = routing_hint.previous_response_id.as_deref() {
+        return resolve_affinity_account(previous_response_id)
+            .await
+            .is_some();
+    }
+
+    resolve_request_affinity_account(request).await.is_some()
+}
+
+fn should_write_in_band_pool_unavailable_response(
+    request: &ParsedRequest,
+    response_adapter: &GatewayResponseAdapter,
+    error: &ProxyDispatchError,
+) -> bool {
+    // Only independent /v1/responses requests may be closed with a local
+    // completed Responses payload. Official Codex sticky boundaries must keep
+    // the transport/error contract so a continuation is not mistaken for an
+    // upstream-completed turn.
+    is_pool_unavailable_dispatch_error(error)
+        && is_responses_request(&request.target)
+        && matches!(response_adapter, GatewayResponseAdapter::Passthrough { .. })
+        && !request_has_codex_sticky_routing_boundary(request)
+}
+
+fn build_synthetic_pool_unavailable_text(error: &ProxyDispatchError) -> String {
+    format!(
+        "Cockpit API Service pool_unavailable: {}\nrecover_action=retry_after_cooldown_or_start_new_task",
+        error.message.trim()
+    )
+}
+
+fn build_synthetic_pool_unavailable_responses_payload(
+    request: &ParsedRequest,
+    error: &ProxyDispatchError,
+    include_visible_text: bool,
+) -> Value {
+    let routing_hint = build_request_routing_hint(request);
+    let model = routing_hint
+        .model_key
+        .trim()
+        .is_empty()
+        .then(|| "unknown".to_string())
+        .unwrap_or(routing_hint.model_key);
+    let created_at = chrono::Utc::now().timestamp();
+    let response_id = format!("resp_cockpit_pool_unavailable_{}", now_ms());
+    let message_id = format!("msg_cockpit_pool_unavailable_{}", now_ms());
+    let text = if include_visible_text {
+        build_synthetic_pool_unavailable_text(error)
+    } else {
+        String::new()
+    };
+
+    json!({
+        "id": response_id,
+        "object": "response",
+        "created_at": created_at,
+        "completed_at": created_at,
+        "status": "completed",
+        "model": model,
+        "output": [{
+            "id": message_id,
+            "type": "message",
+            "status": "completed",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": text,
+                "annotations": []
+            }]
+        }],
+        "error": null,
+        "incomplete_details": null,
+        "parallel_tool_calls": true,
+        "previous_response_id": null,
+        "reasoning": {
+            "effort": null,
+            "summary": null
+        },
+        "store": false,
+        "text": {
+            "format": {
+                "type": "text"
+            }
+        },
+        "tool_choice": "auto",
+        "tools": [],
+        "truncation": "disabled",
+        "usage": {
+            "input_tokens": 0,
+            "input_tokens_details": {
+                "cached_tokens": 0
+            },
+            "output_tokens": 0,
+            "output_tokens_details": {
+                "reasoning_tokens": 0
+            },
+            "total_tokens": 0
+        },
+        "user": null,
+        "metadata": {
+            "cockpit_local_closure": "pool_unavailable",
+            "cockpit_completion_mode": "synthetic_pool_unavailable_notice",
+            "cockpit_completion_contract": "openai_codex_response_completed_with_visible_assistant_message",
+            "cockpit_recover_action": "retry_after_cooldown_or_start_new_task"
+        }
+    })
+}
+
+fn build_in_progress_pool_unavailable_response(payload: &Value) -> Value {
+    let mut response = payload.clone();
+    if let Some(object) = response.as_object_mut() {
+        object.insert("status".to_string(), json!("in_progress"));
+        object.insert("completed_at".to_string(), Value::Null);
+        object.insert("output".to_string(), json!([]));
+        object.insert("usage".to_string(), Value::Null);
+    }
+    response
+}
+
+fn build_completed_pool_unavailable_sse(payload: &Value) -> Vec<u8> {
+    let mut stream_body = String::new();
+    let response = payload.clone();
+    let in_progress_response = build_in_progress_pool_unavailable_response(payload);
+    let output_item = payload
+        .get("output")
+        .and_then(Value::as_array)
+        .and_then(|output| output.first())
+        .cloned()
+        .unwrap_or_else(|| {
+            json!({
+                "id": format!("msg_cockpit_pool_unavailable_{}", now_ms()),
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": []
+            })
+        });
+    let item_id = output_item
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("msg_cockpit_pool_unavailable");
+    let text = output_item
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|content| content.first())
+        .and_then(|part| part.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let in_progress_item = json!({
+        "id": item_id,
+        "type": "message",
+        "status": "in_progress",
+        "role": "assistant",
+        "content": []
+    });
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.created",
+        json!({
+            "type": "response.created",
+            "response": in_progress_response
+        }),
+    );
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.in_progress",
+        json!({
+            "type": "response.in_progress",
+            "response": build_in_progress_pool_unavailable_response(payload)
+        }),
+    );
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.output_item.added",
+        json!({
+            "type": "response.output_item.added",
+            "output_index": 0,
+            "item": in_progress_item
+        }),
+    );
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.content_part.added",
+        json!({
+            "type": "response.content_part.added",
+            "item_id": item_id,
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+                "type": "output_text",
+                "text": "",
+                "annotations": []
+            }
+        }),
+    );
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.output_text.delta",
+        json!({
+            "type": "response.output_text.delta",
+            "item_id": item_id,
+            "output_index": 0,
+            "content_index": 0,
+            "delta": text
+        }),
+    );
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.output_text.done",
+        json!({
+            "type": "response.output_text.done",
+            "item_id": item_id,
+            "output_index": 0,
+            "content_index": 0,
+            "text": text
+        }),
+    );
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.content_part.done",
+        json!({
+            "type": "response.content_part.done",
+            "item_id": item_id,
+            "output_index": 0,
+            "content_index": 0,
+            "part": {
+                "type": "output_text",
+                "text": text,
+                "annotations": []
+            }
+        }),
+    );
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.output_item.done",
+        json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": output_item
+        }),
+    );
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.completed",
+        json!({
+            "type": "response.completed",
+            "response": response
+        }),
+    );
+    stream_body.push_str("data: [DONE]\n\n");
+    stream_body.into_bytes()
+}
+
+fn build_responses_upstream_stream_error_sse(message: &str) -> Vec<u8> {
+    let created_at = chrono::Utc::now().timestamp();
+    let response_id = format!("resp_cockpit_upstream_stream_error_{}", now_ms());
+    let safe_message = safe_log_field(Some(message), 512);
+    let mut stream_body = String::from("\n\n");
+    push_named_sse_payload(
+        &mut stream_body,
+        "response.failed",
+        json!({
+            "type": "response.failed",
+            "response": {
+                "id": response_id,
+                "object": "response",
+                "created_at": created_at,
+                "status": "failed",
+                "model": "unknown",
+                "output": [],
+                "error": {
+                    "type": "server_error",
+                    "code": "cockpit_upstream_stream_error",
+                    "message": safe_message
+                },
+                "incomplete_details": null,
+                "usage": null,
+                "metadata": {
+                    "cockpit_terminal_origin": "upstream_stream_error",
+                    "cockpit_completion_contract": "openai_codex_response_failed_with_done"
+                }
+            }
+        }),
+    );
+    stream_body.push_str("data: [DONE]\n\n");
+    stream_body.into_bytes()
+}
+
+async fn write_in_band_pool_unavailable_response(
+    stream: &mut TcpStream,
+    request: &ParsedRequest,
+    response_adapter: &GatewayResponseAdapter,
+    stats_context: &RequestStatsContext,
+    error: &ProxyDispatchError,
+    latency_ms: u64,
+) -> Result<(), String> {
+    let is_stream_response = matches!(
+        response_adapter,
+        GatewayResponseAdapter::Passthrough {
+            request_is_stream: true
+        }
+    );
+    let payload = build_synthetic_pool_unavailable_responses_payload(request, error, true);
+    let response_id = extract_response_id(&payload);
+    let context = build_audit_context(request, error.account_id.as_deref());
+    let mut detail = BTreeMap::from([
+        ("latency_ms".to_string(), latency_ms.to_string()),
+        ("transport_status".to_string(), "200".to_string()),
+        ("original_status".to_string(), error.status.to_string()),
+        (
+            "codex_facing_terminal_contract".to_string(),
+            if is_stream_response {
+                "response.completed_local_pool_unavailable".to_string()
+            } else {
+                "json_completed_local_pool_unavailable".to_string()
+            },
+        ),
+        (
+            "recover_action".to_string(),
+            "retry_after_cooldown_or_start_new_task".to_string(),
+        ),
+        (
+            "terminal_origin".to_string(),
+            "local_pool_unavailable".to_string(),
+        ),
+        (
+            "message".to_string(),
+            safe_log_field(Some(error.message.as_str()), 512),
+        ),
+    ]);
+    if let Some(retry_after) = error.retry_after {
+        detail.insert(
+            "retry_after_ms".to_string(),
+            retry_after.as_millis().to_string(),
+        );
+    }
+    if let Some(response_id_hash) = response_id
+        .as_deref()
+        .and_then(|value| hashed_request_correlation_id("response", value))
+    {
+        detail.insert("upstream_response_id_hash".to_string(), response_id_hash);
+    }
+    record_audit_event_from_context(
+        &context,
+        "final_response",
+        Some(StatusCode::OK.as_u16()),
+        Some("pool_unavailable"),
+        Some(if is_stream_response {
+            "completed"
+        } else {
+            "json_completed"
+        }),
+        Some(if is_stream_response {
+            "in_band_local_completion"
+        } else {
+            "in_band_json_local_completion"
+        }),
+        detail,
+    );
+    match response_adapter {
+        GatewayResponseAdapter::Passthrough {
+            request_is_stream: true,
+        } => {
+            write_chunked_response_headers(
+                stream,
+                StatusCode::OK,
+                "OK",
+                "text/event-stream; charset=utf-8",
+                &HeaderMap::new(),
+                &[],
+            )
+            .await?;
+            write_chunked_response_chunk(stream, &build_completed_pool_unavailable_sse(&payload))
+                .await?;
+            finish_chunked_response(stream).await?;
+        }
+        GatewayResponseAdapter::Passthrough {
+            request_is_stream: false,
+        } => {
+            let payload_bytes = serde_json::to_vec(&payload)
+                .map_err(|e| format!("序列化 synthetic pool_unavailable 响应失败: {}", e))?;
+            write_http_response(
+                stream,
+                StatusCode::OK.as_u16(),
+                "OK",
+                "application/json; charset=utf-8",
+                &payload_bytes,
+            )
+            .await?;
+        }
+        _ => {
+            return Err("in-band pool_unavailable 仅支持 responses passthrough 请求".to_string());
+        }
+    }
+
+    if let Err(err) = record_request_stats(
+        None,
+        None,
+        Some(stats_context.api_key_id.as_str()),
+        Some(stats_context.api_key_label.as_str()),
+        Some(stats_context.model_id.as_str()),
+        stats_context.request_kind,
+        false,
+        Some("pool_unavailable"),
+        latency_ms,
+        None,
+    )
+    .await
+    {
+        logger::log_codex_api_warn(&format!("[CodexLocalAccess] 写入失败统计失败: {}", err));
+    }
+
+    Ok(())
+}
+
+async fn record_successful_proxy_stats(
+    account_id: &str,
+    account_email: &str,
+    started_at: Instant,
+    stats_context: &RequestStatsContext,
+    response_capture: &ResponseCapture,
+) {
+    let latency_ms = started_at.elapsed().as_millis() as u64;
+    if let Err(err) = record_request_stats(
+        Some(account_id),
+        Some(account_email),
+        Some(stats_context.api_key_id.as_str()),
+        Some(stats_context.api_key_label.as_str()),
+        Some(stats_context.model_id.as_str()),
+        stats_context.request_kind,
+        true,
+        None,
+        latency_ms,
+        response_capture.usage.clone(),
+    )
+    .await
+    {
+        logger::log_codex_api_warn(&format!("[CodexLocalAccess] 写入请求统计失败: {}", err));
+    }
+}
+
+async fn write_proxy_dispatch_error_response(
+    stream: &mut TcpStream,
+    addr: &std::net::SocketAddr,
+    request: &ParsedRequest,
+    error: ProxyDispatchError,
+    latency_ms: u64,
+    proxy_diagnostics: Option<&UpstreamProxyDiagnostics>,
+    stats_context: &RequestStatsContext,
+) -> Result<(), String> {
+    let ProxyDispatchError {
+        status,
+        message,
+        account_id,
+        account_email,
+        error_category,
+        retry_after,
+        defer_until_pool_available: _,
+    } = error;
+    let error_category = error_category.unwrap_or_else(|| {
+        proxy_dispatch_final_error_type(request, status, message.as_str()).to_string()
+    });
+    log_codex_api_failure(
+        Some(addr),
+        Some(request),
+        Some(status),
+        account_id.as_deref(),
+        account_email.as_deref(),
+        Some(latency_ms),
+        message.as_str(),
+    );
+    let context = build_audit_context(request, account_id.as_deref());
+    let detail = proxy_dispatch_final_error_detail(
+        request,
+        status,
+        message.as_str(),
+        retry_after,
+        latency_ms,
+    );
+    record_audit_event_from_context(
+        &context,
+        "final_response",
+        Some(status),
+        Some(error_category.as_str()),
+        None,
+        Some("error"),
+        detail,
+    );
+    let status_text = match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        429 => "Too Many Requests",
+        502 => "Bad Gateway",
+        _ => "Service Unavailable",
+    };
+    let body = if status == StatusCode::BAD_GATEWAY.as_u16() {
+        gateway_error_body(status, message.as_str(), proxy_diagnostics)
+    } else {
+        build_proxy_dispatch_error_body(request, status, message.as_str(), retry_after)
+    };
+    let response = json_response_with_retry_after(status, status_text, &body, retry_after);
+    let write_result = stream
+        .write_all(&response)
+        .await
+        .map_err(|e| format!("写入错误响应失败: {}", e));
+    if let Err(err) = record_request_stats(
+        account_id.as_deref(),
+        account_email.as_deref(),
+        Some(stats_context.api_key_id.as_str()),
+        Some(stats_context.api_key_label.as_str()),
+        Some(stats_context.model_id.as_str()),
+        stats_context.request_kind,
+        false,
+        Some(error_category.as_str()),
+        latency_ms,
+        None,
+    )
+    .await
+    {
+        logger::log_codex_api_warn(&format!("[CodexLocalAccess] 写入失败统计失败: {}", err));
+    }
+    write_result
+}
+
 async fn handle_connection(
     mut stream: TcpStream,
     addr: std::net::SocketAddr,
 ) -> Result<(), String> {
+    let request_body_limit_bytes = configured_request_body_limit_bytes();
     let request_read_timeout = {
         let runtime = gateway_runtime().lock().await;
         runtime
@@ -16105,8 +23804,29 @@ async fn handle_connection(
             })
             .unwrap_or(DEFAULT_REQUEST_READ_TIMEOUT)
     };
-    let raw_request = match read_http_request(&mut stream, request_read_timeout).await {
+    let raw_request = match read_http_request(
+        &mut stream,
+        request_body_limit_bytes,
+        request_read_timeout,
+    )
+    .await
+    {
         Ok(raw_request) => raw_request,
+        Err(error @ HttpRequestReadError::RequestTooLarge { .. }) => {
+            logger::log_codex_api_warn(&build_codex_api_failure_log(
+                None,
+                Some(StatusCode::PAYLOAD_TOO_LARGE.as_u16()),
+                None,
+                None,
+                &error.to_string(),
+            ));
+            let response = request_body_too_large_response(&error);
+            stream
+                .write_all(&response)
+                .await
+                .map_err(|e| format!("写入请求体过大响应失败: {}", e))?;
+            return Ok(());
+        }
         Err(err) => {
             let message = format!("读取本地 API 请求失败: {}", err);
             write_json_error_response(
@@ -16277,7 +23997,7 @@ async fn handle_connection(
     }
 
     if is_local_models_request(&parsed.target) {
-        if scoped_collection_account_ids(&collection, &resolved_api_key).is_empty() {
+        if collection.account_ids.is_empty() {
             write_json_error_response(
                 &mut stream,
                 Some(&addr),
@@ -16307,6 +24027,7 @@ async fn handle_connection(
         return Ok(());
     }
 
+    let client_route = failure_log_route(Some(&parsed));
     let started_at = Instant::now();
     if collection.image_generation_mode == CodexLocalAccessImageGenerationMode::Disabled
         && (is_images_generations_request(&parsed.target)
@@ -16411,24 +24132,58 @@ async fn handle_connection(
             return Ok(());
         }
     };
-    if let Err(err) = align_codex_prompt_cache(&mut prepared_request, &resolved_api_key) {
+    let response_adapter_kind = response_adapter.audit_kind();
+    let request_kind = request_kind_from_adapter(&response_adapter);
+    let stats_context = RequestStatsContext {
+        request_kind,
+        model_id: stats_model_id_for_request_kind(&prepared_request.body, request_kind),
+        api_key_id: resolved_api_key.id.clone(),
+        api_key_label: resolved_api_key.label.clone(),
+    };
+    let request_audit_context = build_audit_context(&prepared_request, None);
+    record_audit_event_from_context(
+        &request_audit_context,
+        "listener",
+        None,
+        None,
+        None,
+        Some("accepted"),
+        BTreeMap::from([
+            ("method".to_string(), prepared_request.method.clone()),
+            ("client_route".to_string(), client_route.clone()),
+            (
+                "response_adapter".to_string(),
+                response_adapter_kind.to_string(),
+            ),
+        ]),
+    );
+
+    if is_responses_websocket_upgrade_request(&prepared_request) {
+        let latency_ms = started_at.elapsed().as_millis() as u64;
+        record_audit_event_from_context(
+            &request_audit_context,
+            "websocket_unsupported",
+            Some(StatusCode::BAD_REQUEST.as_u16()),
+            Some("unsupported_websocket"),
+            None,
+            Some("fallback_required"),
+            BTreeMap::from([("fallback".to_string(), "responses_http_sse".to_string())]),
+        );
         write_json_error_response(
             &mut stream,
             Some(&addr),
             Some(&prepared_request),
-            400,
+            StatusCode::BAD_REQUEST.as_u16(),
             "Bad Request",
-            err.as_str(),
+            "Responses WebSocket is not supported by Cockpit local API service; retry with HTTP/SSE fallback",
             None,
             None,
-            Some(started_at.elapsed().as_millis() as u64),
+            Some(latency_ms),
         )
         .await?;
         return Ok(());
     }
     apply_codex_official_headers(&mut prepared_request);
-    let stats_context =
-        build_request_stats_context(&prepared_request, &response_adapter, &resolved_api_key);
     legacy_debug_log(
         collection.debug_logs,
         format!(
@@ -16443,25 +24198,199 @@ async fn handle_connection(
         ),
     );
 
-    match proxy_request_with_account_pool(
-        &prepared_request,
-        &collection,
-        &resolved_api_key,
-        stats_context.request_kind,
-    )
+    let normal_request_timeout =
+        Duration::from_secs(collection.safety_config.request_timeout_seconds.max(1));
+    let hard_affinity_wait_limit = hard_affinity_inline_retry_wait_limit(&collection.safety_config);
+    let hard_affinity_continuity = request_has_resolved_hard_affinity(&prepared_request).await;
+    let request_timeout = if hard_affinity_continuity {
+        normal_request_timeout.max(hard_affinity_wait_limit.saturating_add(Duration::from_secs(1)))
+    } else {
+        normal_request_timeout
+    };
+    let mut request_trace_detail = BTreeMap::from([
+        ("method".to_string(), prepared_request.method.clone()),
+        ("client_route".to_string(), client_route.clone()),
+        (
+            "response_adapter".to_string(),
+            response_adapter_kind.to_string(),
+        ),
+        (
+            "body_bytes".to_string(),
+            prepared_request.body.len().to_string(),
+        ),
+        (
+            "normal_request_timeout_ms".to_string(),
+            normal_request_timeout.as_millis().to_string(),
+        ),
+        (
+            "request_timeout_ms".to_string(),
+            request_timeout.as_millis().to_string(),
+        ),
+        (
+            "hard_affinity_continuity".to_string(),
+            hard_affinity_continuity.to_string(),
+        ),
+        (
+            "hard_affinity_wait_limit_ms".to_string(),
+            hard_affinity_wait_limit.as_millis().to_string(),
+        ),
+        (
+            "timeout_extended".to_string(),
+            (request_timeout > normal_request_timeout).to_string(),
+        ),
+    ]);
+    if let Some(boundary) = official_codex_sticky_routing_boundary(&prepared_request) {
+        request_trace_detail.insert("sticky_boundary".to_string(), boundary.reason().to_string());
+    }
+    record_audit_event_from_context(
+        &request_audit_context,
+        "request_trace",
+        None,
+        None,
+        None,
+        Some("prepared"),
+        request_trace_detail,
+    );
+    let dispatch_started_at = Instant::now();
+    let dispatch_result = match timeout(request_timeout, async {
+        loop {
+            if let Some(error) =
+                deferred_pool_unavailable_from_snapshot(&prepared_request, &collection).await
+            {
+                let Some(wait) = error.retry_after else {
+                    return Err(error);
+                };
+                let elapsed = dispatch_started_at.elapsed();
+                if !pool_wait_fits_request_budget(wait, elapsed, request_timeout) {
+                    return Err(error);
+                }
+                record_pool_wait_audit(
+                    &prepared_request,
+                    &error,
+                    wait,
+                    request_timeout.saturating_sub(elapsed),
+                    "sleeping",
+                );
+                tokio::time::sleep(wait).await;
+                record_pool_wait_audit(
+                    &prepared_request,
+                    &error,
+                    wait,
+                    request_timeout.saturating_sub(dispatch_started_at.elapsed()),
+                    "retrying",
+                );
+                continue;
+            }
+
+            let mut backpressure_permit =
+                if let Some(reason) = local_backpressure_bypass_reason(&prepared_request).await {
+                    record_audit_event_from_context(
+                        &request_audit_context,
+                        "local_backpressure",
+                        None,
+                        None,
+                        None,
+                        Some("bypassed"),
+                        BTreeMap::from([("reason".to_string(), reason.to_string())]),
+                    );
+                    LocalApiBackpressurePermit { released: true }
+                } else {
+                    let Some(queue_wait) =
+                        backpressure_wait_budget(dispatch_started_at.elapsed(), request_timeout)
+                    else {
+                        return Err(ProxyDispatchError {
+                            status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                            message: "本地接入请求排队超出本次请求超时预算，请稍后重试".to_string(),
+                            account_id: None,
+                            account_email: None,
+                            error_category: Some("local_backpressure_timeout".to_string()),
+                            retry_after: Some(Duration::from_secs(1)),
+                            defer_until_pool_available: false,
+                        });
+                    };
+                    acquire_local_api_backpressure_with_wait(&collection.safety_config, queue_wait)
+                        .await?
+                };
+            match proxy_request_with_account_pool(&prepared_request, &collection, request_kind)
+                .await
+            {
+                Ok(success) => {
+                    backpressure_permit.release();
+                    return Ok(success);
+                }
+                Err(error) if error.defer_until_pool_available => {
+                    let Some(wait) = error.retry_after else {
+                        return Err(error);
+                    };
+                    let elapsed = dispatch_started_at.elapsed();
+                    if !pool_wait_fits_request_budget(wait, elapsed, request_timeout) {
+                        return Err(error);
+                    }
+                    let remaining = request_timeout.saturating_sub(elapsed);
+                    record_pool_wait_audit(&prepared_request, &error, wait, remaining, "sleeping");
+                    backpressure_permit.release();
+                    tokio::time::sleep(wait).await;
+                    record_pool_wait_audit(
+                        &prepared_request,
+                        &error,
+                        wait,
+                        request_timeout.saturating_sub(dispatch_started_at.elapsed()),
+                        "retrying",
+                    );
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    })
     .await
     {
+        Ok(result) => result,
+        Err(_) => Err(ProxyDispatchError {
+            status: 503,
+            message: "本地接入请求超时，请稍后重试".to_string(),
+            account_id: None,
+            account_email: None,
+            error_category: Some("local_request_timeout".to_string()),
+            retry_after: Some(Duration::from_secs(1)),
+            defer_until_pool_available: false,
+        }),
+    };
+
+    match dispatch_result {
         Ok(success) => {
-            let ProxyDispatchSuccess {
-                upstream,
-                account_id,
-                account_email,
-            } = success;
+            let response_audit_context =
+                build_audit_context(&prepared_request, Some(success.account_id.as_str()));
+            let response_turn_state = codex_turn_state_response_header(
+                &prepared_request,
+                success.upstream.headers(),
+                success.upstream.status(),
+            );
+            if let Some(header) = response_turn_state.as_ref() {
+                if let Some(request_id) = codex_turn_state_request_id_from_value(&header.value) {
+                    bind_request_affinity_key(request_id.clone(), &success.account_id).await;
+                    persist_request_affinity_key(
+                        &success.account_id,
+                        &prepared_request,
+                        &request_id,
+                    );
+                }
+            }
+            let mut response_headers = Vec::new();
+            if let Some(header) = response_turn_state {
+                response_headers.push(header);
+            }
+            let mut active_lease = grant_active_stream_lease_for_request(
+                &response_audit_context,
+                &success.account_id,
+                &prepared_request,
+            );
             let timeouts = collection_timeouts(&collection);
             let response_capture = match write_gateway_response(
                 &mut stream,
-                upstream,
+                success.upstream,
                 response_adapter,
+                &response_headers,
+                Some(&response_audit_context),
                 collection.debug_logs,
                 &prepared_request,
                 started_at,
@@ -16471,6 +24400,7 @@ async fn handle_connection(
             {
                 Ok(response_capture) => response_capture,
                 Err(err) => {
+                    active_lease.release(classify_active_stream_terminal_error(&err));
                     if !is_client_disconnect_error_message(&err) {
                         let latency_ms = started_at.elapsed().as_millis() as u64;
                         let error_category = legacy_stream_error_category(&err);
@@ -16483,14 +24413,14 @@ async fn handle_connection(
                             Some(&addr),
                             Some(&prepared_request),
                             Some(status),
-                            Some(account_id.as_str()),
-                            Some(account_email.as_str()),
+                            Some(success.account_id.as_str()),
+                            Some(success.account_email.as_str()),
                             Some(latency_ms),
                             err.as_str(),
                         );
                         if let Err(stats_err) = record_request_stats(
-                            Some(account_id.as_str()),
-                            Some(account_email.as_str()),
+                            Some(success.account_id.as_str()),
+                            Some(success.account_email.as_str()),
                             Some(stats_context.api_key_id.as_str()),
                             Some(stats_context.api_key_label.as_str()),
                             Some(stats_context.model_id.as_str()),
@@ -16511,37 +24441,43 @@ async fn handle_connection(
                     return Err(err);
                 }
             };
+            active_lease.release(ActiveStreamTerminal::Completed);
             if let Some(response_id) = response_capture.response_id.as_deref() {
-                bind_response_affinity(response_id, &account_id).await;
+                bind_response_affinity(response_id, &success.account_id).await;
+                if let Some(response_id_hash) =
+                    hashed_request_correlation_id("response", response_id)
+                {
+                    record_audit_event_from_context(
+                        &response_audit_context,
+                        "response_affinity_bound",
+                        None,
+                        None,
+                        None,
+                        Some("bound"),
+                        BTreeMap::from([(
+                            "upstream_response_id_hash".to_string(),
+                            response_id_hash,
+                        )]),
+                    );
+                }
             }
             if collection.session_affinity {
                 let session_key = build_request_routing_hint(&prepared_request)
                     .session_affinity_key
                     .map(|key| session_affinity_binding_key(&key));
                 if let Some(session_key) = session_key.as_deref() {
-                    bind_response_affinity(session_key, &account_id).await;
+                    bind_response_affinity(session_key, &success.account_id).await;
                 }
             }
-            let latency_ms = started_at.elapsed().as_millis() as u64;
-            if let Err(err) = record_request_stats(
-                Some(account_id.as_str()),
-                Some(account_email.as_str()),
-                Some(stats_context.api_key_id.as_str()),
-                Some(stats_context.api_key_label.as_str()),
-                Some(stats_context.model_id.as_str()),
-                stats_context.request_kind,
-                true,
-                None,
-                latency_ms,
-                response_capture.usage,
+            record_successful_proxy_stats(
+                &success.account_id,
+                &success.account_email,
+                started_at,
+                &stats_context,
+                &response_capture,
             )
-            .await
-            {
-                logger::log_codex_api_warn(&format!(
-                    "[CodexLocalAccess] 写入请求统计失败: {}",
-                    err
-                ));
-            }
+            .await;
+            let latency_ms = started_at.elapsed().as_millis() as u64;
             legacy_debug_log(
                 collection.debug_logs,
                 format!(
@@ -16549,74 +24485,45 @@ async fn handle_connection(
                     addr,
                     prepared_request.method,
                     prepared_request.target,
-                    account_id,
-                    account_email,
+                    success.account_id,
+                    success.account_email,
                     latency_ms
                 ),
             );
             Ok(())
         }
         Err(error) => {
-            let ProxyDispatchError {
-                status,
-                message,
-                account_id,
-                account_email,
-                error_category,
-            } = error;
             let latency_ms = started_at.elapsed().as_millis() as u64;
-            log_codex_api_failure(
-                Some(&addr),
-                Some(&prepared_request),
-                Some(status),
-                account_id.as_deref(),
-                account_email.as_deref(),
-                Some(latency_ms),
-                message.as_str(),
-            );
-            let status_text = match status {
-                400 => "Bad Request",
-                401 => "Unauthorized",
-                403 => "Forbidden",
-                404 => "Not Found",
-                405 => "Method Not Allowed",
-                429 => "Too Many Requests",
-                502 => "Bad Gateway",
-                422 => "Unprocessable Entity",
-                _ => "Service Unavailable",
-            };
-            let proxy_diagnostics = (status == StatusCode::BAD_GATEWAY.as_u16()).then(|| {
-                current_upstream_proxy_diagnostics(collection.upstream_proxy_url.as_deref())
-            });
-            let response = json_response(
-                status,
-                status_text,
-                &gateway_error_body(status, &message, proxy_diagnostics.as_ref()),
-            );
-            let write_result = stream
-                .write_all(&response)
+            if should_write_in_band_pool_unavailable_response(
+                &prepared_request,
+                &response_adapter,
+                &error,
+            ) {
+                write_in_band_pool_unavailable_response(
+                    &mut stream,
+                    &prepared_request,
+                    &response_adapter,
+                    &stats_context,
+                    &error,
+                    latency_ms,
+                )
                 .await
-                .map_err(|e| format!("写入错误响应失败: {}", e));
-            if let Err(err) = record_request_stats(
-                account_id.as_deref(),
-                account_email.as_deref(),
-                Some(stats_context.api_key_id.as_str()),
-                Some(stats_context.api_key_label.as_str()),
-                Some(stats_context.model_id.as_str()),
-                stats_context.request_kind,
-                false,
-                error_category.as_deref(),
-                latency_ms,
-                None,
-            )
-            .await
-            {
-                logger::log_codex_api_warn(&format!(
-                    "[CodexLocalAccess] 写入失败统计失败: {}",
-                    err
-                ));
+            } else {
+                let proxy_diagnostics =
+                    (error.status == StatusCode::BAD_GATEWAY.as_u16()).then(|| {
+                        current_upstream_proxy_diagnostics(collection.upstream_proxy_url.as_deref())
+                    });
+                write_proxy_dispatch_error_response(
+                    &mut stream,
+                    &addr,
+                    &prepared_request,
+                    error,
+                    latency_ms,
+                    proxy_diagnostics.as_ref(),
+                    &stats_context,
+                )
+                .await
             }
-            write_result
         }
     }
 }
@@ -16626,327 +24533,167 @@ mod tests {
     use base64::{engine::general_purpose, Engine as _};
 
     use super::{
-        account_model_rule_blocks_model, account_upstream_base_url, align_codex_prompt_cache,
-        apply_codex_official_headers, apply_routing_strategy,
-        backup_current_profile_model_before_provider_gateway, bridge_websocket_streams,
-        build_account_scoped_upstream_body, build_base_url_with_host,
-        build_chat_completion_payload, build_chat_completion_stream_body,
-        build_codex_client_models_response, build_collection_base_url, build_images_api_payload,
-        build_local_models_response, build_ordered_account_ids, build_request_routing_hint,
-        build_upstream_websocket_url, calculate_usage_cost_usd, canonical_model_for_client_model,
-        classify_upstream_error_category, cleanup_profile_takeover_without_backup,
-        cleanup_provider_gateway_profile_model_overrides,
+        account_model_rule_blocks_model, account_upstream_base_url, acquire_local_api_backpressure,
+        acquire_local_api_backpressure_with_wait, active_stream_affinity_account_for_request,
+        active_stream_lease_count_for_account, align_codex_prompt_cache,
+        append_audit_event_to_path, apply_audit_trail_status_to_health_summary,
+        apply_codex_official_headers, apply_collection_routing_strategy,
+        apply_local_api_safety_preset_to_collection, apply_routing_strategy,
+        backpressure_wait_budget, bind_response_affinity, bridge_websocket_streams,
+        build_account_scoped_upstream_body, build_audit_context, build_audit_event,
+        build_base_url_with_host, build_chat_completion_payload, build_chat_completion_stream_body,
+        build_codex_api_failure_log, build_codex_client_models_response, build_collection_base_url,
+        build_effective_local_access_account_ids,
+        build_effective_local_access_account_ids_from_registry, build_health_summary_from_registry,
+        build_health_summary_from_registry_for_accounts, build_images_api_payload,
+        build_local_models_response, build_ordered_account_ids, build_pool_unavailable_message,
+        build_projection_seed_local_access_account_ids, build_proxy_dispatch_error_body,
+        build_request_routing_hint, build_responses_upstream_stream_error_sse,
+        build_routing_pool_account_ids, build_runtime_account, build_runtime_mode_state,
+        build_selector_audit_summary, build_upstream_http_client, build_upstream_websocket_url,
+        cache_prepared_account, calculate_usage_cost_usd, canonical_model_for_client_model,
+        classified_audit_detail, classify_active_stream_terminal_error, classify_codex_api_failure,
+        classify_codex_upstream_error, classify_upstream_error_category,
+        cleanup_profile_takeover_without_backup,
         collect_local_access_profile_takeover_dirs_from_store, compare_routing_candidates,
-        extract_usage_capture, inspect_local_access_profile_config,
+        constrain_previous_response_affinity,
+        current_upstream_http_client_signature_with_env_proxy, empty_health_registry,
+        extract_output_text_from_response, extract_usage_capture, filter_local_access_account_ids,
+        first_audit_timestamp_from_path, first_non_empty_proxy_value,
+        first_stable_local_access_port, gateway_runtime, grant_active_stream_lease,
+        grant_active_stream_lease_for_request, handle_connection,
+        hard_affinity_inline_retry_wait_limit, health_registry_account_cooldown_wait,
+        health_registry_account_is_schedulable, health_registry_model_key,
+        inspect_local_access_profile_config, is_cached_health_summary_valid,
         is_codex_local_access_auth_text, is_codex_local_access_config_for_api_key,
         is_image_generation_capability_error, is_local_access_eligible_account,
-        is_responses_completion_event, is_stream_incomplete_error_message,
-        is_upstream_response_failed_error_message, legacy_stream_error_category,
-        local_access_chat_completions_url, merge_collection_and_account_excluded_models,
-        model_pricing, normalize_account_model_rules, normalize_custom_routing_rules,
-        normalized_sidecar_error_category, parse_codex_retry_after,
-        parse_responses_payload_from_upstream, parse_websocket_upstream_error,
-        prepare_gateway_request, profile_base_url_matches,
-        provider_gateway_default_model_for_account, provider_gateway_models_for_account,
-        recover_invalid_stats_file, remove_codex_local_access_config, resolve_plan_rank,
-        resolve_supported_model_alias, resolve_upstream_target,
-        restore_config_toml_from_takeover_backup, should_retry_single_account_upstream_status,
-        should_treat_response_as_stream, should_try_next_account, sidecar_codex_api_key_auth_id,
-        sidecar_stable_id, validate_client_model_visible, visible_codex_model_ids_for_api_key,
-        websocket_accept_value, websocket_connect_error_from_http_response,
-        write_local_access_profile_model_override, write_provider_gateway_model_catalog,
-        write_string_atomic, CodexLocalAccessCollection, CodexLocalAccessGatewayMode,
-        CodexLocalAccessScope, GatewayResponseAdapter, ParsedRequest, ResolvedLocalApiKey,
-        ResponseUsageCollector, RoutingCandidate, SidecarUsageDetails, SidecarUsageEvent,
-        UsageCapture, CODEX_AUTO_REVIEW_MODEL_ID, CODEX_PROFILE_AUTH_FILE,
-        CODEX_PROFILE_CONFIG_FILE, CODEX_PROVIDER_MODEL_BACKUP_FILE,
-        CODEX_PROVIDER_MODEL_CATALOG_FILE, DEFAULT_MAX_RETRY_INTERVAL_MS,
-        DEFAULT_SESSION_AFFINITY_TTL_MS,
+        is_responses_completion_event, is_responses_websocket_upgrade_request,
+        is_runtime_mode_projection_noop, is_runtime_mode_projection_noop_for_target,
+        is_stream_incomplete_error_message, is_upstream_response_failed_error_message,
+        is_websocket_upgrade_request, json_response_with_retry_after, legacy_stream_error_category,
+        load_health_registry_from_path, load_runtime_mode_state, local_access_chat_completions_url,
+        local_api_safety_config_for_preset, local_backpressure_wait_duration,
+        merge_collection_and_account_excluded_models, model_pricing, next_routing_start_index,
+        normalize_account_model_rules, normalize_custom_routing_rules, normalize_health_registry,
+        normalize_local_api_safety_config, normalized_sidecar_error_category, now_ms,
+        official_codex_sticky_routing_boundary, parse_codex_retry_after, parse_http_request,
+        parse_responses_payload_from_upstream, parse_retry_after_header_value,
+        parse_websocket_upstream_error, pause_health_registry_account, pin_process_sticky_account,
+        pool_wait_fits_request_budget, prepare_gateway_request, profile_base_url_matches,
+        proxy_dispatch_final_error_detail, proxy_dispatch_final_error_type,
+        proxy_request_with_account_pool, prune_process_sticky_binding,
+        record_manual_pause_audit_event, record_manual_recovery_audit_event,
+        recover_health_registry_account, recover_invalid_stats_file,
+        remove_codex_local_access_config, request_affinity_account_from_registry,
+        request_affinity_key, request_lineage_id_with_source, reset_active_stream_leases_for_tests,
+        reset_local_api_backpressure_for_tests, resolve_plan_rank, resolve_supported_model_alias,
+        resolve_upstream_target, restore_config_toml_from_takeover_backup,
+        retry_failover_account_attempt_limit, retry_failover_max_retries, save_collection_to_disk,
+        save_health_registry_to_path, save_local_access_accounts, selector_audit_detail,
+        selector_selected_reason, set_runtime_integration_mode,
+        should_block_codex_auth_projection_change, should_block_direct_projection_change,
+        should_block_runtime_projection_change, should_defer_pool_unavailable,
+        should_restore_direct_projection_before_app_exit,
+        should_retry_hard_affinity_upstream_failure, should_retry_single_account_upstream_status,
+        should_sync_local_access_collection_on_account_switch, should_treat_response_as_stream,
+        should_try_next_account, should_use_pool_unavailable_summary,
+        should_write_in_band_pool_unavailable_response, sidecar_account_manifest_value,
+        sidecar_auth_json_for_account, sort_account_ids_by_health_estimate,
+        sort_account_ids_by_health_estimate_with_quota_hints, status_for_pool_unavailable,
+        summarize_pool_unavailability, update_health_registry_from_classified_error,
+        upsert_process_sticky_binding, upsert_request_affinity_binding,
+        upsert_successful_account_health, validate_client_model_visible,
+        visible_codex_model_ids_for_api_key, websocket_accept_value,
+        websocket_connect_error_from_http_response, write_local_access_profile_takeover,
+        AccountQuotaSortHint, ActiveStreamTerminal, AuditContext, AuditTrailStatus,
+        CachedHealthSummary, CodexLocalAccessErrorScope, CodexLocalAccessErrorType,
+        GatewayResponseAdapter, LocalApiBackpressureState, OfficialCodexStickyRoutingBoundary,
+        ParsedRequest, ProxyDispatchError, ResolvedLocalApiKey, ResponseUsageCollector,
+        RoutingCandidate, RuntimeProjectionContinuityRisk, SidecarUsageDetails, SidecarUsageEvent,
+        StreamWriteState, UpstreamHttpClientSignature, UpstreamProxySource, UsageCapture,
+        CODEX_AUTO_REVIEW_MODEL_ID, CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID,
+        CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID, CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME,
+        CODEX_PROFILE_AUTH_FILE, CODEX_PROFILE_CONFIG_FILE, DAY_WINDOW_MS,
+        HEALTH_SUMMARY_CACHE_TTL_MS, MAX_HTTP_REQUEST_BYTES, PREFERRED_CODEX_LOCAL_ACCESS_PORTS,
+        X_CODEX_TURN_METADATA_HEADER, X_CODEX_TURN_STATE_HEADER,
     };
-    use crate::models::codex::{CodexAccount, CodexApiProviderMode, CodexAppSpeed, CodexTokens};
+    use crate::models::codex::{
+        CodexAccount, CodexAccountIndex, CodexAccountSummary, CodexApiProviderMode, CodexAppSpeed,
+        CodexAuthMode, CodexQuota, CodexTokens,
+    };
     use crate::models::codex_local_access::{
+        CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
         CodexLocalAccessAccountModelRule, CodexLocalAccessClientBaseUrlHost,
-        CodexLocalAccessCustomRoutingRule, CodexLocalAccessImageGenerationMode,
-        CodexLocalAccessProviderGateway, CodexLocalAccessRequestKind,
-        CodexLocalAccessRoutingStrategy, CodexLocalAccessStats, CodexLocalAccessTimeouts,
+        CodexLocalAccessCollection, CodexLocalAccessCustomRoutingRule, CodexLocalAccessGatewayMode,
+        CodexLocalAccessHealthSummary, CodexLocalAccessImageGenerationMode,
+        CodexLocalAccessModelCooldown, CodexLocalAccessRequestKind,
+        CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessStats,
+        CodexLocalAccessTimeouts, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
+        CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
     };
     use crate::models::{
         DefaultInstanceSettings, InstanceLaunchMode, InstanceProfile, InstanceStore,
     };
     use futures_util::{SinkExt, StreamExt};
+    use reqwest::header::{HeaderValue, RETRY_AFTER};
     use reqwest::StatusCode;
     use serde_json::{json, Value};
-    use std::{collections::HashMap, fs, path::PathBuf};
+    use std::collections::{BTreeMap, HashMap, HashSet};
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::LazyLock;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::oneshot;
+    use tokio::sync::{oneshot, Mutex as TokioMutex};
     use tokio::time::Duration;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     use tokio_tungstenite::tungstenite::Message;
-    use toml_edit::{value, Document};
 
-    fn test_local_access_collection(account_ids: Vec<String>) -> CodexLocalAccessCollection {
+    fn default_test_collection() -> CodexLocalAccessCollection {
         CodexLocalAccessCollection {
-            enabled: true,
-            port: 14998,
-            api_key: "local-api-key".to_string(),
+            enabled: false,
+            port: 0,
+            api_key: String::new(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
             api_keys: Vec::new(),
             access_scope: CodexLocalAccessScope::Localhost,
             client_base_url_host: CodexLocalAccessClientBaseUrlHost::default(),
             image_generation_mode: CodexLocalAccessImageGenerationMode::default(),
             gateway_mode: CodexLocalAccessGatewayMode::default(),
             upstream_proxy_url: None,
-            routing_strategy: CodexLocalAccessRoutingStrategy::default(),
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
             custom_routing_rules: Vec::new(),
             account_model_rules: Vec::new(),
             model_aliases: Vec::new(),
             model_pricings: Vec::new(),
             excluded_models: Vec::new(),
             session_affinity: false,
-            session_affinity_ttl_ms: DEFAULT_SESSION_AFFINITY_TTL_MS,
+            session_affinity_ttl_ms: super::DEFAULT_SESSION_AFFINITY_TTL_MS,
             max_retry_credentials: 0,
-            max_retry_interval_ms: DEFAULT_MAX_RETRY_INTERVAL_MS,
+            max_retry_interval_ms: super::DEFAULT_MAX_RETRY_INTERVAL_MS,
             timeouts: CodexLocalAccessTimeouts::default(),
             active_timeout_preset_id: "long_wait".to_string(),
             timeout_presets: Vec::new(),
             disable_cooling: false,
-            restrict_free_accounts: true,
+            restrict_free_accounts: false,
+            follow_current_account: false,
             debug_logs: true,
             bound_oauth_account_id: None,
-            account_ids,
+            account_ids: Vec::new(),
             created_at: 0,
             updated_at: 0,
         }
     }
 
-    #[test]
-    fn sidecar_stable_id_matches_config_synthesizer_rule() {
-        assert_eq!(
-            sidecar_stable_id("codex:apikey", &["sk-test", "https://api.deepseek.com/v1"]),
-            "codex:apikey:b1193dcdb71b"
-        );
-    }
-
-    #[test]
-    fn sidecar_codex_api_key_auth_id_uses_api_key_identity() {
-        let account = CodexAccount::new_api_key(
-            "local-account-id".to_string(),
-            "deepseek@example.com".to_string(),
-            "sk-test".to_string(),
-            CodexApiProviderMode::Custom,
-            Some("https://api.deepseek.com/v1".to_string()),
-            Some("deepseek".to_string()),
-            Some("DeepSeek".to_string()),
-            Vec::new(),
-        );
-
-        assert_eq!(
-            sidecar_codex_api_key_auth_id(&account).as_deref(),
-            Some("codex:apikey:b1193dcdb71b")
-        );
-    }
-
-    #[test]
-    fn provider_gateway_models_prefers_account_catalog() {
-        let mut account = CodexAccount::new_api_key(
-            "local-account-id".to_string(),
-            "deepseek@example.com".to_string(),
-            "sk-test".to_string(),
-            CodexApiProviderMode::Custom,
-            Some("https://api.deepseek.com/v1".to_string()),
-            Some("deepseek".to_string()),
-            Some("DeepSeek".to_string()),
-            vec![
-                "deepseek-v4-pro".to_string(),
-                "deepseek-v4-flash".to_string(),
-                "deepseek-v4-pro".to_string(),
-            ],
-        );
-        account.api_model_catalog.push(" ".to_string());
-
-        assert_eq!(
-            provider_gateway_models_for_account(&account),
-            vec![
-                "deepseek-v4-pro".to_string(),
-                "deepseek-v4-flash".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn provider_gateway_models_empty_for_unknown_provider_without_catalog() {
-        let account = CodexAccount::new_api_key(
-            "local-account-id".to_string(),
-            "custom@example.com".to_string(),
-            "sk-test".to_string(),
-            CodexApiProviderMode::Custom,
-            Some("https://example-provider.test/v1".to_string()),
-            Some("custom-provider".to_string()),
-            Some("Custom Provider".to_string()),
-            Vec::new(),
-        );
-
-        assert!(provider_gateway_models_for_account(&account).is_empty());
-        assert!(provider_gateway_default_model_for_account(&account).is_empty());
-    }
-
-    #[test]
-    fn provider_gateway_writes_model_catalog_json() {
-        let profile_dir = std::env::temp_dir().join(format!(
-            "cockpit-provider-model-catalog-test-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        fs::create_dir_all(&profile_dir).expect("create temp profile");
-
-        write_provider_gateway_model_catalog(
-            &profile_dir,
-            &[
-                "deepseek-v4-flash".to_string(),
-                "deepseek-v4-pro".to_string(),
-            ],
-        )
-        .expect("write model catalog");
-
-        let cache_path = profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE);
-        let content = fs::read_to_string(&cache_path).expect("read model catalog");
-        let parsed: Value = serde_json::from_str(&content).expect("parse models cache");
-        let models = parsed
-            .get("models")
-            .and_then(Value::as_array)
-            .expect("models should be an array");
-
-        assert!(models.iter().any(|model| {
-            model.get("slug").and_then(Value::as_str) == Some("deepseek-v4-flash")
-                && model.get("display_name").and_then(Value::as_str) == Some("deepseek-v4-flash")
-                && model.get("visibility").and_then(Value::as_str) == Some("list")
-        }));
-        assert!(models
-            .iter()
-            .any(|model| { model.get("slug").and_then(Value::as_str) == Some("deepseek-v4-pro") }));
-        assert!(models.iter().any(|model| {
-            model.get("slug").and_then(Value::as_str) == Some(CODEX_AUTO_REVIEW_MODEL_ID)
-                && model.get("visibility").and_then(Value::as_str) == Some("hide")
-        }));
-        let config =
-            fs::read_to_string(profile_dir.join(CODEX_PROFILE_CONFIG_FILE)).expect("read config");
-        assert!(config.contains(&format!(
-            "model_catalog_json = \"{}\"",
-            CODEX_PROVIDER_MODEL_CATALOG_FILE
-        )));
-
-        let _ = fs::remove_dir_all(&profile_dir);
-    }
-
-    #[test]
-    fn provider_gateway_cleanup_removes_managed_model_override() {
-        let profile_dir = std::env::temp_dir().join(format!(
-            "cockpit-provider-model-cleanup-test-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        fs::create_dir_all(&profile_dir).expect("create temp profile");
-
-        write_provider_gateway_model_catalog(
-            &profile_dir,
-            &[
-                "deepseek-v4-pro".to_string(),
-                "deepseek-v4-flash".to_string(),
-            ],
-        )
-        .expect("write model catalog");
-        write_local_access_profile_model_override(&profile_dir, "deepseek-v4-pro")
-            .expect("write model override");
-
-        cleanup_provider_gateway_profile_model_overrides(&profile_dir).expect("cleanup overrides");
-
-        assert!(!profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE).exists());
-        let config =
-            fs::read_to_string(profile_dir.join(CODEX_PROFILE_CONFIG_FILE)).expect("read config");
-        assert!(!config.contains("model_catalog_json"));
-        assert!(!config.contains("model = \"deepseek-v4-pro\""));
-
-        let _ = fs::remove_dir_all(&profile_dir);
-    }
-
-    #[test]
-    fn provider_gateway_cleanup_restores_previous_official_model() {
-        let profile_dir = std::env::temp_dir().join(format!(
-            "cockpit-provider-model-restore-test-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        fs::create_dir_all(&profile_dir).expect("create temp profile");
-
-        write_local_access_profile_model_override(&profile_dir, "gpt-5.5")
-            .expect("write official model");
-        backup_current_profile_model_before_provider_gateway(
-            &profile_dir,
-            &[
-                "deepseek-v4-pro".to_string(),
-                "deepseek-v4-flash".to_string(),
-            ],
-        )
-        .expect("backup official model");
-        write_provider_gateway_model_catalog(
-            &profile_dir,
-            &[
-                "deepseek-v4-pro".to_string(),
-                "deepseek-v4-flash".to_string(),
-            ],
-        )
-        .expect("write model catalog");
-        write_local_access_profile_model_override(&profile_dir, "deepseek-v4-pro")
-            .expect("write provider model");
-
-        cleanup_provider_gateway_profile_model_overrides(&profile_dir).expect("cleanup overrides");
-
-        assert!(!profile_dir.join(CODEX_PROVIDER_MODEL_CATALOG_FILE).exists());
-        assert!(!profile_dir.join(CODEX_PROVIDER_MODEL_BACKUP_FILE).exists());
-        let config =
-            fs::read_to_string(profile_dir.join(CODEX_PROFILE_CONFIG_FILE)).expect("read config");
-        assert!(!config.contains("model_catalog_json"));
-        assert!(!config.contains("model = \"deepseek-v4-pro\""));
-        assert!(config.contains("model = \"gpt-5.5\""));
-
-        let _ = fs::remove_dir_all(&profile_dir);
-    }
-
-    #[test]
-    fn provider_gateway_cleanup_restores_previous_model_without_catalog_file() {
-        let profile_dir = std::env::temp_dir().join(format!(
-            "cockpit-provider-model-restore-no-catalog-test-{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        fs::create_dir_all(&profile_dir).expect("create temp profile");
-
-        write_local_access_profile_model_override(&profile_dir, "gpt-5.5")
-            .expect("write official model");
-        backup_current_profile_model_before_provider_gateway(
-            &profile_dir,
-            &[
-                "deepseek-v4-pro".to_string(),
-                "deepseek-v4-flash".to_string(),
-            ],
-        )
-        .expect("backup official model");
-        write_local_access_profile_model_override(&profile_dir, "deepseek-v4-pro")
-            .expect("write provider model");
-
-        let config_path = profile_dir.join(CODEX_PROFILE_CONFIG_FILE);
-        let existing = fs::read_to_string(&config_path).expect("read config");
-        let mut doc = existing.parse::<Document>().expect("parse config");
-        doc["model_catalog_json"] = value(CODEX_PROVIDER_MODEL_CATALOG_FILE);
-        let content = crate::modules::codex_config_format::codex_config_doc_to_string(&mut doc);
-        write_string_atomic(&config_path, &content).expect("write config");
-
-        cleanup_provider_gateway_profile_model_overrides(&profile_dir).expect("cleanup overrides");
-
-        assert!(!profile_dir.join(CODEX_PROVIDER_MODEL_BACKUP_FILE).exists());
-        let config =
-            fs::read_to_string(profile_dir.join(CODEX_PROFILE_CONFIG_FILE)).expect("read config");
-        assert!(!config.contains("model_catalog_json"));
-        assert!(!config.contains("model = \"deepseek-v4-pro\""));
-        assert!(config.contains("model = \"gpt-5.5\""));
-
-        let _ = fs::remove_dir_all(&profile_dir);
+    fn test_local_access_collection(account_ids: Vec<String>) -> CodexLocalAccessCollection {
+        let mut collection = default_test_collection();
+        collection.enabled = true;
+        collection.port = 14998;
+        collection.api_key = "local-api-key".to_string();
+        collection.restrict_free_accounts = true;
+        collection.account_ids = account_ids;
+        collection
     }
 
     #[test]
@@ -17032,6 +24779,70 @@ mod tests {
         panic!("create temp dir failed");
     }
 
+    struct IsolatedLocalAccessEnv {
+        root: PathBuf,
+        previous_local_access_root: Option<OsString>,
+        previous_accounts_root: Option<OsString>,
+        previous_codex_home: Option<OsString>,
+        previous_tools_data_dir: Option<OsString>,
+        previous_home: Option<OsString>,
+    }
+
+    impl IsolatedLocalAccessEnv {
+        fn new(prefix: &str) -> Self {
+            let root = make_temp_dir(prefix);
+            let codex_home = root.join(".codex");
+            fs::create_dir_all(&codex_home).expect("create isolated codex home");
+
+            let previous_local_access_root =
+                std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+            let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+            let previous_codex_home = std::env::var_os("CODEX_HOME");
+            let previous_tools_data_dir = std::env::var_os("COCKPIT_TOOLS_DATA_DIR");
+            let previous_home = std::env::var_os("HOME");
+
+            std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+            std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+            std::env::set_var("CODEX_HOME", &codex_home);
+            std::env::set_var("COCKPIT_TOOLS_DATA_DIR", &root);
+            std::env::set_var("HOME", &root);
+
+            Self {
+                root,
+                previous_local_access_root,
+                previous_accounts_root,
+                previous_codex_home,
+                previous_tools_data_dir,
+                previous_home,
+            }
+        }
+
+        fn codex_home(&self) -> PathBuf {
+            self.root.join(".codex")
+        }
+    }
+
+    fn restore_env_var(name: &str, value: &Option<OsString>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
+    }
+
+    impl Drop for IsolatedLocalAccessEnv {
+        fn drop(&mut self) {
+            restore_env_var(
+                super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV,
+                &self.previous_local_access_root,
+            );
+            restore_env_var("COCKPIT_TOOLS_TEST_DATA_DIR", &self.previous_accounts_root);
+            restore_env_var("CODEX_HOME", &self.previous_codex_home);
+            restore_env_var("COCKPIT_TOOLS_DATA_DIR", &self.previous_tools_data_dir);
+            restore_env_var("HOME", &self.previous_home);
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
     fn test_account_with_plan(plan_type: &str) -> CodexAccount {
         let mut account = CodexAccount::new(
             format!("acc-{}", plan_type),
@@ -17044,6 +24855,13 @@ mod tests {
         );
         account.plan_type = Some(plan_type.to_string());
         account
+    }
+
+    fn test_jwt_with_exp(exp: i64) -> String {
+        let header = general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"none","typ":"JWT"}"#);
+        let payload = general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&json!({ "exp": exp })).expect("serialize jwt payload"));
+        format!("{}.{}.signature", header, payload)
     }
 
     fn test_instance(
@@ -17075,6 +24893,310 @@ mod tests {
                 })
             })
             .unwrap_or(false)
+    }
+
+    static LOCAL_BACKPRESSURE_TEST_LOCK: LazyLock<TokioMutex<()>> =
+        LazyLock::new(|| TokioMutex::new(()));
+    static LOCAL_ACCESS_ENV_TEST_LOCK: LazyLock<TokioMutex<()>> =
+        LazyLock::new(|| TokioMutex::new(()));
+
+    fn lock_local_access_env_test() -> tokio::sync::MutexGuard<'static, ()> {
+        futures::executor::block_on(LOCAL_ACCESS_ENV_TEST_LOCK.lock())
+    }
+
+    async fn lock_local_access_env_test_async() -> tokio::sync::MutexGuard<'static, ()> {
+        LOCAL_ACCESS_ENV_TEST_LOCK.lock().await
+    }
+
+    fn lock_local_backpressure_test() -> tokio::sync::MutexGuard<'static, ()> {
+        futures::executor::block_on(LOCAL_BACKPRESSURE_TEST_LOCK.lock())
+    }
+
+    async fn lock_local_backpressure_test_async() -> tokio::sync::MutexGuard<'static, ()> {
+        LOCAL_BACKPRESSURE_TEST_LOCK.lock().await
+    }
+
+    fn test_codex_account(id: &str) -> CodexAccount {
+        CodexAccount::new(
+            id.to_string(),
+            format!("{}@example.com", id),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: String::new(),
+                refresh_token: None,
+            },
+        )
+    }
+
+    fn test_concurrency_audit_event(
+        timestamp: i64,
+        phase: &str,
+        error_type: Option<&str>,
+    ) -> super::CodexLocalAccessAuditEvent {
+        super::CodexLocalAccessAuditEvent {
+            schema_version: super::CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+            timestamp,
+            request_id: format!("req-{}", timestamp),
+            phase: phase.to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "hash".to_string(),
+            status: None,
+            error_type: error_type.map(str::to_string),
+            stream_state: None,
+            outcome: Some("test".to_string()),
+            detail: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn sidecar_auth_json_includes_access_token_expiry() {
+        let exp = 1_781_568_366_i64;
+        let collection = default_test_collection();
+        let account = CodexAccount::new(
+            "codex-oauth-expiry".to_string(),
+            "oauth-expiry@example.com".to_string(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: test_jwt_with_exp(exp),
+                refresh_token: Some("refresh-token".to_string()),
+            },
+        );
+
+        let value = sidecar_auth_json_for_account(&account, &collection, None);
+
+        assert_eq!(value.get("expired").and_then(Value::as_i64), Some(exp));
+        assert_eq!(value.get("expires_at").and_then(Value::as_i64), Some(exp));
+    }
+
+    #[test]
+    fn sidecar_manifest_includes_oauth_token_restart_markers() {
+        let exp = 1_781_568_366_i64;
+        let mut account = CodexAccount::new(
+            "codex-oauth-marker".to_string(),
+            "oauth-marker@example.com".to_string(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: test_jwt_with_exp(exp),
+                refresh_token: Some("refresh-token".to_string()),
+            },
+        );
+        account.token_generation = 7;
+        account.token_updated_at = Some(1_780_704_366);
+
+        let value = sidecar_account_manifest_value(&account, Some("codex-oauth-marker.json"));
+
+        assert_eq!(
+            value.get("authTokenGeneration").and_then(Value::as_u64),
+            Some(7)
+        );
+        assert_eq!(
+            value.get("authTokenUpdatedAt").and_then(Value::as_i64),
+            Some(1_780_704_366)
+        );
+        assert_eq!(
+            value
+                .get("authAccessTokenExpiresAt")
+                .and_then(Value::as_i64),
+            Some(exp)
+        );
+    }
+
+    #[test]
+    fn missing_explicit_proxy_falls_back_to_system_auto_client() {
+        let signature = UpstreamHttpClientSignature {
+            proxy_source: UpstreamProxySource::SystemAuto,
+            proxy_url: None,
+            connect_timeout_ms: super::duration_to_millis(super::DEFAULT_UPSTREAM_CONNECT_TIMEOUT),
+        };
+        let result = build_upstream_http_client(&signature);
+        assert!(
+            result.is_ok(),
+            "missing explicit proxy should let reqwest use its system/default proxy behavior: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn local_access_file_paths_honor_data_root_env_override() {
+        let _guard = lock_local_access_env_test();
+        let previous = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-env-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        assert_eq!(
+            super::local_access_file_path().expect("local access path should resolve"),
+            root.join(super::CODEX_LOCAL_ACCESS_FILE)
+        );
+        assert_eq!(
+            super::local_access_health_file_path().expect("health path should resolve"),
+            root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE)
+        );
+        assert_eq!(
+            super::local_access_audit_file_path().expect("audit path should resolve"),
+            root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE)
+        );
+        assert_eq!(
+            super::runtime_mode_file_path().expect("runtime mode path should resolve"),
+            root.join(super::CODEX_RUNTIME_MODE_FILE)
+        );
+
+        match previous {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrency_diagnostics_reports_configured_capacity_without_audit() {
+        let _env_guard = lock_local_access_env_test();
+        let _backpressure_guard = lock_local_backpressure_test();
+        let previous = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-concurrency-empty-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let runtime = super::GatewayRuntime {
+            collection: Some(CodexLocalAccessCollection {
+                enabled: true,
+                port: 45335,
+                api_key: "ck-test".to_string(),
+                safety_config: CodexLocalApiSafetyConfig {
+                    max_concurrent_requests: 2,
+                    min_request_interval_seconds: 3,
+                    max_queue_wait_seconds: 4,
+                    ..CodexLocalApiSafetyConfig::default()
+                },
+                access_scope: CodexLocalAccessScope::Localhost,
+                upstream_proxy_url: None,
+                routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+                custom_routing_rules: Vec::new(),
+                restrict_free_accounts: false,
+                follow_current_account: false,
+                bound_oauth_account_id: None,
+                account_ids: vec!["acc-a".to_string()],
+                created_at: 1,
+                updated_at: 2,
+                ..default_test_collection()
+            }),
+            ..Default::default()
+        };
+
+        let diagnostics = super::build_concurrency_diagnostics(&runtime);
+
+        assert_eq!(diagnostics.max_concurrent_requests, 2);
+        assert_eq!(diagnostics.active_request_count, 0);
+        assert_eq!(diagnostics.request_capacity, 2);
+        assert_eq!(diagnostics.min_request_interval_seconds, 3);
+        assert_eq!(diagnostics.max_queue_wait_seconds, 4);
+        assert_eq!(
+            diagnostics.audit_window_ms,
+            super::CONCURRENCY_DIAGNOSTICS_AUDIT_WINDOW_MS
+        );
+        assert_eq!(diagnostics.recent_audit_event_count, 0);
+        assert_eq!(diagnostics.recent_request_count, 0);
+        assert!(diagnostics.audit_load_error.is_none());
+
+        match previous {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn concurrency_diagnostics_classifies_recent_audit_pressure() {
+        let _env_guard = lock_local_access_env_test();
+        let previous = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-concurrency-audit-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test root should be created");
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        let now = now_ms();
+        let events = [
+            test_concurrency_audit_event(now - 5_000, "listener", None),
+            test_concurrency_audit_event(now - 4_000, "local_backpressure", None),
+            test_concurrency_audit_event(now - 3_000, "pool_wait", None),
+            test_concurrency_audit_event(
+                now - 2_000,
+                "final_response",
+                Some("usage_limit_reached"),
+            ),
+            test_concurrency_audit_event(
+                now - 1_000,
+                "stream_error",
+                Some("upstream_stream_error"),
+            ),
+            test_concurrency_audit_event(
+                now - super::CONCURRENCY_DIAGNOSTICS_AUDIT_WINDOW_MS - 1_000,
+                "local_backpressure",
+                None,
+            ),
+        ];
+        let mut content = String::new();
+        for event in events {
+            content.push_str(&serde_json::to_string(&event).expect("audit event should serialize"));
+            content.push('\n');
+        }
+        fs::write(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE), content)
+            .expect("audit fixture should be written");
+
+        let runtime = super::GatewayRuntime {
+            collection: Some(CodexLocalAccessCollection {
+                enabled: true,
+                port: 45335,
+                api_key: "ck-test".to_string(),
+                safety_config: CodexLocalApiSafetyConfig::default(),
+                access_scope: CodexLocalAccessScope::Localhost,
+                upstream_proxy_url: None,
+                routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+                custom_routing_rules: Vec::new(),
+                restrict_free_accounts: false,
+                follow_current_account: false,
+                bound_oauth_account_id: None,
+                account_ids: vec!["acc-a".to_string()],
+                created_at: 1,
+                updated_at: 2,
+                ..default_test_collection()
+            }),
+            ..Default::default()
+        };
+
+        let diagnostics = super::build_concurrency_diagnostics(&runtime);
+
+        assert_eq!(diagnostics.recent_audit_event_count, 5);
+        assert_eq!(diagnostics.recent_request_count, 1);
+        assert_eq!(diagnostics.recent_local_backpressure_count, 1);
+        assert_eq!(diagnostics.recent_pool_wait_count, 1);
+        assert_eq!(diagnostics.recent_upstream_limit_count, 1);
+        assert_eq!(diagnostics.recent_stream_error_count, 1);
+        assert_eq!(
+            diagnostics.last_problem_kind.as_deref(),
+            Some("stream_error")
+        );
+        assert!(diagnostics.last_problem_at_ms.is_some());
+        assert!(diagnostics.audit_load_error.is_none());
+
+        match previous {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     async fn accept_raw_upstream_websocket(listener: TcpListener) -> TcpStream {
@@ -17776,6 +25898,7183 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
     }
 
     #[test]
+    fn parses_codex_retry_after_from_reset_after_aliases() {
+        let wait = parse_codex_retry_after(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"type":"usage_limit_reached","reset_after_seconds":"45"}}"#,
+        )
+        .expect("retry after should be parsed from reset_after_seconds");
+
+        assert_eq!(wait, Duration::from_secs(45));
+    }
+
+    #[test]
+    fn parses_codex_retry_after_from_insufficient_quota_payload() {
+        let wait = parse_codex_retry_after(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"type":"insufficient_quota","reset_after_seconds":"90"}}"#,
+        )
+        .expect("retry after should be parsed from account quota exhaustion");
+
+        assert_eq!(wait, Duration::from_secs(90));
+    }
+
+    #[test]
+    fn parses_codex_retry_after_from_generic_rate_limit_payload() {
+        let wait = parse_codex_retry_after(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"type":"rate_limit_exceeded","retry_after":30}}"#,
+        )
+        .expect("retry after should be parsed from generic upstream rate limit");
+
+        assert_eq!(wait, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn hard_affinity_retry_allows_only_short_reset_window() {
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","reset_after_seconds":2}}"#,
+        );
+
+        assert_eq!(classified.retry_after, Some(Duration::from_secs(2)));
+        assert_eq!(
+            should_retry_hard_affinity_upstream_failure(
+                true,
+                &classified,
+                0,
+                1,
+                hard_affinity_inline_retry_wait_limit(&CodexLocalApiSafetyConfig::default())
+            ),
+            Some(Duration::from_secs(2))
+        );
+    }
+
+    #[test]
+    fn hard_affinity_retry_refuses_weekly_usage_limit_reset_wait() {
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","reset_after_seconds":604282}}"#,
+        );
+
+        let reset_wait = Duration::from_secs(604_282);
+        let retry_limit =
+            hard_affinity_inline_retry_wait_limit(&CodexLocalApiSafetyConfig::default());
+        assert_eq!(classified.retry_after, Some(reset_wait));
+        assert!(
+            retry_limit < reset_wait,
+            "hard-affinity continuation must not stall until a long quota reset; limit={:?}, reset_wait={:?}",
+            retry_limit,
+            reset_wait
+        );
+        assert_eq!(
+            should_retry_hard_affinity_upstream_failure(true, &classified, 0, 1, retry_limit),
+            None
+        );
+    }
+
+    #[test]
+    fn sticky_429_dispatch_error_body_uses_official_usage_limit_shape() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([(
+                X_CODEX_TURN_STATE_HEADER.to_string(),
+                "turn-state-token".to_string(),
+            )]),
+            body: br#"{"model":"gpt-5.5","input":"continue"}"#.to_vec(),
+            gateway_request_id: "gw-test-sticky-429-body".to_string(),
+        };
+
+        let body = build_proxy_dispatch_error_body(
+            &request,
+            StatusCode::TOO_MANY_REQUESTS.as_u16(),
+            "sticky task waiting for old account quota reset",
+            Some(Duration::from_secs(60)),
+        );
+
+        assert_eq!(
+            body.get("error")
+                .and_then(|error| error.get("type"))
+                .and_then(Value::as_str),
+            Some("usage_limit_reached")
+        );
+        assert_eq!(
+            body.get("error")
+                .and_then(|error| error.get("code"))
+                .and_then(Value::as_str),
+            Some("usage_limit_reached")
+        );
+        assert!(
+            body.get("error")
+                .and_then(|error| error.get("resets_at"))
+                .and_then(Value::as_i64)
+                .is_some(),
+            "official Codex maps 429 to UsageLimitReached only when the body keeps the structured error object"
+        );
+    }
+
+    #[test]
+    fn hard_affinity_retry_wait_limit_does_not_raise_short_budget_to_day() {
+        let config = CodexLocalApiSafetyConfig {
+            request_timeout_seconds: 1,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            hard_affinity_inline_retry_wait_limit(&config),
+            Duration::from_secs(3)
+        );
+    }
+
+    #[test]
+    fn usage_limit_rescue_extends_only_non_affinity_usage_limit() {
+        let usage_limit = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached"}}"#,
+        );
+
+        assert_eq!(
+            super::should_extend_usage_limit_failover_attempts(false, &usage_limit, 2, 2, 6),
+            Some(4)
+        );
+        assert_eq!(
+            super::should_extend_usage_limit_failover_attempts(false, &usage_limit, 2, 2, 3),
+            Some(3)
+        );
+        assert_eq!(
+            super::should_extend_usage_limit_failover_attempts(true, &usage_limit, 2, 2, 6),
+            None
+        );
+        assert_eq!(
+            super::should_extend_usage_limit_failover_attempts(false, &usage_limit, 1, 2, 6),
+            None
+        );
+
+        let server_error = classify_codex_upstream_error(
+            StatusCode::BAD_GATEWAY,
+            None,
+            "temporary upstream error",
+        );
+        assert_eq!(
+            super::should_extend_usage_limit_failover_attempts(false, &server_error, 2, 2, 6),
+            None
+        );
+    }
+
+    #[test]
+    fn classifier_prefers_retry_after_headers_over_body_resets() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("retry-after-ms", HeaderValue::from_static("2500"));
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("9"));
+
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            Some(&headers),
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":12}}"#,
+        );
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::UsageLimitReached
+        );
+        assert_eq!(classified.retry_after, Some(Duration::from_millis(2500)));
+        assert_eq!(
+            classified.provider_code.as_deref(),
+            Some("usage_limit_reached")
+        );
+        assert_eq!(
+            classified.log_fields.get("error_type").map(String::as_str),
+            Some("usage_limit_reached")
+        );
+    }
+
+    #[test]
+    fn classifier_records_safe_plan_and_quota_metadata_without_raw_prompt_text() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-codex-plan-type", HeaderValue::from_static("free"));
+        headers.insert("x-codex-active-limit", HeaderValue::from_static("weekly"));
+        headers.insert(
+            "x-codex-rate-limit-reached-type",
+            HeaderValue::from_static("weekly"),
+        );
+        headers.insert(
+            "x-codex-promo-message",
+            HeaderValue::from_static("upgrade raw-prompt user@example.com"),
+        );
+        let body = r#"{"error":{"type":"usage_limit_reached","plan_type":"free","resets_at":1700000360000,"resets_in_seconds":604282,"promo_message":"upgrade raw prompt user@example.com","message":"raw prompt text sk-secret user@example.com"}}"#;
+
+        let classified =
+            classify_codex_upstream_error(StatusCode::TOO_MANY_REQUESTS, Some(&headers), body);
+        let audit_detail = classified_audit_detail(&classified);
+
+        assert_eq!(
+            classified.log_fields.get("plan_type").map(String::as_str),
+            Some("free")
+        );
+        assert_eq!(
+            classified
+                .log_fields
+                .get("provider_plan_type")
+                .map(String::as_str),
+            Some("free")
+        );
+        assert_eq!(
+            classified.log_fields.get("reset_at").map(String::as_str),
+            Some("1700000360")
+        );
+        assert_eq!(
+            classified
+                .log_fields
+                .get("reset_after_seconds")
+                .map(String::as_str),
+            Some("604282")
+        );
+        assert_eq!(
+            classified
+                .log_fields
+                .get("active_limit")
+                .map(String::as_str),
+            Some("weekly")
+        );
+        assert_eq!(
+            classified
+                .log_fields
+                .get("rate_limit_reached_type")
+                .map(String::as_str),
+            Some("weekly")
+        );
+        assert_eq!(
+            classified
+                .log_fields
+                .get("promo_message_present")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            audit_detail.get("provider_plan_type").map(String::as_str),
+            Some("free")
+        );
+
+        let serialized = serde_json::to_string(&audit_detail).expect("detail serializes");
+        for secret in ["raw prompt", "raw-prompt", "sk-secret", "user@example.com"] {
+            assert!(
+                !serialized.contains(secret),
+                "classified audit detail leaked {secret}"
+            );
+        }
+    }
+
+    #[test]
+    fn api_service_model_usage_limit_does_not_zero_account_quota_snapshot() {
+        let now_ms = 1_700_000_000_000;
+        let mut account = test_codex_account("api-service-quota");
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 64,
+            hourly_reset_time: Some(111),
+            hourly_window_minutes: Some(300),
+            hourly_window_present: Some(true),
+            weekly_percentage: 27,
+            weekly_reset_time: Some(222),
+            weekly_window_minutes: Some(10080),
+            weekly_window_present: Some(true),
+            raw_data: None,
+        });
+        let body = r#"{"error":{"type":"usage_limit_reached","resets_at":1700000360,"resets_in_seconds":360,"message":"raw prompt text sk-secret user@example.com"}}"#;
+        let classified = classify_codex_upstream_error(StatusCode::TOO_MANY_REQUESTS, None, body);
+
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Model);
+        assert!(!super::apply_account_quota_exhaustion_snapshot(
+            &mut account,
+            &classified,
+            body,
+            now_ms,
+        ));
+
+        let quota = account.quota.as_ref().expect("quota should stay");
+        assert_eq!(quota.hourly_percentage, 64);
+        assert_eq!(quota.weekly_percentage, 27);
+        assert_eq!(quota.hourly_reset_time, Some(111));
+        assert_eq!(quota.weekly_reset_time, Some(222));
+        assert!(account.quota_error.is_none());
+        assert!(account.usage_updated_at.is_none());
+
+        let serialized = serde_json::to_string(&account).expect("account should serialize");
+        for secret in ["raw prompt text", "sk-secret", "user@example.com"] {
+            assert!(
+                !serialized.contains(secret),
+                "quota snapshot leaked {secret}"
+            );
+        }
+    }
+
+    #[test]
+    fn api_service_insufficient_quota_writes_zero_quota_snapshot_with_reset_hint() {
+        let now_ms = 1_700_000_000_000;
+        let mut account = test_codex_account("api-service-account-quota");
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 64,
+            hourly_reset_time: Some(111),
+            hourly_window_minutes: Some(300),
+            hourly_window_present: Some(true),
+            weekly_percentage: 27,
+            weekly_reset_time: Some(222),
+            weekly_window_minutes: Some(10080),
+            weekly_window_present: Some(true),
+            raw_data: None,
+        });
+        let body = r#"{"error":{"type":"insufficient_quota","resets_at":1700000360,"resets_in_seconds":360,"message":"raw prompt text sk-secret user@example.com"}}"#;
+        let classified = classify_codex_upstream_error(StatusCode::TOO_MANY_REQUESTS, None, body);
+
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Account);
+        assert!(super::apply_account_quota_exhaustion_snapshot(
+            &mut account,
+            &classified,
+            body,
+            now_ms,
+        ));
+
+        let quota = account.quota.as_ref().expect("quota snapshot");
+        assert_eq!(quota.hourly_percentage, 0);
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.hourly_reset_time, Some(1_700_000_360));
+        assert_eq!(quota.weekly_reset_time, Some(1_700_000_360));
+        assert_eq!(account.usage_updated_at, Some(1_700_000_000));
+        assert_eq!(
+            account
+                .quota_error
+                .as_ref()
+                .and_then(|error| error.code.as_deref()),
+            Some("insufficient_quota")
+        );
+        assert_eq!(
+            quota
+                .raw_data
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(Value::as_str),
+            Some("codex_local_access_upstream_error")
+        );
+        assert_eq!(
+            quota
+                .raw_data
+                .as_ref()
+                .and_then(|value| value.get("reset_after_seconds"))
+                .and_then(Value::as_i64),
+            Some(360)
+        );
+
+        let serialized = serde_json::to_string(&account).expect("account should serialize");
+        for secret in ["raw prompt text", "sk-secret", "user@example.com"] {
+            assert!(
+                !serialized.contains(secret),
+                "quota snapshot leaked {secret}"
+            );
+        }
+    }
+
+    #[test]
+    fn api_service_model_scoped_usage_limit_request_skips_account_quota_snapshot() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::new(),
+            body: br#"{"model":"gpt-5.5","input":"continue"}"#.to_vec(),
+            gateway_request_id: "gw-model-scoped-usage-limit".to_string(),
+        };
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":360}}"#,
+        );
+
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Model);
+        assert!(!super::should_persist_account_quota_exhaustion_for_request(
+            &classified,
+            &request,
+        ));
+    }
+
+    #[test]
+    fn api_service_usage_limit_without_model_keeps_account_quota_snapshot_fallback() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::new(),
+            body: br#"{"input":"continue"}"#.to_vec(),
+            gateway_request_id: "gw-usage-limit-no-model".to_string(),
+        };
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":360}}"#,
+        );
+
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Model);
+        assert!(super::should_persist_account_quota_exhaustion_for_request(
+            &classified,
+            &request,
+        ));
+    }
+
+    #[test]
+    fn api_service_workspace_credits_depleted_writes_account_quota_snapshot() {
+        let now_ms = 1_700_000_000_000;
+        let mut account = test_codex_account("api-service-workspace-credits");
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 64,
+            hourly_reset_time: Some(111),
+            hourly_window_minutes: Some(300),
+            hourly_window_present: Some(true),
+            weekly_percentage: 27,
+            weekly_reset_time: Some(222),
+            weekly_window_minutes: Some(10080),
+            weekly_window_present: Some(true),
+            raw_data: None,
+        });
+        let body = r#"{"error":{"type":"workspace_member_credits_depleted","resets_in_seconds":360,"message":"raw prompt text sk-secret user@example.com"}}"#;
+        let classified = classify_codex_upstream_error(StatusCode::TOO_MANY_REQUESTS, None, body);
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::UsageLimitReached
+        );
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Account);
+        assert_eq!(classified.retry_after, Some(Duration::from_secs(360)));
+        assert!(classified.safe_for_request_failover());
+        assert!(super::apply_account_quota_exhaustion_snapshot(
+            &mut account,
+            &classified,
+            body,
+            now_ms,
+        ));
+
+        let quota = account.quota.as_ref().expect("quota snapshot");
+        assert_eq!(quota.hourly_percentage, 0);
+        assert_eq!(quota.weekly_percentage, 0);
+        assert_eq!(quota.hourly_reset_time, Some(1_700_000_360));
+        assert_eq!(quota.weekly_reset_time, Some(1_700_000_360));
+        assert_eq!(
+            account
+                .quota_error
+                .as_ref()
+                .and_then(|error| error.code.as_deref()),
+            Some("workspace_member_credits_depleted")
+        );
+    }
+
+    #[test]
+    fn health_registry_workspace_usage_limit_is_account_scoped() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"workspace_member_usage_limit_reached","resets_in_seconds":60}}"#,
+        );
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::UsageLimitReached
+        );
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Account);
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-workspace-scope",
+            Some("gpt-5.5"),
+            Some("req-workspace-limit"),
+            &classified,
+            now,
+        );
+
+        let account = registry
+            .accounts
+            .get("account-workspace-scope")
+            .expect("account health should be recorded");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::CoolingDown
+        );
+        assert_eq!(account.exhausted_at_ms, Some(now));
+        assert_eq!(account.estimated_reset_at_ms, Some(now + 60_000));
+        assert_eq!(account.estimated_remaining_percentage, Some(0));
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-workspace-scope",
+            Some("gpt-5.5-mini"),
+            now
+        ));
+        assert!(
+            registry.model_cooldowns.is_empty(),
+            "account-scoped quota exhaustion must not be replayed as a model cooldown"
+        );
+
+        let normalized = normalize_health_registry(registry, now + 1);
+        let account = normalized
+            .accounts
+            .get("account-workspace-scope")
+            .expect("account health should survive normalization");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::CoolingDown
+        );
+        assert_eq!(account.estimated_remaining_percentage, Some(0));
+        assert!(!health_registry_account_is_schedulable(
+            &normalized,
+            "account-workspace-scope",
+            Some("gpt-5.5-mini"),
+            now + 1
+        ));
+    }
+
+    #[test]
+    fn health_registry_recovers_stale_oauth_auth_failure_after_token_refresh() {
+        let _guard = lock_local_access_env_test();
+        let _env = IsolatedLocalAccessEnv::new("cockpit-local-access-stale-auth-recovery");
+        let old_error_at = 1_700_000_000_000;
+        let refreshed_token_at = 1_700_000_060;
+        let now = 1_700_000_120_000;
+
+        let mut oauth = CodexAccount::new(
+            "account-oauth-refreshed".to_string(),
+            "oauth-refreshed@example.com".to_string(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: test_jwt_with_exp(refreshed_token_at + 3600),
+                refresh_token: Some("refresh-oauth-refreshed".to_string()),
+            },
+        );
+        oauth.token_updated_at = Some(refreshed_token_at);
+        crate::modules::codex_account::save_account(&oauth).expect("save refreshed oauth account");
+
+        let mut captcha = oauth.clone();
+        captcha.id = "account-oauth-captcha".to_string();
+        captcha.email = "oauth-captcha@example.com".to_string();
+        crate::modules::codex_account::save_account(&captcha).expect("save captcha oauth account");
+
+        let mut api_key = CodexAccount::new(
+            "account-api-key-auth-failure".to_string(),
+            "api-key@example.com".to_string(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: String::new(),
+                refresh_token: None,
+            },
+        );
+        api_key.auth_mode = CodexAuthMode::Apikey;
+        api_key.openai_api_key = Some("sk-test-api-key".to_string());
+        api_key.token_updated_at = Some(refreshed_token_at);
+        crate::modules::codex_account::save_account(&api_key).expect("save api key account");
+
+        let mut registry = empty_health_registry(old_error_at);
+        for account_id in [&oauth.id, &api_key.id] {
+            registry.accounts.insert(
+                account_id.to_string(),
+                CodexLocalAccessAccountHealth {
+                    status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                    manual_required: true,
+                    last_status: Some(401),
+                    last_error_type: Some("auth_error".to_string()),
+                    last_provider_code: Some("auth_unavailable".to_string()),
+                    updated_at: old_error_at,
+                    ..CodexLocalAccessAccountHealth::default()
+                },
+            );
+        }
+        registry.accounts.insert(
+            captcha.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                manual_required: true,
+                last_status: Some(403),
+                last_error_type: Some("captcha_required".to_string()),
+                last_provider_code: Some("captcha_required".to_string()),
+                updated_at: old_error_at,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+
+        let normalized = normalize_health_registry(registry, now);
+        let recovered = normalized
+            .accounts
+            .get(&oauth.id)
+            .expect("oauth health should remain present");
+        assert_eq!(
+            recovered.status,
+            CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+        );
+        assert!(!recovered.manual_required);
+        assert_eq!(recovered.last_status, None);
+        assert_eq!(recovered.last_error_type, None);
+        assert_eq!(
+            recovered.reset_source.as_deref(),
+            Some("token_refresh_recovery")
+        );
+        assert_eq!(recovered.confidence.as_deref(), Some("token_refreshed"));
+        assert!(health_registry_account_is_schedulable(
+            &normalized,
+            &oauth.id,
+            Some("gpt-5.5"),
+            now
+        ));
+
+        let still_blocked = normalized
+            .accounts
+            .get(&api_key.id)
+            .expect("api key health should remain present");
+        assert_eq!(
+            still_blocked.status,
+            CodexLocalAccessAccountHealthStatus::ManualRequired
+        );
+        assert!(still_blocked.manual_required);
+        assert_eq!(still_blocked.last_status, Some(401));
+        assert_eq!(still_blocked.last_error_type.as_deref(), Some("auth_error"));
+
+        let captcha_blocked = normalized
+            .accounts
+            .get(&captcha.id)
+            .expect("captcha health should remain present");
+        assert_eq!(
+            captcha_blocked.status,
+            CodexLocalAccessAccountHealthStatus::ManualRequired
+        );
+        assert!(captcha_blocked.manual_required);
+        assert_eq!(captcha_blocked.last_status, Some(403));
+        assert_eq!(
+            captcha_blocked.last_error_type.as_deref(),
+            Some("captcha_required")
+        );
+    }
+
+    #[test]
+    fn api_service_unknown_rate_limit_does_not_zero_account_quota() {
+        let now_ms = 1_700_000_000_000;
+        let mut account = test_codex_account("api-service-rate-limit");
+        account.quota = Some(CodexQuota {
+            hourly_percentage: 64,
+            hourly_reset_time: Some(111),
+            hourly_window_minutes: Some(300),
+            hourly_window_present: Some(true),
+            weekly_percentage: 27,
+            weekly_reset_time: Some(222),
+            weekly_window_minutes: Some(10080),
+            weekly_window_present: Some(true),
+            raw_data: None,
+        });
+        let body = r#"{"error":{"type":"rate_limit_exceeded","message":"slow down"}}"#;
+        let classified = classify_codex_upstream_error(StatusCode::TOO_MANY_REQUESTS, None, body);
+
+        assert!(!super::apply_account_quota_exhaustion_snapshot(
+            &mut account,
+            &classified,
+            body,
+            now_ms,
+        ));
+
+        let quota = account.quota.as_ref().expect("quota should stay");
+        assert_eq!(quota.hourly_percentage, 64);
+        assert_eq!(quota.weekly_percentage, 27);
+        assert!(account.quota_error.is_none());
+        assert!(account.usage_updated_at.is_none());
+    }
+
+    #[test]
+    fn retry_after_http_date_parser_uses_supplied_now() {
+        let now = chrono::DateTime::parse_from_rfc2822("Sun, 17 May 2026 00:00:00 GMT")
+            .expect("valid now")
+            .with_timezone(&chrono::Utc);
+        let wait = parse_retry_after_header_value("Sun, 17 May 2026 00:00:05 GMT", now)
+            .expect("future http date should parse");
+
+        assert_eq!(wait, Duration::from_secs(5));
+        assert!(parse_retry_after_header_value("Sun, 17 May 2025 00:00:00 GMT", now).is_none());
+    }
+
+    #[test]
+    fn classifier_blocks_auth_and_captcha_request_failover() {
+        let auth = classify_codex_upstream_error(StatusCode::UNAUTHORIZED, None, "");
+        assert_eq!(auth.error_type, CodexLocalAccessErrorType::AuthError);
+        assert!(auth.manual_required);
+        assert!(!auth.safe_for_request_failover());
+        assert!(!should_try_next_account(StatusCode::UNAUTHORIZED, ""));
+
+        let captcha = classify_codex_upstream_error(
+            StatusCode::FORBIDDEN,
+            None,
+            r#"{"error":{"type":"captcha_required","message":"captcha token raw prompt text"}}"#,
+        );
+        assert_eq!(
+            captcha.error_type,
+            CodexLocalAccessErrorType::CaptchaOrSuspicious
+        );
+        assert!(captcha.manual_required);
+        assert!(!captcha.safe_for_request_failover());
+        assert!(!should_try_next_account(
+            StatusCode::FORBIDDEN,
+            r#"{"error":{"type":"captcha_required","message":"captcha token raw prompt text"}}"#
+        ));
+        assert!(!captcha.safe_message.contains("raw prompt text"));
+        assert!(captcha
+            .log_fields
+            .values()
+            .all(|value| !value.contains("raw prompt text")));
+    }
+
+    #[test]
+    fn classifier_keeps_unknown_429_on_current_account() {
+        let upstream_rate_limit = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"rate_limit_exceeded","message":"raw prompt text"}}"#,
+        );
+
+        assert_eq!(
+            upstream_rate_limit.error_type,
+            CodexLocalAccessErrorType::UpstreamRateLimit
+        );
+        assert!(!upstream_rate_limit.manual_required);
+        assert!(!upstream_rate_limit.safe_for_request_failover());
+        assert!(!should_try_next_account(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":{"type":"rate_limit_exceeded","message":"raw prompt text"}}"#
+        ));
+        assert!(!upstream_rate_limit.safe_message.contains("raw prompt text"));
+    }
+
+    #[test]
+    fn health_registry_marks_usage_limit_model_cooldown_without_sensitive_fields() {
+        let mut registry = empty_health_registry(1_700_000_000_000);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":60,"message":"raw prompt text sk-secret user@example.com"}}"#,
+        );
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-1",
+            Some("gpt-5.5"),
+            Some("req-1"),
+            &classified,
+            1_700_000_000_000,
+        );
+
+        let account = registry
+            .accounts
+            .get("account-1")
+            .expect("account health should be recorded");
+        assert_eq!(account.status, CodexLocalAccessAccountHealthStatus::Healthy);
+        assert_eq!(
+            account.last_error_type.as_deref(),
+            Some("usage_limit_reached")
+        );
+        assert_eq!(account.last_request_id.as_deref(), Some("req-1"));
+        assert_eq!(account.cooldown_until_ms, None);
+        assert_eq!(account.exhausted_at_ms, None);
+        assert_eq!(account.estimated_reset_at_ms, None);
+        assert_eq!(account.estimated_remaining_percentage, None);
+        assert_eq!(account.last_observed_remaining_percentage, None);
+        assert_eq!(account.last_quota_exhausted_at_ms, None);
+        assert_eq!(account.reset_source, None);
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-1",
+            Some("gpt-5.5"),
+            1_700_000_000_000
+        ));
+        assert!(health_registry_account_is_schedulable(
+            &registry,
+            "account-1",
+            Some("gpt-5.5-mini"),
+            1_700_000_000_000
+        ));
+
+        let serialized = serde_json::to_string(&registry).expect("registry should serialize");
+        for secret in ["raw prompt text", "sk-secret", "user@example.com"] {
+            assert!(!serialized.contains(secret), "registry leaked {secret}");
+        }
+    }
+
+    #[test]
+    fn model_scoped_usage_limit_does_not_block_other_models() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":60}}"#,
+        );
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-model-scope",
+            Some("gpt-5.4-mini"),
+            Some("req-mini-limit"),
+            &classified,
+            now,
+        );
+
+        let account = registry
+            .accounts
+            .get("account-model-scope")
+            .expect("account health should be recorded");
+        assert_eq!(account.status, CodexLocalAccessAccountHealthStatus::Healthy);
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-model-scope",
+            Some("gpt-5.4-mini"),
+            now
+        ));
+        assert!(health_registry_account_is_schedulable(
+            &registry,
+            "account-model-scope",
+            Some("gpt-5.5"),
+            now
+        ));
+        assert_eq!(
+            health_registry_account_cooldown_wait(
+                &registry,
+                "account-model-scope",
+                Some("gpt-5.4-mini"),
+                now
+            ),
+            Some(Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn health_registry_model_cooldown_wait_is_exposed_for_scheduler() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "account-model-cooldown".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.model_cooldowns.insert(
+            health_registry_model_key("account-model-cooldown", "gpt-5.4"),
+            CodexLocalAccessModelCooldown {
+                account_id: "account-model-cooldown".to_string(),
+                model: "gpt-5.4".to_string(),
+                cooldown_until_ms: now + 60_000,
+                updated_at: now,
+                ..CodexLocalAccessModelCooldown::default()
+            },
+        );
+
+        assert_eq!(
+            health_registry_account_cooldown_wait(
+                &registry,
+                "account-model-cooldown",
+                Some("gpt-5.4"),
+                now
+            ),
+            Some(Duration::from_secs(60))
+        );
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-model-cooldown",
+            Some("gpt-5.4"),
+            now
+        ));
+    }
+
+    #[test]
+    fn health_registry_unknown_429_is_cooling_not_exhausted() {
+        let mut registry = empty_health_registry(1_700_000_000_000);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"rate_limit_exceeded","message":"slow down"}}"#,
+        );
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-2",
+            Some("gpt-5.5"),
+            Some("req-2"),
+            &classified,
+            1_700_000_000_000,
+        );
+
+        let account = registry
+            .accounts
+            .get("account-2")
+            .expect("account health should be recorded");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::CoolingDown
+        );
+        assert_ne!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::Exhausted
+        );
+        assert_eq!(
+            account.last_error_type.as_deref(),
+            Some("upstream_rate_limit")
+        );
+        assert_eq!(account.estimated_reset_at_ms, None);
+        assert_eq!(account.estimated_remaining_percentage, None);
+        assert_eq!(account.last_observed_remaining_percentage, None);
+    }
+
+    #[test]
+    fn health_registry_estimates_quota_reset_after_recorded_reset_time() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":60}}"#,
+        );
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-reset",
+            None,
+            Some("req-reset"),
+            &classified,
+            now,
+        );
+
+        let before_reset = registry
+            .accounts
+            .get("account-reset")
+            .expect("account should be tracked");
+        assert_eq!(before_reset.last_observed_remaining_percentage, None);
+        assert_eq!(before_reset.estimated_remaining_percentage, None);
+        assert_eq!(before_reset.confidence, None);
+        assert_eq!(before_reset.exhausted_at_ms, None);
+        assert_eq!(before_reset.last_quota_exhausted_at_ms, None);
+        assert_eq!(
+            before_reset.reset_source.as_deref(),
+            Some("upstream_reset_hint")
+        );
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-reset",
+            Some("gpt-5.5"),
+            now
+        ));
+
+        let normalized = normalize_health_registry(registry, now + 61_000);
+        let after_reset = normalized
+            .accounts
+            .get("account-reset")
+            .expect("account should still be tracked");
+        assert_eq!(
+            after_reset.status,
+            CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+        );
+        assert_eq!(after_reset.estimated_remaining_percentage, Some(100));
+        assert_eq!(after_reset.confidence.as_deref(), Some("estimated"));
+        assert!(health_registry_account_is_schedulable(
+            &normalized,
+            "account-reset",
+            Some("gpt-5.5"),
+            now + 61_000
+        ));
+    }
+
+    #[test]
+    fn health_registry_insufficient_quota_uses_reset_hint_for_recovery() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"insufficient_quota","reset_after_seconds":90}}"#,
+        );
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::InsufficientQuota
+        );
+        assert_eq!(classified.retry_after, Some(Duration::from_secs(90)));
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-insufficient",
+            Some("gpt-5.5"),
+            Some("req-insufficient"),
+            &classified,
+            now,
+        );
+
+        let account = registry
+            .accounts
+            .get("account-insufficient")
+            .expect("account should be tracked");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::Exhausted
+        );
+        assert_eq!(account.cooldown_until_ms, Some(now + 90_000));
+        assert_eq!(account.estimated_reset_at_ms, Some(now + 90_000));
+        assert_eq!(account.estimated_remaining_percentage, Some(0));
+        assert_eq!(account.last_observed_remaining_percentage, Some(0));
+        assert_eq!(account.reset_source.as_deref(), Some("upstream_reset_hint"));
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-insufficient",
+            Some("gpt-5.5"),
+            now
+        ));
+
+        let normalized = normalize_health_registry(registry, now + 91_000);
+        let recovered = normalized
+            .accounts
+            .get("account-insufficient")
+            .expect("account should still be tracked");
+        assert_eq!(
+            recovered.status,
+            CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+        );
+        assert_eq!(recovered.estimated_remaining_percentage, Some(100));
+    }
+
+    #[test]
+    fn health_registry_generic_rate_limit_uses_reset_hint_without_zero_quota() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"rate_limit_exceeded","reset_after_seconds":30}}"#,
+        );
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::UpstreamRateLimit
+        );
+        assert_eq!(classified.retry_after, Some(Duration::from_secs(30)));
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-rate-limit",
+            Some("gpt-5.5"),
+            Some("req-rate-limit"),
+            &classified,
+            now,
+        );
+
+        let account = registry
+            .accounts
+            .get("account-rate-limit")
+            .expect("account should be tracked");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::CoolingDown
+        );
+        assert_eq!(account.cooldown_until_ms, Some(now + 30_000));
+        assert_eq!(account.estimated_remaining_percentage, None);
+        assert_eq!(account.last_observed_remaining_percentage, None);
+        assert_eq!(account.reset_source.as_deref(), Some("upstream_reset_hint"));
+    }
+
+    #[test]
+    fn normalize_demotes_legacy_model_scoped_usage_limit_account_cooldown() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "legacy-account".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 60_000),
+                exhausted_at_ms: Some(now - 1),
+                estimated_reset_at_ms: Some(now + 60_000),
+                estimated_remaining_percentage: Some(0),
+                last_observed_remaining_percentage: Some(0),
+                reset_source: Some("upstream_reset_hint".to_string()),
+                confidence: Some("confirmed".to_string()),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                updated_at: now - 1,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.model_cooldowns.insert(
+            health_registry_model_key("legacy-account", "gpt-5.4-mini"),
+            CodexLocalAccessModelCooldown {
+                account_id: "legacy-account".to_string(),
+                model: "gpt-5.4-mini".to_string(),
+                cooldown_until_ms: now + 60_000,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                updated_at: now - 1,
+                ..CodexLocalAccessModelCooldown::default()
+            },
+        );
+
+        let normalized = normalize_health_registry(registry, now);
+        let account = normalized
+            .accounts
+            .get("legacy-account")
+            .expect("legacy account should remain tracked");
+        assert_eq!(account.status, CodexLocalAccessAccountHealthStatus::Healthy);
+        assert_eq!(account.cooldown_until_ms, None);
+        assert!(health_registry_account_is_schedulable(
+            &normalized,
+            "legacy-account",
+            Some("gpt-5.5"),
+            now
+        ));
+        assert!(!health_registry_account_is_schedulable(
+            &normalized,
+            "legacy-account",
+            Some("gpt-5.4-mini"),
+            now
+        ));
+    }
+
+    #[test]
+    fn health_estimate_sorting_prioritizes_confirmed_then_estimated_accounts() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "estimated".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::EstimatedAvailable,
+                estimated_remaining_percentage: Some(100),
+                estimated_reset_at_ms: Some(now - 1),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "confirmed".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                estimated_remaining_percentage: Some(80),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "cooling".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 60_000),
+                last_observed_remaining_percentage: Some(0),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+
+        let mut account_ids = vec![
+            "cooling".to_string(),
+            "estimated".to_string(),
+            "unknown".to_string(),
+            "confirmed".to_string(),
+        ];
+        sort_account_ids_by_health_estimate(&mut account_ids, &registry, now);
+
+        assert_eq!(
+            account_ids,
+            vec![
+                "confirmed".to_string(),
+                "estimated".to_string(),
+                "unknown".to_string(),
+                "cooling".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn health_estimate_sorting_preserves_recent_success_continuity() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        for (account_id, last_success_at_ms) in
+            [("used-older", now - 60_000), ("used-recent", now - 1_000)]
+        {
+            registry.accounts.insert(
+                account_id.to_string(),
+                CodexLocalAccessAccountHealth {
+                    status: CodexLocalAccessAccountHealthStatus::Healthy,
+                    estimated_remaining_percentage: Some(80),
+                    last_selected_at_ms: Some(last_success_at_ms),
+                    last_success_at_ms: Some(last_success_at_ms),
+                    api_service_success_count: 1,
+                    updated_at: last_success_at_ms,
+                    ..CodexLocalAccessAccountHealth::default()
+                },
+            );
+        }
+
+        let mut account_ids = vec![
+            "new-reserve".to_string(),
+            "used-older".to_string(),
+            "used-recent".to_string(),
+        ];
+        sort_account_ids_by_health_estimate(&mut account_ids, &registry, now);
+
+        assert_eq!(
+            account_ids,
+            vec![
+                "used-recent".to_string(),
+                "used-older".to_string(),
+                "new-reserve".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn health_estimate_sorting_prefers_used_recovered_accounts_over_new_reserve() {
+        let now = 1_700_000_000_000;
+        const TEST_WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "used-recovered".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::EstimatedAvailable,
+                estimated_remaining_percentage: Some(100),
+                estimated_reset_at_ms: Some(now - 1),
+                last_success_at_ms: Some(now - TEST_WEEK_MS),
+                last_quota_exhausted_at_ms: Some(now - 60_000),
+                api_service_success_count: 3,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+
+        let mut account_ids = vec!["new-reserve".to_string(), "used-recovered".to_string()];
+        sort_account_ids_by_health_estimate(&mut account_ids, &registry, now);
+
+        assert_eq!(
+            account_ids,
+            vec!["used-recovered".to_string(), "new-reserve".to_string()]
+        );
+    }
+
+    #[test]
+    fn health_estimate_sorting_uses_account_quota_hints_for_visible_order() {
+        let now = 1_700_000_000_000;
+        let registry = empty_health_registry(now);
+        let mut account_ids = vec![
+            "weekly-0".to_string(),
+            "weekly-97".to_string(),
+            "weekly-30".to_string(),
+        ];
+        let quota_hints = HashMap::from([
+            (
+                "weekly-0".to_string(),
+                AccountQuotaSortHint {
+                    remaining_percentage: Some(0),
+                    earliest_reset_at_ms: Some(now + 1_000),
+                },
+            ),
+            (
+                "weekly-97".to_string(),
+                AccountQuotaSortHint {
+                    remaining_percentage: Some(97),
+                    earliest_reset_at_ms: Some(now + 9_000),
+                },
+            ),
+            (
+                "weekly-30".to_string(),
+                AccountQuotaSortHint {
+                    remaining_percentage: Some(30),
+                    earliest_reset_at_ms: Some(now + 100),
+                },
+            ),
+        ]);
+
+        sort_account_ids_by_health_estimate_with_quota_hints(
+            &mut account_ids,
+            &registry,
+            now,
+            &quota_hints,
+        );
+
+        assert_eq!(
+            account_ids,
+            vec![
+                "weekly-97".to_string(),
+                "weekly-30".to_string(),
+                "weekly-0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn health_registry_manual_required_blocks_schedulability() {
+        let mut registry = empty_health_registry(1_700_000_000_000);
+        let classified = classify_codex_upstream_error(StatusCode::UNAUTHORIZED, None, "");
+
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-3",
+            None,
+            Some("req-3"),
+            &classified,
+            1_700_000_000_000,
+        );
+
+        let account = registry
+            .accounts
+            .get("account-3")
+            .expect("account health should be recorded");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::ManualRequired
+        );
+        assert!(account.manual_required);
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-3",
+            None,
+            1_700_000_000_001
+        ));
+    }
+
+    #[test]
+    fn pool_unavailable_summary_reports_blocking_reason() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "cooling-account".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 30_000),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "manual-account".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                manual_required: true,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+
+        let summary = summarize_pool_unavailability(
+            &registry,
+            &["cooling-account".to_string(), "manual-account".to_string()],
+            Some("gpt-5.5"),
+            now,
+        );
+
+        assert_eq!(summary.total_count, 2);
+        assert_eq!(summary.schedulable_count, 0);
+        assert_eq!(summary.cooling_count, 1);
+        assert_eq!(summary.manual_required_count, 1);
+        assert_eq!(summary.nearest_wait, Some(Duration::from_secs(30)));
+        assert_eq!(
+            status_for_pool_unavailable(&summary),
+            StatusCode::SERVICE_UNAVAILABLE.as_u16()
+        );
+
+        let message = build_pool_unavailable_message("gpt-5.5", &summary);
+        assert!(message.contains("冷却中 1 个"));
+        assert!(message.contains("需人工处理 1 个"));
+    }
+
+    #[test]
+    fn pool_unavailable_with_reset_hint_is_deferred_inside_gateway() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        for account_id in ["exhausted-a", "exhausted-b"] {
+            registry.accounts.insert(
+                account_id.to_string(),
+                CodexLocalAccessAccountHealth {
+                    status: CodexLocalAccessAccountHealthStatus::Exhausted,
+                    estimated_reset_at_ms: Some(now + 60_000),
+                    updated_at: now,
+                    ..CodexLocalAccessAccountHealth::default()
+                },
+            );
+        }
+
+        let summary = summarize_pool_unavailability(
+            &registry,
+            &["exhausted-a".to_string(), "exhausted-b".to_string()],
+            Some("gpt-5.5"),
+            now,
+        );
+
+        assert!(should_use_pool_unavailable_summary(&summary));
+        assert_eq!(summary.nearest_wait, Some(Duration::from_secs(60)));
+        assert!(should_defer_pool_unavailable(&summary));
+    }
+
+    #[test]
+    fn pool_unavailable_without_reset_hint_is_not_deferred() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "manual-a".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                manual_required: true,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+
+        let summary = summarize_pool_unavailability(
+            &registry,
+            &["manual-a".to_string()],
+            Some("gpt-5.5"),
+            now,
+        );
+
+        assert!(should_use_pool_unavailable_summary(&summary));
+        assert_eq!(summary.nearest_wait, None);
+        assert!(!should_defer_pool_unavailable(&summary));
+    }
+
+    #[test]
+    fn pool_wait_must_fit_inside_request_timeout_budget() {
+        assert!(pool_wait_fits_request_budget(
+            Duration::from_secs(2),
+            Duration::from_secs(0),
+            Duration::from_secs(120),
+        ));
+        assert!(pool_wait_fits_request_budget(
+            Duration::from_secs(3),
+            Duration::from_secs(0),
+            Duration::from_secs(120),
+        ));
+        assert!(!pool_wait_fits_request_budget(
+            Duration::from_secs(4),
+            Duration::from_secs(0),
+            Duration::from_secs(600),
+        ));
+        assert!(!pool_wait_fits_request_budget(
+            Duration::from_secs(30),
+            Duration::from_secs(10),
+            Duration::from_secs(120),
+        ));
+        assert!(!pool_wait_fits_request_budget(
+            Duration::from_secs(119),
+            Duration::from_secs(0),
+            Duration::from_secs(120),
+        ));
+        assert!(!pool_wait_fits_request_budget(
+            Duration::from_secs(1),
+            Duration::from_secs(119),
+            Duration::from_secs(120),
+        ));
+    }
+
+    #[test]
+    fn pool_unavailable_stream_does_not_park_when_retry_after_exceeds_request_budget() {
+        let error = ProxyDispatchError {
+            status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            message: "模型 gpt-5.5 的API 服务号池暂无可调度账号（冷却中 2 个）；请刷新配额、恢复账号或调整号池后重试"
+                .to_string(),
+            account_id: None,
+            account_email: None,
+            error_category: Some("pool_unavailable".to_string()),
+            retry_after: Some(Duration::from_secs(7 * 24 * 60 * 60)),
+            defer_until_pool_available: true,
+        };
+
+        assert_eq!(
+            classify_codex_api_failure(Some(error.status), error.message.as_str()),
+            "pool_unavailable"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exhausted_responses_stream_returns_local_completion_when_wait_exceeds_budget() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-pool-terminal-stream-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let now = now_ms();
+        let mut registry = empty_health_registry(now);
+        registry.model_cooldowns.insert(
+            health_registry_model_key("api-exhausted", "gpt-5.5"),
+            CodexLocalAccessModelCooldown {
+                account_id: "api-exhausted".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + (7 * 24 * 60 * 60 * 1000),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_request_id: Some("req-exhausted-local".to_string()),
+                updated_at: now,
+            },
+        );
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 1,
+                "fallbackMode": "disabled",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-exhausted"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body = br#"{"model":"gpt-5.5","input":"hello"}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+            .await
+            .expect("exhausted stream should terminate promptly instead of silently waiting")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("HTTP/1.1 200 OK"),
+            "expected protocol-shaped SSE response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("text/event-stream"),
+            "expected event-stream response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("response.completed"),
+            "expected local pool_unavailable SSE to complete gracefully, got: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("response.failed"),
+            "Codex-facing local pool_unavailable must not emit fatal response.failed: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("Cockpit API Service pool_unavailable")
+                && response_text.contains("recover_action=retry_after_cooldown_or_start_new_task"),
+            "streaming local pool_unavailable completion must include visible assistant text so Codex does not treat it as a silent successful turn: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("synthetic_pool_unavailable_notice")
+                && response_text
+                    .contains("openai_codex_response_completed_with_visible_assistant_message"),
+            "expected local completion metadata to explain the Cockpit closure mode, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("response.output_item.added")
+                && response_text.contains("response.content_part.added")
+                && response_text.contains("response.output_text.delta")
+                && response_text.contains("response.output_text.done")
+                && response_text.contains("response.content_part.done")
+                && response_text.contains("response.output_item.done"),
+            "expected complete Responses streaming event sequence, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("[DONE]"),
+            "expected completed SSE to close the stream, got: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("cockpit_pool_wait"),
+            "long exhausted waits must not keep the Codex turn silently parked: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"final_response\""));
+        assert!(audit.contains("\"streamState\":\"completed\""));
+        assert!(audit.contains("\"outcome\":\"in_band_local_completion\""));
+        assert!(audit.contains("\"errorType\":\"pool_unavailable\""));
+        assert!(audit.contains(
+            "\"codex_facing_terminal_contract\":\"response.completed_local_pool_unavailable\""
+        ));
+        assert!(audit.contains("\"recover_action\":\"retry_after_cooldown_or_start_new_task\""));
+        assert!(!audit.contains("\"streamState\":\"failed\""));
+        assert!(!audit.contains("\"streamState\":\"heartbeat\""));
+
+        let server_result = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("server task should finish")
+            .expect("server task should not panic");
+        assert!(server_result.is_ok(), "server error: {:?}", server_result);
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exhausted_responses_stream_completes_locally_preserving_active_stream() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-pool-unavailable-stream-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let active_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+            gateway_request_id: "gw-test-3".to_string(),
+        };
+        let active_context = build_audit_context(&active_request, Some("active-a"));
+        let mut active_lease = grant_active_stream_lease(&active_context, "active-a");
+        assert_eq!(active_stream_lease_count_for_account("active-a"), 1);
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let (mut socket, _) = upstream_listener
+                .accept()
+                .await
+                .expect("fake upstream should accept");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("fake upstream should read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_recovered_after_long_wait\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"OK\"}\n\n",
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_recovered_after_long_wait\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("fake upstream should write response");
+        });
+
+        let now = now_ms();
+        let mut registry = empty_health_registry(now);
+        registry.model_cooldowns.insert(
+            health_registry_model_key("api-recovered", "gpt-5.5"),
+            CodexLocalAccessModelCooldown {
+                account_id: "api-recovered".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + (7 * 24 * 60 * 60 * 1000),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_request_id: Some("req-park-local".to_string()),
+                updated_at: now,
+            },
+        );
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 1,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "disabled",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-recovered"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+        let account = CodexAccount::new_api_key(
+            "api-recovered".to_string(),
+            "api-recovered@example.com".to_string(),
+            "sk-local-test".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        cache_prepared_account(&account).await;
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body = br#"{"model":"gpt-5.5","input":"hello"}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+            .await
+            .expect(
+                "exhausted stream should terminate promptly instead of waiting on active streams",
+            )
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("HTTP/1.1 200 OK"),
+            "expected Codex protocol SSE response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("text/event-stream"),
+            "expected event-stream response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("response.completed"),
+            "expected exhausted request to complete locally without fatal stream failure, got: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("response.failed"),
+            "Codex-facing exhausted request must not emit response.failed: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("Cockpit API Service pool_unavailable")
+                && response_text.contains("recover_action=retry_after_cooldown_or_start_new_task"),
+            "streaming local pool_unavailable completion must include visible assistant text so Codex does not treat it as a silent successful turn: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("synthetic_pool_unavailable_notice")
+                && response_text
+                    .contains("openai_codex_response_completed_with_visible_assistant_message"),
+            "expected local completion metadata to explain the Cockpit closure mode, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("[DONE]"),
+            "expected completed SSE to close the stream, got: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains(": cockpit_pool_wait"),
+            "long exhausted pool wait must not silently park the Codex turn: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("503 Service Unavailable"),
+            "Codex-facing exhausted stream must not expose transport 503: {}",
+            response_text
+        );
+        assert_eq!(
+            active_stream_lease_count_for_account("active-a"),
+            1,
+            "local completion for the new request must not release unrelated active streams"
+        );
+        active_lease.release(ActiveStreamTerminal::Completed);
+        assert_eq!(active_stream_lease_count_for_account("active-a"), 0);
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"final_response\""));
+        assert!(audit.contains("\"errorType\":\"pool_unavailable\""));
+        assert!(audit.contains("\"streamState\":\"completed\""));
+        assert!(audit.contains("\"outcome\":\"in_band_local_completion\""));
+        assert!(!audit.contains("\"streamState\":\"failed\""));
+        assert!(!audit.contains("\"streamState\":\"heartbeat\""));
+        assert!(!audit.contains("\"outcome\":\"parked\""));
+        assert!(!audit.contains("\"outcome\":\"in_band_synthetic\""));
+
+        let server_result = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("server task should finish")
+            .expect("server task should not panic");
+        assert!(server_result.is_ok(), "server error: {:?}", server_result);
+        upstream_server.abort();
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn responses_stream_forwards_real_upstream_after_short_pool_wait_recovery() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-pool-recovery-stream-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let (mut socket, _) = upstream_listener
+                .accept()
+                .await
+                .expect("fake upstream should accept");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("fake upstream should read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_recovered\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"OK\"}\n\n",
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_recovered\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("fake upstream should write response");
+        });
+
+        let now = now_ms();
+        let mut registry = empty_health_registry(now);
+        registry.model_cooldowns.insert(
+            health_registry_model_key("api-recovered", "gpt-5.5"),
+            CodexLocalAccessModelCooldown {
+                account_id: "api-recovered".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + 1_500,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_request_id: Some("req-recover-local".to_string()),
+                updated_at: now,
+            },
+        );
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 2,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 1,
+                "fallbackMode": "disabled",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-recovered"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+        let account = CodexAccount::new_api_key(
+            "api-recovered".to_string(),
+            "api-recovered@example.com".to_string(),
+            "sk-local-test".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        cache_prepared_account(&account).await;
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body = br#"{"model":"gpt-5.5","input":"hello"}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        for _ in 0..160 {
+            let mut chunk = [0u8; 1024];
+            let read = tokio::time::timeout(Duration::from_secs(5), client.read(&mut chunk))
+                .await
+                .expect("recovered stream should keep producing SSE")
+                .expect("response read should succeed");
+            if read == 0 {
+                break;
+            }
+            response.extend_from_slice(&chunk[..read]);
+            let response_text = String::from_utf8_lossy(&response);
+            if response_text.contains("[DONE]") {
+                break;
+            }
+        }
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("HTTP/1.1 200 OK"),
+            "expected successful SSE response, got: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("cockpit_pool_wait"),
+            "short pre-admission wait should not send heartbeat comments before upstream admission, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("response.completed"),
+            "expected real upstream completion after recovery, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("OK"),
+            "expected upstream response body to be forwarded, got: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("Cockpit API Service pool_unavailable"),
+            "stream recovery must not emit terminal synthetic assistant text: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"pool_wait\""));
+        assert!(!audit.contains("\"streamState\":\"heartbeat\""));
+        assert!(audit.contains("\"phase\":\"stream_completed\""));
+        assert!(!audit.contains("\"streamState\":\"failed\""));
+        assert!(!audit.contains("\"outcome\":\"in_band_synthetic\""));
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        upstream_server
+            .await
+            .expect("fake upstream task should join");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn single_account_previous_response_continuation_bypasses_pool_snapshot_and_forwards_upstream(
+    ) {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-continuation-cooldown-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let (mut socket, _) = upstream_listener
+                .accept()
+                .await
+                .expect("fake upstream should accept continuation");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("fake upstream should read continuation request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            assert!(
+                String::from_utf8_lossy(&request).contains("previous_response_id"),
+                "continuation request should reach upstream"
+            );
+            let body = concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_continuation_ok\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"OK\"}\n\n",
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_continuation_ok\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("fake upstream should write continuation response");
+        });
+
+        let now = now_ms();
+        let mut registry = empty_health_registry(now);
+        registry.model_cooldowns.insert(
+            health_registry_model_key("api-continuation", "gpt-5.5"),
+            CodexLocalAccessModelCooldown {
+                account_id: "api-continuation".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + (7 * 24 * 60 * 60 * 1000),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_request_id: Some("req-new-admission-exhausted".to_string()),
+                updated_at: now,
+            },
+        );
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 2,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 1,
+                "fallbackMode": "disabled",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-continuation"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+        let account = CodexAccount::new_api_key(
+            "api-continuation".to_string(),
+            "api-continuation@example.com".to_string(),
+            "sk-local-test".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        cache_prepared_account(&account).await;
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body =
+            br#"{"model":"gpt-5.5","previous_response_id":"resp_existing","input":"continue"}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .expect("continuation stream should finish")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("HTTP/1.1 200 OK"),
+            "expected upstream continuation response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("resp_continuation_ok") && response_text.contains("OK"),
+            "continuation must forward real upstream output instead of local pool text: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("Cockpit API Service pool_unavailable"),
+            "accepted continuation must not be converted to local pool_unavailable output: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"stream_completed\""));
+        assert!(!audit.contains("\"outcome\":\"in_band_local_completion\""));
+        assert!(!audit.contains("\"errorType\":\"pool_unavailable\""));
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        upstream_server
+            .await
+            .expect("fake upstream task should join");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_turn_metadata_lineage_does_not_pin_routing_account() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-request-affinity-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let (mut socket, _) = upstream_listener
+                .accept()
+                .await
+                .expect("fake upstream should accept metadata-only request");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("fake upstream should read continuation request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request);
+            assert!(
+                request_text.contains("X-Client-Request-Id: req-active-task")
+                    || request_text.contains("x-client-request-id: req-active-task"),
+                "request should preserve the thread request id: {}",
+                request_text
+            );
+            assert!(
+                request_text
+                    .to_ascii_lowercase()
+                    .contains("x-codex-turn-metadata: {\"turn_id\":\"turn-active\"}"),
+                "request should preserve the Codex turn metadata: {}",
+                request_text
+            );
+            assert!(
+                !request_text.contains("previous_response_id"),
+                "this regression covers turn metadata without previous_response_id: {}",
+                request_text
+            );
+            let body = concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_request_affinity_ok\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"OK\"}\n\n",
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_request_affinity_ok\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("fake upstream should write response");
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 1,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 3,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 1,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-replacement"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let account = CodexAccount::new_api_key(
+            "api-replacement".to_string(),
+            "api-replacement@example.com".to_string(),
+            "sk-local-test".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&account)
+            .expect("pool account should be persisted");
+        cache_prepared_account(&account).await;
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body = br#"{"model":"gpt-5.5","input":"continue task"}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: req-active-task\r\nX-Codex-Turn-Metadata: {{\"turn_id\":\"turn-active\"}}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .expect("metadata-only request stream should finish")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("resp_request_affinity_ok") && response_text.contains("OK"),
+            "metadata-only request must forward upstream output instead of local pool text: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("Cockpit API Service pool_unavailable"),
+            "metadata-only request must not be converted to local pool_unavailable output: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"request_id_source\":\"codex_turn_metadata_turn_id\""));
+        assert!(audit.contains("\"phase\":\"stream_completed\""));
+        assert!(!audit.contains("\"phase\":\"fallback_blocked\""));
+        assert!(!audit.contains("\"outcome\":\"in_band_local_completion\""));
+        assert!(!audit.contains("\"errorType\":\"pool_unavailable\""));
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        upstream_server
+            .await
+            .expect("fake upstream task should join");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn same_client_request_id_does_not_block_independent_fallback_after_usage_limit() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-request-affinity-fallback-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            let (mut socket, _) = upstream_listener
+                .accept()
+                .await
+                .expect("fake upstream should accept affinity request");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("fake upstream should read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request).to_string();
+            seen.push(request_text.clone());
+            assert!(
+                request_text.contains("Authorization: Bearer sk-local-current")
+                    || request_text.contains("authorization: Bearer sk-local-current"),
+                "thread-scoped request id alone should not pin a new request to the old account: {}",
+                request_text
+            );
+            assert!(
+                !request_text.contains("Authorization: Bearer sk-local-old")
+                    && !request_text.contains("authorization: Bearer sk-local-old"),
+                "thread-scoped request id alone must allow the replacement account: {}",
+                request_text
+            );
+            let body = concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_request_affinity_fallback_ok\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"CURRENT\"}\n\n",
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_request_affinity_fallback_ok\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("fake upstream should write response");
+            seen
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 1,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-current"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let old_account = CodexAccount::new_api_key(
+            "api-old".to_string(),
+            "api-old@example.com".to_string(),
+            "sk-local-old".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        let current_account = CodexAccount::new_api_key(
+            "api-current".to_string(),
+            "api-current@example.com".to_string(),
+            "sk-local-current".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&old_account)
+            .expect("old affinity account should be persisted");
+        crate::modules::codex_account::save_account(&current_account)
+            .expect("current pool account should be persisted");
+
+        let affinity_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([(
+                "x-client-request-id".to_string(),
+                "req-active-task-fallback".to_string(),
+            )]),
+            body: br#"{"model":"gpt-5.5","input":"previous successful task step"}"#.to_vec(),
+            gateway_request_id: "gw-test-5".to_string(),
+        };
+        let mut persisted_registry =
+            load_health_registry_from_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE))
+                .expect("health registry should load from isolated test root");
+        assert_eq!(
+            request_affinity_key(&affinity_request),
+            None,
+            "x-client-request-id is thread-scoped and must not become a hard turn affinity key"
+        );
+        assert!(!upsert_request_affinity_binding(
+            &mut persisted_registry,
+            &affinity_request,
+            "api-old",
+            now_ms(),
+        ));
+        save_health_registry_to_path(
+            &root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            &persisted_registry,
+        )
+        .expect("persistent request affinity should be written");
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body = br#"{"model":"gpt-5.5","input":"continue task"}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: req-active-task-fallback\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(3), client.read_to_end(&mut response))
+            .await
+            .expect("fallback stream should finish")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("resp_request_affinity_fallback_ok")
+                && response_text.contains("CURRENT"),
+            "independent request should immediately use the replacement account: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("resp_cockpit_pool_unavailable_"),
+            "thread-scoped request id must not trigger local pool_unavailable completion: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"request_id_source\":\"client_request_id\""));
+        assert!(!audit.contains("\"phase\":\"fallback_blocked\""));
+        assert!(!audit.contains("\"outcome\":\"hard_affinity\""));
+        assert!(!audit.contains("\"outcome\":\"in_band_local_completion\""));
+        assert!(audit.contains("\"phase\":\"stream_completed\""));
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        let seen = upstream_server
+            .await
+            .expect("fake upstream task should join");
+        assert_eq!(seen.len(), 1);
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_turn_metadata_only_request_falls_back_after_old_account_429() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-metadata-fallback-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_seen = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_seen_task = std::sync::Arc::clone(&upstream_seen);
+        let upstream_server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let Ok(Ok((mut socket, _))) =
+                    tokio::time::timeout(Duration::from_secs(2), upstream_listener.accept()).await
+                else {
+                    break;
+                };
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                let mut header_end = None;
+                let mut expected_len = None;
+                loop {
+                    let read = socket
+                        .read(&mut chunk)
+                        .await
+                        .expect("fake upstream should read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if header_end.is_none() {
+                        if let Some(index) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            let end = index + 4;
+                            let headers = String::from_utf8_lossy(&request[..index]);
+                            let content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            header_end = Some(end);
+                            expected_len = Some(end + content_length);
+                        }
+                    }
+                    if expected_len.is_some_and(|len| request.len() >= len) {
+                        break;
+                    }
+                }
+                let request_text = String::from_utf8_lossy(&request).to_string();
+                upstream_seen_task.lock().await.push(request_text.clone());
+
+                assert!(
+                    request_text
+                        .to_ascii_lowercase()
+                        .contains("x-codex-turn-metadata: {\"turn_id\":\"turn-live-metadata\"}"),
+                    "metadata header should be forwarded unchanged: {}",
+                    request_text
+                );
+                assert!(
+                    !request_text
+                        .to_ascii_lowercase()
+                        .contains("x-codex-turn-state:"),
+                    "fixture intentionally has metadata lineage without turn-state: {}",
+                    request_text
+                );
+
+                if request_text.contains("Bearer sk-local-old") {
+                    let body =
+                        r#"{"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+                    let response = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write old-account 429");
+                    continue;
+                }
+
+                let body = concat!(
+                    "event: response.created\n",
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_metadata_fallback_ok\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                    "event: response.output_text.delta\n",
+                    "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"CURRENT\"}\n\n",
+                    "event: response.completed\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_metadata_fallback_ok\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("fake upstream should write current-account response");
+            }
+        });
+
+        let now = now_ms();
+        let mut registry = empty_health_registry(now);
+        assert!(upsert_process_sticky_binding(&mut registry, "api-old", now));
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": 0,
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-old", "api-current"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection.clone());
+            runtime.running = true;
+        }
+
+        let old_account = CodexAccount::new_api_key(
+            "api-old".to_string(),
+            "api-old@example.com".to_string(),
+            "sk-local-old".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        let current_account = CodexAccount::new_api_key(
+            "api-current".to_string(),
+            "api-current@example.com".to_string(),
+            "sk-local-current".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&old_account)
+            .expect("old account should be persisted");
+        crate::modules::codex_account::save_account(&current_account)
+            .expect("current account should be persisted");
+
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                ("accept".to_string(), "text/event-stream".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+                (
+                    "x-client-request-id".to_string(),
+                    "thread-request-id".to_string(),
+                ),
+                (
+                    "x-codex-turn-metadata".to_string(),
+                    r#"{"turn_id":"turn-live-metadata"}"#.to_string(),
+                ),
+            ]),
+            body: br#"{"model":"gpt-5.5","input":"metadata-only continuation"}"#.to_vec(),
+            gateway_request_id: "gw-test-5b".to_string(),
+        };
+        assert_eq!(
+            request_affinity_key(&request),
+            None,
+            "metadata-only lineage must not activate hard affinity"
+        );
+
+        let success = proxy_request_with_account_pool(
+            &request,
+            &collection,
+            CodexLocalAccessRequestKind::Text,
+        )
+        .await
+        .expect("metadata-only request should fail over to healthy account");
+        assert_eq!(success.account_id, "api-current");
+        let response_text = success
+            .upstream
+            .text()
+            .await
+            .expect("current-account response should be readable");
+
+        let seen = upstream_seen.lock().await.clone();
+        let seen_text = seen.join("\n--- request ---\n");
+        let upstream_result = upstream_server.await;
+        assert!(
+            upstream_result.is_ok(),
+            "fake upstream task should join: {:?}",
+            upstream_result
+        );
+
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("Bearer sk-local-old")),
+            "first attempt should hit old account: {}",
+            seen_text
+        );
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("Bearer sk-local-current")),
+            "fallback attempt should hit current account: {}",
+            seen_text
+        );
+        assert!(
+            response_text.contains("resp_metadata_fallback_ok")
+                && response_text.contains("CURRENT"),
+            "metadata-only fallback should return current-account response: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"request_id_source\":\"codex_turn_metadata_turn_id\""));
+        assert!(audit.contains("\"phase\":\"fallback_selected\""));
+        assert!(audit.contains("\"outcome\":\"next_account\""));
+        assert!(!audit.contains("\"phase\":\"fallback_blocked\""));
+        assert!(!audit.contains("\"outcome\":\"hard_affinity\""));
+        assert!(!audit.contains("\"outcome\":\"in_band_local_completion\""));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn usage_limit_rescue_extends_new_request_beyond_default_two_accounts() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-usage-limit-rescue-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_seen = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_seen_task = std::sync::Arc::clone(&upstream_seen);
+        let upstream_server = tokio::spawn(async move {
+            for _ in 0..3 {
+                let Ok(Ok((mut socket, _))) =
+                    tokio::time::timeout(Duration::from_secs(2), upstream_listener.accept()).await
+                else {
+                    break;
+                };
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let read = socket
+                        .read(&mut chunk)
+                        .await
+                        .expect("fake upstream should read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request_text = String::from_utf8_lossy(&request).to_string();
+                upstream_seen_task.lock().await.push(request_text.clone());
+
+                if request_text.contains("Bearer sk-local-rescue-c") {
+                    let body = concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_usage_limit_rescue_ok\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                        "event: response.output_text.delta\n",
+                        "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"RESCUED\"}\n\n",
+                        "event: response.completed\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_usage_limit_rescue_ok\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                        "data: [DONE]\n\n"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write rescue-account response");
+                    continue;
+                }
+
+                let body =
+                    r#"{"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+                let response = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("fake upstream should write usage-limit response");
+            }
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": 0,
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-001-limit-a", "api-002-limit-b", "api-003-rescue-c"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection.clone());
+            runtime.running = true;
+        }
+
+        for (account_id, token) in [
+            ("api-001-limit-a", "sk-local-limit-a"),
+            ("api-002-limit-b", "sk-local-limit-b"),
+            ("api-003-rescue-c", "sk-local-rescue-c"),
+        ] {
+            let account = CodexAccount::new_api_key(
+                account_id.to_string(),
+                format!("{account_id}@example.com"),
+                token.to_string(),
+                CodexApiProviderMode::Custom,
+                Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+                None,
+                None,
+            );
+            crate::modules::codex_account::save_account(&account)
+                .expect("test account should be persisted");
+        }
+
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                ("accept".to_string(), "text/event-stream".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ]),
+            body: br#"{"model":"gpt-5.5","input":"new independent request"}"#.to_vec(),
+            gateway_request_id: "gw-usage-limit-rescue".to_string(),
+        };
+        assert_eq!(
+            request_affinity_key(&request),
+            None,
+            "rescue expansion only applies to new non-sticky requests"
+        );
+
+        let success = proxy_request_with_account_pool(
+            &request,
+            &collection,
+            CodexLocalAccessRequestKind::Text,
+        )
+        .await
+        .expect("new request should try the rescue account after two usage-limit accounts");
+        assert_eq!(success.account_id, "api-003-rescue-c");
+        let response_text = success
+            .upstream
+            .text()
+            .await
+            .expect("rescue-account response should be readable");
+
+        let upstream_result = upstream_server.await;
+        assert!(
+            upstream_result.is_ok(),
+            "fake upstream task should join: {:?}",
+            upstream_result
+        );
+        let seen = upstream_seen.lock().await.clone();
+        let seen_text = seen.join("\n--- request ---\n");
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        assert_eq!(
+            seen.len(),
+            3,
+            "request should continue past the default two-account cap only for usage-limit rescue: {}",
+            seen_text
+        );
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("Bearer sk-local-limit-a")),
+            "first attempt should hit the first limited account: {}",
+            seen_text
+        );
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("Bearer sk-local-limit-b")),
+            "second attempt should hit the second limited account: {}",
+            seen_text
+        );
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("Bearer sk-local-rescue-c")),
+            "rescue attempt should hit the third healthy account: {}",
+            seen_text
+        );
+        assert!(
+            response_text.contains("resp_usage_limit_rescue_ok")
+                && response_text.contains("RESCUED"),
+            "rescue response should be returned to the caller: {}",
+            response_text
+        );
+        assert!(audit.contains("\"phase\":\"fallback_selected\""));
+        assert!(audit.contains("\"usage_limit_rescue_extended\":\"true\""));
+        assert!(audit.contains("\"usage_limit_rescue_cap_limit\":\"3\""));
+        assert!(audit.contains("\"max_credential_attempts\":\"3\""));
+        assert!(!audit.contains("\"phase\":\"fallback_blocked\""));
+        assert!(!audit.contains("\"outcome\":\"hard_affinity\""));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_generated_turn_state_remains_hard_affinity_across_turn_requests() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-generated-turn-state-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_seen = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_seen_task = std::sync::Arc::clone(&upstream_seen);
+        let upstream_server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = upstream_listener
+                    .accept()
+                    .await
+                    .expect("fake upstream should accept");
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let read = socket
+                        .read(&mut chunk)
+                        .await
+                        .expect("fake upstream should read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request_text = String::from_utf8_lossy(&request).to_string();
+                upstream_seen_task.lock().await.push(request_text.clone());
+
+                if request_text.contains("Bearer sk-local-old") {
+                    if request_text
+                        .to_ascii_lowercase()
+                        .contains("x-codex-turn-state:")
+                    {
+                        let body = r#"{"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+                        let response = format!(
+                            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        socket
+                            .write_all(response.as_bytes())
+                            .await
+                            .expect("fake upstream should write old-account followup 429");
+                        continue;
+                    }
+
+                    let body = concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_initial_generated_state\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                        "event: response.output_text.delta\n",
+                        "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"OLD-INITIAL\"}\n\n",
+                        "event: response.completed\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_initial_generated_state\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                        "data: [DONE]\n\n"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write initial response without turn-state");
+                    continue;
+                }
+
+                let body = concat!(
+                    "event: response.created\n",
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_current_after_soft_affinity\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                    "event: response.output_text.delta\n",
+                    "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"CURRENT\"}\n\n",
+                    "event: response.completed\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_current_after_soft_affinity\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("fake upstream should write current-account response");
+            }
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 2,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-old"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let old_account = CodexAccount::new_api_key(
+            "api-old".to_string(),
+            "api-old@example.com".to_string(),
+            "sk-local-old".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        let current_account = CodexAccount::new_api_key(
+            "api-current".to_string(),
+            "api-current@example.com".to_string(),
+            "sk-local-current".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&old_account)
+            .expect("old account should be persisted");
+        crate::modules::codex_account::save_account(&current_account)
+            .expect("current account should be persisted");
+
+        let server = tokio::spawn(async move {
+            let mut handlers = Vec::new();
+            for _ in 0..2 {
+                let (stream, peer) = listener.accept().await.expect("server should accept");
+                handlers.push(tokio::spawn(async move {
+                    handle_connection(stream, peer).await
+                }));
+            }
+            for handler in handlers {
+                handler.await.expect("server connection task should join")?;
+            }
+            Ok::<(), String>(())
+        });
+
+        let mut first_client = TcpStream::connect(addr)
+            .await
+            .expect("first client should connect");
+        let first_body = br#"{"model":"gpt-5.5","input":"start turn"}"#;
+        let first_request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: thread-generated-state\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            first_body.len(),
+            String::from_utf8_lossy(first_body)
+        );
+        first_client
+            .write_all(first_request.as_bytes())
+            .await
+            .expect("first request should be written");
+        let mut first_response = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            first_client.read_to_end(&mut first_response),
+        )
+        .await
+        .expect("first response should finish")
+        .expect("first response read should succeed");
+        let first_response_text = String::from_utf8_lossy(&first_response);
+        assert!(
+            first_response_text.contains("resp_initial_generated_state"),
+            "initial response should be forwarded: {}",
+            first_response_text
+        );
+        let parsed_first = parse_http_request(&first_response)
+            .expect("gateway response headers should parse like an HTTP message");
+        let turn_state = parsed_first
+            .headers
+            .get("x-codex-turn-state")
+            .cloned()
+            .expect("gateway must synthesize x-codex-turn-state for Codex clients");
+        assert!(
+            !turn_state.trim().is_empty(),
+            "generated turn-state must be non-empty"
+        );
+
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            let collection = runtime
+                .collection
+                .as_mut()
+                .expect("runtime collection should still be available");
+            if !collection
+                .account_ids
+                .iter()
+                .any(|account_id| account_id == "api-current")
+            {
+                collection.account_ids.push("api-current".to_string());
+            }
+        }
+
+        let mut second_client = TcpStream::connect(addr)
+            .await
+            .expect("second client should connect");
+        let second_body = br#"{"model":"gpt-5.5","input":"continue same turn"}"#;
+        let second_request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: thread-generated-state\r\nX-Codex-Turn-State: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            turn_state,
+            second_body.len(),
+            String::from_utf8_lossy(second_body)
+        );
+        second_client
+            .write_all(second_request.as_bytes())
+            .await
+            .expect("second request should be written");
+        let mut second_response = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            second_client.read_to_end(&mut second_response),
+        )
+        .await
+        .expect("second response should finish")
+        .expect("second response read should succeed");
+        let second_response_text = String::from_utf8_lossy(&second_response);
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        upstream_server
+            .await
+            .expect("fake upstream task should join");
+
+        let seen = upstream_seen.lock().await.clone();
+        let seen_text = seen.join("\n--- request ---\n");
+        let audit =
+            fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE)).unwrap_or_default();
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(
+            second_response_text.contains("HTTP/1.1 429 Too Many Requests")
+                && second_response_text.contains("usage_limit_reached"),
+            "same-turn followup must preserve original-account quota failure instead of consuming a replacement account: {}",
+            second_response_text
+        );
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("Bearer sk-local-old")
+                    && !request.to_ascii_lowercase().contains("x-codex-turn-state:")),
+            "initial request should use old account without incoming turn-state: {}",
+            seen_text
+        );
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("Bearer sk-local-old")
+                    && request.to_ascii_lowercase().contains("x-codex-turn-state:")),
+            "same-turn followup should use the original account: {}",
+            seen_text
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|request| request.contains("Bearer sk-local-current")),
+            "same-turn followup must not consume the replacement account: {}",
+            seen_text
+        );
+
+        assert!(audit.contains("\"phase\":\"fallback_blocked\""));
+        assert!(audit.contains("\"outcome\":\"hard_affinity\""));
+        assert!(audit.contains("\"hard_affinity_bound\":\"true\""));
+        assert!(!audit.contains("\"phase\":\"fallback_selected\""));
+        assert!(!audit.contains("\"outcome\":\"in_band_local_completion\""));
+        assert!(
+            !audit.contains(turn_state.as_str()),
+            "raw generated turn-state must not be written to audit"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn previous_response_id_hard_affinity_blocks_fallback_after_usage_limit() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-previous-response-fallback-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let (mut socket, _) = upstream_listener
+                .accept()
+                .await
+                .expect("fake upstream should accept continuation request");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("fake upstream should read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let request_text = String::from_utf8_lossy(&request).to_string();
+            assert!(
+                request_text.contains("Authorization: Bearer sk-local-old")
+                    || request_text.contains("authorization: Bearer sk-local-old"),
+                "previous_response_id affinity should use the original account: {}",
+                request_text
+            );
+            assert!(
+                !request_text.contains("Authorization: Bearer sk-local-current")
+                    && !request_text.contains("authorization: Bearer sk-local-current"),
+                "previous_response_id affinity must not switch to the current pool account: {}",
+                request_text
+            );
+            assert!(
+                request_text.contains("\"previous_response_id\":\"resp-prev-hard\""),
+                "previous_response_id must be forwarded to upstream body: {}",
+                request_text
+            );
+            let body = r#"{"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("fake upstream should write 429");
+            request_text
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": 0,
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 1,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-current"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection.clone());
+            runtime.running = true;
+        }
+
+        let old_account = CodexAccount::new_api_key(
+            "api-old".to_string(),
+            "api-old@example.com".to_string(),
+            "sk-local-old".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        let current_account = CodexAccount::new_api_key(
+            "api-current".to_string(),
+            "api-current@example.com".to_string(),
+            "sk-local-current".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&old_account)
+            .expect("old affinity account should be persisted");
+        crate::modules::codex_account::save_account(&current_account)
+            .expect("current pool account should be persisted");
+        cache_prepared_account(&old_account).await;
+
+        let previous_response_id = "resp-prev-hard";
+        bind_response_affinity(previous_response_id, "api-old").await;
+
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                ("accept".to_string(), "text/event-stream".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ]),
+            body: format!(
+                r#"{{"model":"gpt-5.5","previous_response_id":"{}","input":"continue previous response"}}"#,
+                previous_response_id
+            )
+            .into_bytes(),
+            gateway_request_id: "gw-test-7".to_string(),
+        };
+        let err = proxy_request_with_account_pool(
+            &request,
+            &collection,
+            CodexLocalAccessRequestKind::Text,
+        )
+        .await
+        .expect_err(
+            "previous_response_id hard affinity should not fall back to replacement account",
+        );
+        assert_eq!(err.account_id.as_deref(), Some("api-old"));
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS.as_u16());
+        assert_eq!(
+            proxy_dispatch_final_error_type(&request, err.status, err.message.as_str()),
+            "usage_limit_reached"
+        );
+        let final_detail = proxy_dispatch_final_error_detail(
+            &request,
+            err.status,
+            err.message.as_str(),
+            err.retry_after,
+            123,
+        );
+        assert_eq!(
+            final_detail.get("provider_code").map(String::as_str),
+            Some("usage_limit_reached")
+        );
+        assert_eq!(
+            final_detail.get("terminal_origin").map(String::as_str),
+            Some("upstream_quota_error")
+        );
+        assert_eq!(
+            final_detail.get("sticky_boundary").map(String::as_str),
+            Some("previous_response_id")
+        );
+
+        let seen = upstream_server
+            .await
+            .expect("fake upstream task should join");
+        assert!(seen.contains("sk-local-old"));
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"fallback_blocked\""));
+        assert!(audit.contains("\"outcome\":\"hard_affinity\""));
+        assert!(audit.contains("\"previous_response_id_hash\":\"response:sha256:"));
+        assert!(
+            !audit.contains(previous_response_id),
+            "raw previous_response_id must not be written to audit"
+        );
+        assert!(!audit.contains("\"phase\":\"fallback_selected\""));
+
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn previous_response_id_short_retry_after_retries_original_account_to_completion() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-previous-response-retry-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for attempt in 0..2 {
+                let (mut socket, _) = upstream_listener
+                    .accept()
+                    .await
+                    .expect("fake upstream should accept retry request");
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let read = socket
+                        .read(&mut chunk)
+                        .await
+                        .expect("fake upstream should read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request_text = String::from_utf8_lossy(&request).to_string();
+                seen.push(request_text);
+
+                if attempt == 0 {
+                    let body =
+                        r#"{"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+                    let response = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After-Ms: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write retryable 429");
+                } else {
+                    let body = concat!(
+                        "event: response.created\r\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_retry_ok\"}}\r\n\r\n",
+                        "event: response.completed\r\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_retry_ok\",\"usage\":null}}\r\n\r\n",
+                        "data: [DONE]\r\n\r\n"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write completed stream");
+                }
+            }
+            seen
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": 0,
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 1,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-current"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection.clone());
+            runtime.running = true;
+        }
+
+        let old_account = CodexAccount::new_api_key(
+            "api-old".to_string(),
+            "api-old@example.com".to_string(),
+            "sk-local-old".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        let current_account = CodexAccount::new_api_key(
+            "api-current".to_string(),
+            "api-current@example.com".to_string(),
+            "sk-local-current".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&old_account)
+            .expect("old affinity account should be persisted");
+        crate::modules::codex_account::save_account(&current_account)
+            .expect("current pool account should be persisted");
+        cache_prepared_account(&old_account).await;
+
+        let previous_response_id = "resp-prev-retry";
+        bind_response_affinity(previous_response_id, "api-old").await;
+
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                ("accept".to_string(), "text/event-stream".to_string()),
+                ("content-type".to_string(), "application/json".to_string()),
+            ]),
+            body: format!(
+                r#"{{"model":"gpt-5.5","previous_response_id":"{}","input":"continue previous response"}}"#,
+                previous_response_id
+            )
+            .into_bytes(),
+            gateway_request_id: "gw-test-7b".to_string(),
+        };
+        let success = proxy_request_with_account_pool(
+            &request,
+            &collection,
+            CodexLocalAccessRequestKind::Text,
+        )
+            .await
+            .expect(
+                "previous_response_id hard affinity should retry the original account after a short reset",
+            );
+        assert_eq!(success.account_id, "api-old");
+        let response_text = success
+            .upstream
+            .text()
+            .await
+            .expect("completed upstream response should be readable");
+        assert!(
+            response_text.contains("response.completed") && response_text.contains("resp_retry_ok"),
+            "short hard-affinity reset should recover to a real upstream completion: {}",
+            response_text
+        );
+
+        let seen = upstream_server
+            .await
+            .expect("fake upstream task should join");
+        let seen_text = seen.join("\n--- request ---\n");
+        assert_eq!(seen.len(), 2);
+        assert!(
+            seen.iter()
+                .all(|request| request.contains("Bearer sk-local-old")),
+            "both attempts must stay on the original account: {}",
+            seen_text
+        );
+        assert!(
+            !seen_text.contains("Bearer sk-local-current"),
+            "hard-affinity retry must not consume the replacement account: {}",
+            seen_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"fallback_blocked\""));
+        assert!(audit.contains("\"outcome\":\"hard_affinity\""));
+        assert!(audit.contains("\"phase\":\"pool_wait\""));
+        assert!(audit.contains("\"reason\":\"hard_affinity_same_account_retry\""));
+        assert!(audit.contains("\"outcome\":\"sleeping\""));
+        assert!(audit.contains("\"outcome\":\"retrying\""));
+        assert!(!audit.contains("\"phase\":\"fallback_selected\""));
+
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hard_affinity_followup_retries_short_reset_on_original_account() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-hard-affinity-timeout-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for attempt in 0..2 {
+                let accepted = if attempt == 0 {
+                    Some(
+                        upstream_listener
+                            .accept()
+                            .await
+                            .expect("fake upstream should accept first request"),
+                    )
+                } else {
+                    match tokio::time::timeout(Duration::from_secs(8), upstream_listener.accept())
+                        .await
+                    {
+                        Ok(Ok(pair)) => Some(pair),
+                        _ => None,
+                    }
+                };
+                let Some((mut socket, _)) = accepted else {
+                    break;
+                };
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                let mut header_end = None;
+                let mut expected_len = None;
+                loop {
+                    let read = socket
+                        .read(&mut chunk)
+                        .await
+                        .expect("fake upstream should read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if header_end.is_none() {
+                        if let Some(index) =
+                            request.windows(4).position(|window| window == b"\r\n\r\n")
+                        {
+                            let end = index + 4;
+                            let headers = String::from_utf8_lossy(&request[..index]);
+                            let content_length = headers
+                                .lines()
+                                .find_map(|line| {
+                                    let (name, value) = line.split_once(':')?;
+                                    name.eq_ignore_ascii_case("content-length")
+                                        .then(|| value.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            header_end = Some(end);
+                            expected_len = Some(end + content_length);
+                        }
+                    }
+                    if expected_len.is_some_and(|len| request.len() >= len) {
+                        break;
+                    }
+                }
+                let request_text = String::from_utf8_lossy(&request).to_string();
+                assert!(
+                    request_text.contains("Bearer sk-local-old"),
+                    "hard-affinity followup must use original account: {}",
+                    request_text
+                );
+                assert!(
+                    !request_text.contains("Bearer sk-local-current"),
+                    "hard-affinity followup must not switch accounts: {}",
+                    request_text
+                );
+                assert!(
+                    request_text.contains("\"previous_response_id\":\"resp-prev-wait\""),
+                    "previous_response_id must be preserved in forwarded body: {}",
+                    request_text
+                );
+                seen.push(request_text);
+
+                if attempt == 0 {
+                    let body =
+                        r#"{"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+                    let response = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After-Ms: 1100\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write retryable 429");
+                } else {
+                    let body = concat!(
+                        "event: response.created\r\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_long_wait_ok\"}}\r\n\r\n",
+                        "event: response.output_item.done\r\n",
+                        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"compaction_summary\",\"encrypted_content\":\"compact-ok\"}}\r\n\r\n",
+                        "event: response.completed\r\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_long_wait_ok\",\"usage\":null}}\r\n\r\n",
+                        "data: [DONE]\r\n\r\n"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write completed stream");
+                }
+            }
+            seen
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 2,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 1,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-current"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let old_account = CodexAccount::new_api_key(
+            "api-old".to_string(),
+            "api-old@example.com".to_string(),
+            "sk-local-old".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        let current_account = CodexAccount::new_api_key(
+            "api-current".to_string(),
+            "api-current@example.com".to_string(),
+            "sk-local-current".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&old_account)
+            .expect("old affinity account should be persisted");
+        crate::modules::codex_account::save_account(&current_account)
+            .expect("current pool account should be persisted");
+        cache_prepared_account(&old_account).await;
+
+        let previous_response_id = "resp-prev-wait";
+        bind_response_affinity(previous_response_id, "api-old").await;
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body = format!(
+            r#"{{"model":"gpt-5.5","previous_response_id":"{}","input":"continue previous response"}}"#,
+            previous_response_id
+        );
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(12), client.read_to_end(&mut response))
+            .await
+            .expect("response should finish")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response).to_string();
+
+        let server_result = tokio::time::timeout(Duration::from_secs(4), server)
+            .await
+            .expect("server task should finish")
+            .expect("server task should join");
+        let seen = tokio::time::timeout(Duration::from_secs(8), upstream_server)
+            .await
+            .expect("fake upstream task should finish")
+            .expect("fake upstream task should join");
+        let audit =
+            fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE)).unwrap_or_default();
+
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        assert!(
+            response_text.contains("HTTP/1.1 200 OK")
+                && response_text.contains("resp_long_wait_ok")
+                && response_text.contains("compaction_summary")
+                && response_text.contains("response.completed"),
+            "hard-affinity followup should wait and finish with a real compaction-capable upstream stream: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("429 Too Many Requests")
+                && !response_text.contains("Service Unavailable"),
+            "hard-affinity followup must not leak terminal local/upstream errors: {}",
+            response_text
+        );
+        assert_eq!(
+            seen.len(),
+            2,
+            "gateway should retry the same original account after cooldown"
+        );
+        assert!(seen
+            .iter()
+            .all(|request| request.contains("Bearer sk-local-old")));
+        assert!(audit.contains("\"reason\":\"hard_affinity_same_account_retry\""));
+        assert!(audit.contains("\"phase\":\"pool_wait\""));
+        assert!(audit.contains("\"phase\":\"request_trace\""));
+        assert!(audit.contains("\"hard_affinity_continuity\":\"true\""));
+        assert!(audit.contains("\"phase\":\"quota_classification\""));
+        assert!(
+            audit.contains("\"reset_source\":\"upstream_reset_hint\""),
+            "audit missing reset source: {}",
+            audit
+        );
+        assert!(audit.contains("\"retry_after_ms\":\"1100\""));
+        assert!(audit.contains("\"phase\":\"routing_decision\""));
+        assert!(audit.contains("\"phase\":\"stream_terminal\""));
+        assert!(audit.contains("\"response_completed_seen\":\"true\""));
+        assert!(audit.contains("\"compaction_summary_seen\":\"true\""));
+        assert!(!audit.contains("\"phase\":\"final_response\""));
+        assert!(!audit.contains("sk-local-old"));
+        assert!(!audit.contains(previous_response_id));
+    }
+
+    #[test]
+    fn codex_turn_metadata_is_lineage_only_not_hard_affinity() {
+        let now = 1_700_000_000_000;
+        let old_turn = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                (
+                    "x-client-request-id".to_string(),
+                    "thread-request-id".to_string(),
+                ),
+                (
+                    "x-codex-turn-metadata".to_string(),
+                    r#"{"turn_id":"turn-old"}"#.to_string(),
+                ),
+            ]),
+            body: br#"{"model":"gpt-5.5","input":"old turn"}"#.to_vec(),
+            gateway_request_id: "gw-test-8".to_string(),
+        };
+        let new_turn = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                (
+                    "x-client-request-id".to_string(),
+                    "thread-request-id".to_string(),
+                ),
+                (
+                    "x-codex-turn-metadata".to_string(),
+                    r#"{"turn_id":"turn-new"}"#.to_string(),
+                ),
+            ]),
+            body: br#"{"model":"gpt-5.5","input":"new turn"}"#.to_vec(),
+            gateway_request_id: "gw-test-9".to_string(),
+        };
+
+        let (old_lineage, old_lineage_source) = request_lineage_id_with_source(&old_turn);
+        let (new_lineage, new_lineage_source) = request_lineage_id_with_source(&new_turn);
+        let old_lineage = old_lineage.expect("old turn should have audit lineage");
+        let new_lineage = new_lineage.expect("new turn should have audit lineage");
+        assert_eq!(old_lineage_source, Some("codex_turn_metadata_turn_id"));
+        assert_eq!(new_lineage_source, Some("codex_turn_metadata_turn_id"));
+        assert!(old_lineage.starts_with("x-codex-turn-metadata.turn_id:sha256:"));
+        assert!(new_lineage.starts_with("x-codex-turn-metadata.turn_id:sha256:"));
+        assert_ne!(
+            old_lineage, new_lineage,
+            "Codex x-client-request-id is thread-scoped; turn metadata should remain useful for audit lineage"
+        );
+        assert_eq!(
+            request_affinity_key(&old_turn),
+            None,
+            "x-codex-turn-metadata is observability metadata, not a hard routing key"
+        );
+        assert_eq!(
+            request_affinity_key(&new_turn),
+            None,
+            "x-codex-turn-metadata must not block independent account admission"
+        );
+        assert_eq!(
+            official_codex_sticky_routing_boundary(&old_turn),
+            None,
+            "official Codex treats metadata as observability lineage, not sticky routing"
+        );
+
+        let mut registry = empty_health_registry(now);
+        assert!(!upsert_request_affinity_binding(
+            &mut registry,
+            &old_turn,
+            "api-old",
+            now,
+        ));
+        assert_eq!(
+            request_affinity_account_from_registry(&registry, &old_turn, now),
+            None
+        );
+        assert_eq!(
+            request_affinity_account_from_registry(&registry, &new_turn, now),
+            None,
+            "Codex metadata-only turns must be admitted independently"
+        );
+    }
+
+    #[test]
+    fn official_codex_sticky_boundary_matches_reference_semantics() {
+        let turn_state_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([(
+                X_CODEX_TURN_STATE_HEADER.to_string(),
+                "turn-state-token".to_string(),
+            )]),
+            body: br#"{"model":"gpt-5.5","input":"same turn"}"#.to_vec(),
+            gateway_request_id: "gw-test-official-boundary-1".to_string(),
+        };
+        let turn_state_boundary = official_codex_sticky_routing_boundary(&turn_state_request)
+            .expect("x-codex-turn-state should be sticky");
+        assert_eq!(turn_state_boundary.reason(), "codex_turn_state");
+        match turn_state_boundary {
+            OfficialCodexStickyRoutingBoundary::TurnState { affinity_key } => {
+                assert!(affinity_key.starts_with("x-codex-turn-state:sha256:"));
+            }
+            other => panic!("unexpected boundary: {:?}", other),
+        }
+
+        let continuation_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::new(),
+            body: br#"{"model":"gpt-5.5","previous_response_id":"resp-1","input":"continue"}"#
+                .to_vec(),
+            gateway_request_id: "gw-test-official-boundary-2".to_string(),
+        };
+        let continuation_boundary = official_codex_sticky_routing_boundary(&continuation_request)
+            .expect("previous_response_id should bind continuation");
+        assert_eq!(continuation_boundary.reason(), "previous_response_id");
+        match continuation_boundary {
+            OfficialCodexStickyRoutingBoundary::PreviousResponseId { response_id } => {
+                assert_eq!(response_id, "resp-1");
+            }
+            other => panic!("unexpected boundary: {:?}", other),
+        }
+
+        let metadata_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([(
+                X_CODEX_TURN_METADATA_HEADER.to_string(),
+                r#"{"turn_id":"turn-1"}"#.to_string(),
+            )]),
+            body: br#"{"model":"gpt-5.5","input":"metadata only"}"#.to_vec(),
+            gateway_request_id: "gw-test-official-boundary-3".to_string(),
+        };
+        assert_eq!(
+            official_codex_sticky_routing_boundary(&metadata_request),
+            None
+        );
+        assert!(request_lineage_id_with_source(&metadata_request)
+            .0
+            .is_some());
+    }
+
+    #[test]
+    fn active_stream_lease_uses_turn_state_affinity_even_with_client_request_id() {
+        let _env_guard = lock_local_access_env_test();
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-turn-state-active-lease-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        reset_active_stream_leases_for_tests();
+
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                (
+                    "x-client-request-id".to_string(),
+                    "thread-request-id".to_string(),
+                ),
+                (
+                    "x-codex-turn-state".to_string(),
+                    "turn-secret-state".to_string(),
+                ),
+            ]),
+            body: br#"{"model":"gpt-5.5","input":"active turn"}"#.to_vec(),
+            gateway_request_id: "gw-test-10".to_string(),
+        };
+        let context = build_audit_context(&request, Some("api-old"));
+        let mut lease = grant_active_stream_lease_for_request(&context, "api-old", &request);
+
+        assert_eq!(
+            active_stream_affinity_account_for_request(&request).as_deref(),
+            Some("api-old"),
+            "active stream affinity must use the Codex turn-state key, not the thread request id"
+        );
+
+        lease.release(ActiveStreamTerminal::Completed);
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn active_stream_request_affinity_blocks_old_task_fallback_but_allows_new_task() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-active-affinity-fallback-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_seen = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_seen_task = std::sync::Arc::clone(&upstream_seen);
+        let upstream_server = tokio::spawn(async move {
+            loop {
+                let accept =
+                    tokio::time::timeout(Duration::from_secs(5), upstream_listener.accept()).await;
+                let Ok(Ok((mut socket, _))) = accept else {
+                    break;
+                };
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let read = socket
+                        .read(&mut chunk)
+                        .await
+                        .expect("fake upstream should read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request_text = String::from_utf8_lossy(&request).to_string();
+                upstream_seen_task.lock().await.push(request_text.clone());
+
+                if request_text.contains("Bearer sk-local-old") {
+                    let body =
+                        r#"{"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+                    let response = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write old-account 429");
+                    continue;
+                }
+
+                let body = concat!(
+                    "event: response.created\n",
+                    "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_current_ok\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                    "event: response.output_text.delta\n",
+                    "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"CURRENT\"}\n\n",
+                    "event: response.completed\n",
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_current_ok\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                    "data: [DONE]\n\n"
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                socket
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("fake upstream should write current-account response");
+            }
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-current"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let old_account = CodexAccount::new_api_key(
+            "api-old".to_string(),
+            "api-old@example.com".to_string(),
+            "sk-local-old".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        let current_account = CodexAccount::new_api_key(
+            "api-current".to_string(),
+            "api-current@example.com".to_string(),
+            "sk-local-current".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&old_account)
+            .expect("old active account should be persisted");
+        crate::modules::codex_account::save_account(&current_account)
+            .expect("current pool account should be persisted");
+
+        let active_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                (
+                    "x-client-request-id".to_string(),
+                    "thread-request-id".to_string(),
+                ),
+                (
+                    "x-codex-turn-metadata".to_string(),
+                    r#"{"turn_id":"turn-old"}"#.to_string(),
+                ),
+                (
+                    "x-codex-turn-state".to_string(),
+                    "turn-old-state".to_string(),
+                ),
+            ]),
+            body: br#"{"model":"gpt-5.5","input":"already running"}"#.to_vec(),
+            gateway_request_id: "gw-test-11".to_string(),
+        };
+        let active_context = build_audit_context(&active_request, Some("api-old"));
+        let mut active_lease =
+            grant_active_stream_lease_for_request(&active_context, "api-old", &active_request);
+        assert_eq!(active_stream_lease_count_for_account("api-old"), 1);
+
+        let mut persisted_registry =
+            load_health_registry_from_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE))
+                .expect("health registry should load from isolated test root");
+        assert!(upsert_request_affinity_binding(
+            &mut persisted_registry,
+            &active_request,
+            "api-old",
+            now_ms(),
+        ));
+        save_health_registry_to_path(
+            &root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            &persisted_registry,
+        )
+        .expect("persistent request affinity should be written");
+
+        let server = tokio::spawn(async move {
+            let mut handlers = Vec::new();
+            for _ in 0..2 {
+                let (stream, peer) = listener.accept().await.expect("server should accept");
+                handlers.push(tokio::spawn(async move {
+                    handle_connection(stream, peer).await
+                }));
+            }
+            for handler in handlers {
+                handler.await.expect("server connection task should join")?;
+            }
+            Ok::<(), String>(())
+        });
+
+        let mut active_client = TcpStream::connect(addr)
+            .await
+            .expect("active client should connect");
+        let active_body = br#"{"model":"gpt-5.5","input":"continue old task"}"#;
+        let active_http = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: thread-request-id\r\nX-Codex-Turn-Metadata: {{\"turn_id\":\"turn-old\"}}\r\nX-Codex-Turn-State: turn-old-state\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            active_body.len(),
+            String::from_utf8_lossy(active_body)
+        );
+        active_client
+            .write_all(active_http.as_bytes())
+            .await
+            .expect("active request should be written");
+        let mut active_response = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            active_client.read_to_end(&mut active_response),
+        )
+        .await
+        .expect("active request response should finish")
+        .expect("active response read should succeed");
+
+        let mut new_client = TcpStream::connect(addr)
+            .await
+            .expect("new client should connect");
+        let new_body = br#"{"model":"gpt-5.5","input":"new task"}"#;
+        let new_http = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: thread-request-id\r\nX-Codex-Turn-Metadata: {{\"turn_id\":\"turn-new\"}}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            new_body.len(),
+            String::from_utf8_lossy(new_body)
+        );
+        new_client
+            .write_all(new_http.as_bytes())
+            .await
+            .expect("new request should be written");
+        let mut new_response = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(3),
+            new_client.read_to_end(&mut new_response),
+        )
+        .await
+        .expect("new request response should finish")
+        .expect("new response read should succeed");
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        upstream_server.abort();
+
+        let active_response_text = String::from_utf8_lossy(&active_response);
+        let new_response_text = String::from_utf8_lossy(&new_response);
+        let seen = upstream_seen.lock().await.clone();
+        let seen_text = seen.join("\n--- request ---\n");
+
+        active_lease.release(ActiveStreamTerminal::Completed);
+        assert_eq!(active_stream_lease_count_for_account("api-old"), 0);
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(
+            !active_response_text.contains("resp_current_ok")
+                && !active_response_text.contains("CURRENT"),
+            "active task must not be replayed on the replacement account: {}",
+            active_response_text
+        );
+        assert!(
+            new_response_text.contains("resp_current_ok") && new_response_text.contains("CURRENT"),
+            "new task should immediately use the current replacement account: {}",
+            new_response_text
+        );
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("\"turn_id\":\"turn-old\"")
+                    && request.contains("Bearer sk-local-old")),
+            "active task should reach the old account: {}",
+            seen_text
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|request| request.contains("\"turn_id\":\"turn-old\"")
+                    && request.contains("Bearer sk-local-current")),
+            "active task must not be sent to the replacement account: {}",
+            seen_text
+        );
+        assert!(
+            seen.iter()
+                .any(|request| request.contains("\"turn_id\":\"turn-new\"")
+                    && request.contains("Bearer sk-local-current")),
+            "new task should reach the replacement account: {}",
+            seen_text
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_flight_stream_finishes_on_original_account_while_new_task_uses_replacement() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-inflight-stream-switch-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+        let audit_path = root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_seen = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::<String>::new()));
+        let old_stream_started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let finish_old_stream = std::sync::Arc::new(tokio::sync::Notify::new());
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_seen_task = std::sync::Arc::clone(&upstream_seen);
+        let old_stream_started_task = std::sync::Arc::clone(&old_stream_started);
+        let finish_old_stream_task = std::sync::Arc::clone(&finish_old_stream);
+        let upstream_server = tokio::spawn(async move {
+            let mut handlers = Vec::new();
+            for _ in 0..2 {
+                let (mut socket, _) = upstream_listener
+                    .accept()
+                    .await
+                    .expect("fake upstream should accept");
+                let upstream_seen_task = std::sync::Arc::clone(&upstream_seen_task);
+                let old_stream_started_task = std::sync::Arc::clone(&old_stream_started_task);
+                let finish_old_stream_task = std::sync::Arc::clone(&finish_old_stream_task);
+                handlers.push(tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        let read = socket
+                            .read(&mut chunk)
+                            .await
+                            .expect("fake upstream should read request");
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let request_text = String::from_utf8_lossy(&request).to_string();
+                    upstream_seen_task.lock().await.push(request_text.clone());
+
+                    if request_text.contains("Bearer sk-local-old") {
+                        let old_first = concat!(
+                            "event: response.created\n",
+                            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_old_stream\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                            "event: response.output_text.delta\n",
+                            "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"OLD-START\"}\n\n"
+                        );
+                        let old_rest = concat!(
+                            "event: response.output_text.delta\n",
+                            "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"OLD-DONE\"}\n\n",
+                            "event: response.completed\n",
+                            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_old_stream\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+                            "data: [DONE]\n\n"
+                        );
+                        let content_length =
+                            old_first.len() + old_rest.len();
+                        let response_head = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            content_length
+                        );
+                        socket
+                            .write_all(response_head.as_bytes())
+                            .await
+                            .expect("fake upstream should write old response headers");
+                        socket
+                            .write_all(old_first.as_bytes())
+                            .await
+                            .expect("fake upstream should write old first chunk");
+                        old_stream_started_task.notify_waiters();
+                        finish_old_stream_task.notified().await;
+                        socket
+                            .write_all(old_rest.as_bytes())
+                            .await
+                            .expect("fake upstream should finish old stream");
+                        return;
+                    }
+
+                    let body = concat!(
+                        "event: response.created\n",
+                        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_current_stream\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                        "event: response.output_text.delta\n",
+                        "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"CURRENT\"}\n\n",
+                        "event: response.completed\n",
+                        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_current_stream\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                        "data: [DONE]\n\n"
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket
+                        .write_all(response.as_bytes())
+                        .await
+                        .expect("fake upstream should write current-account response");
+                }));
+            }
+            for handler in handlers {
+                handler
+                    .await
+                    .expect("fake upstream connection task should join");
+            }
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "next_request_only",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-old", "api-current"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let old_account = CodexAccount::new_api_key(
+            "api-old".to_string(),
+            "api-old@example.com".to_string(),
+            "sk-local-old".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        let current_account = CodexAccount::new_api_key(
+            "api-current".to_string(),
+            "api-current@example.com".to_string(),
+            "sk-local-current".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&old_account)
+            .expect("old account should be persisted");
+        crate::modules::codex_account::save_account(&current_account)
+            .expect("current account should be persisted");
+
+        let old_affinity_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                (
+                    "x-client-request-id".to_string(),
+                    "thread-request-id".to_string(),
+                ),
+                (
+                    "x-codex-turn-metadata".to_string(),
+                    r#"{"turn_id":"turn-old-stream"}"#.to_string(),
+                ),
+                (
+                    "x-codex-turn-state".to_string(),
+                    "turn-old-stream-state".to_string(),
+                ),
+            ]),
+            body: br#"{"model":"gpt-5.5","input":"old stream start"}"#.to_vec(),
+            gateway_request_id: "gw-test-12".to_string(),
+        };
+        let mut persisted_registry =
+            load_health_registry_from_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE))
+                .expect("health registry should load from isolated test root");
+        assert!(upsert_request_affinity_binding(
+            &mut persisted_registry,
+            &old_affinity_request,
+            "api-old",
+            now_ms(),
+        ));
+        save_health_registry_to_path(
+            &root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            &persisted_registry,
+        )
+        .expect("persistent request affinity should be written");
+
+        let server = tokio::spawn(async move {
+            let mut handlers = Vec::new();
+            for _ in 0..2 {
+                let (stream, peer) = listener.accept().await.expect("server should accept");
+                handlers.push(tokio::spawn(async move {
+                    handle_connection(stream, peer).await
+                }));
+            }
+            for handler in handlers {
+                handler.await.expect("server connection task should join")?;
+            }
+            Ok::<(), String>(())
+        });
+
+        let old_client_task = tokio::spawn(async move {
+            let mut client = TcpStream::connect(addr)
+                .await
+                .expect("old client should connect");
+            let body = br#"{"model":"gpt-5.5","input":"old stream"}"#;
+            let request = format!(
+                "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: thread-request-id\r\nX-Codex-Turn-Metadata: {{\"turn_id\":\"turn-old-stream\"}}\r\nX-Codex-Turn-State: turn-old-stream-state\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                String::from_utf8_lossy(body)
+            );
+            client
+                .write_all(request.as_bytes())
+                .await
+                .expect("old request should be written");
+            let mut response = Vec::new();
+            client
+                .read_to_end(&mut response)
+                .await
+                .expect("old response read should succeed");
+            response
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), old_stream_started.notified())
+            .await
+            .expect("old upstream stream should start");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if active_stream_lease_count_for_account("api-old") == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("old active stream lease should be granted");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let audit = fs::read_to_string(&audit_path).unwrap_or_default();
+                let mut upstream_admitted_index: Option<usize> = None;
+                let mut headers_written_index: Option<usize> = None;
+                let mut first_chunk_written_index: Option<usize> = None;
+
+                for (index, line) in audit.lines().enumerate() {
+                    let Ok(event) = serde_json::from_str::<super::CodexLocalAccessAuditEvent>(line)
+                    else {
+                        continue;
+                    };
+                    if upstream_admitted_index.is_none() && event.phase == "upstream_admitted" {
+                        upstream_admitted_index = Some(index);
+                    }
+                    if headers_written_index.is_none()
+                        && event.phase == "stream_write"
+                        && event.stream_state.as_deref() == Some("headers_written")
+                    {
+                        headers_written_index = Some(index);
+                    }
+                    if first_chunk_written_index.is_none()
+                        && event.phase == "stream_write"
+                        && event.stream_state.as_deref() == Some("first_chunk_written")
+                    {
+                        first_chunk_written_index = Some(index);
+                    }
+                }
+
+                if let (Some(upstream_admitted), Some(headers_written), Some(first_chunk_written)) = (
+                    upstream_admitted_index,
+                    headers_written_index,
+                    first_chunk_written_index,
+                ) {
+                    assert!(
+                        upstream_admitted <= headers_written && headers_written <= first_chunk_written,
+                        "old stream audit should reach admitted -> headers -> first chunk before simulated quota exhaustion"
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("old stream should reach admitted/headers/first-chunk before simulated quota exhaustion");
+
+        let mut registry =
+            load_health_registry_from_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE))
+                .expect("health registry should load before simulated exhaustion");
+        let exhausted = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#,
+        );
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "api-old",
+            Some("gpt-5.5"),
+            Some("req-inflight-old-stream"),
+            &exhausted,
+            now_ms(),
+        );
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("simulated quota exhaustion should be persisted");
+
+        let mut new_client = TcpStream::connect(addr)
+            .await
+            .expect("new client should connect");
+        let new_body = br#"{"model":"gpt-5.5","input":"new task after exhaustion"}"#;
+        let new_request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: thread-request-id\r\nX-Codex-Turn-Metadata: {{\"turn_id\":\"turn-new-after-exhausted\"}}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            new_body.len(),
+            String::from_utf8_lossy(new_body)
+        );
+        new_client
+            .write_all(new_request.as_bytes())
+            .await
+            .expect("new request should be written");
+        let mut new_response = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            new_client.read_to_end(&mut new_response),
+        )
+        .await
+        .expect("new request response should finish")
+        .expect("new response read should succeed");
+        finish_old_stream.notify_waiters();
+        let old_response = tokio::time::timeout(Duration::from_secs(2), old_client_task)
+            .await
+            .expect("old client task should finish")
+            .expect("old client task should not panic");
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        let upstream_result = upstream_server.await;
+        assert!(
+            upstream_result.is_ok(),
+            "fake upstream task should join: {:?}",
+            upstream_result
+        );
+
+        let old_response_text = String::from_utf8_lossy(&old_response);
+        let new_response_text = String::from_utf8_lossy(&new_response);
+        let seen = upstream_seen.lock().await.clone();
+        let seen_text = seen.join("\n--- request ---\n");
+
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+
+        assert!(
+            old_response_text.contains("OLD-START")
+                && old_response_text.contains("OLD-DONE")
+                && old_response_text.contains("resp_old_stream"),
+            "old stream should complete from the original account: {}",
+            old_response_text
+        );
+        assert!(
+            !old_response_text.contains("CURRENT"),
+            "old stream must not be replaced by the new account response: {}",
+            old_response_text
+        );
+        assert!(
+            new_response_text.contains("CURRENT")
+                && new_response_text.contains("resp_current_stream"),
+            "new task should immediately use the replacement account: {}",
+            new_response_text
+        );
+        assert!(
+            seen.iter().any(
+                |request| request.contains("\"turn_id\":\"turn-old-stream\"")
+                    && request.contains("Bearer sk-local-old")
+            ),
+            "old stream should reach the original account: {}",
+            seen_text
+        );
+        assert!(
+            !seen.iter().any(
+                |request| request.contains("\"turn_id\":\"turn-old-stream\"")
+                    && request.contains("Bearer sk-local-current")
+            ),
+            "old stream must never be replayed on the replacement account: {}",
+            seen_text
+        );
+        assert!(
+            seen.iter().any(
+                |request| request.contains("\"turn_id\":\"turn-new-after-exhausted\"")
+                    && request.contains("Bearer sk-local-current")
+            ),
+            "new task should reach the replacement account: {}",
+            seen_text
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn previous_response_continuation_bypasses_local_backpressure_start_interval() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-continuation-backpressure-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let (mut socket, _) = upstream_listener
+                .accept()
+                .await
+                .expect("fake upstream should accept continuation");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read = socket
+                    .read(&mut chunk)
+                    .await
+                    .expect("fake upstream should read request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            assert!(
+                String::from_utf8_lossy(&request).contains("previous_response_id"),
+                "continuation request should reach upstream"
+            );
+            let body = concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_backpressure_bypass\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
+                "event: response.output_text.delta\n",
+                "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"OK\"}\n\n",
+                "event: response.completed\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_backpressure_bypass\",\"model\":\"gpt-5.5\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("fake upstream should write response");
+        });
+
+        let now = now_ms();
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("test listener should have addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 30,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 1,
+                "fallbackMode": "disabled",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-continuation"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        let backpressure_config = collection.safety_config.clone();
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+        let account = CodexAccount::new_api_key(
+            "api-continuation".to_string(),
+            "api-continuation@example.com".to_string(),
+            "sk-local-test".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        cache_prepared_account(&account).await;
+
+        let stale_permit = acquire_local_api_backpressure(&backpressure_config)
+            .await
+            .expect("initial request should acquire backpressure slot");
+        drop(stale_permit);
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body =
+            br#"{"model":"gpt-5.5","previous_response_id":"resp_existing","input":"continue"}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: text/event-stream\r\nX-Client-Request-Id: req-continuation-backpressure\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        // Full-suite Windows runs can be briefly scheduler-bound; this remains well below
+        // the 30s start interval that the continuation must bypass.
+        tokio::time::timeout(Duration::from_secs(10), client.read_to_end(&mut response))
+            .await
+            .expect("continuation must not wait behind the new-request start interval")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("HTTP/1.1 200 OK"),
+            "expected upstream continuation response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("resp_backpressure_bypass") && response_text.contains("OK"),
+            "continuation must be forwarded instead of timing out in local backpressure: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("本地接入队列等待超时"),
+            "continuation must not expose local backpressure timeout: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"local_backpressure\""));
+        assert!(audit.contains("\"outcome\":\"bypassed\""));
+        assert!(audit.contains("\"reason\":\"previous_response_id\""));
+        assert!(audit.contains("\"phase\":\"stream_completed\""));
+        assert!(!audit.contains("\"phase\":\"client_aborted\""));
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        upstream_server
+            .await
+            .expect("fake upstream task should join");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exhausted_responses_non_stream_returns_in_band_completed_payload() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-pool-unavailable-non-stream-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let now = now_ms();
+        let mut registry = empty_health_registry(now);
+        for account_id in ["cooling-a", "cooling-b"] {
+            registry.model_cooldowns.insert(
+                health_registry_model_key(account_id, "gpt-5.5"),
+                CodexLocalAccessModelCooldown {
+                    account_id: account_id.to_string(),
+                    model: "gpt-5.5".to_string(),
+                    cooldown_until_ms: now + (7 * 24 * 60 * 60 * 1000),
+                    last_error_type: Some("usage_limit_reached".to_string()),
+                    last_request_id: Some("req-json-local".to_string()),
+                    updated_at: now,
+                },
+            );
+        }
+        save_health_registry_to_path(&root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 1,
+                "maxQueueWaitSeconds": 1,
+                "requestTimeoutSeconds": 3,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "disabled",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["cooling-a", "cooling-b"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body = br#"{"model":"gpt-5.5","input":"hello","stream":false}"#;
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+            .await
+            .expect("pool-unavailable JSON response should finish promptly")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("HTTP/1.1 200 OK"),
+            "expected exhausted non-stream responses request to return protocol-shaped in-band JSON, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("application/json"),
+            "expected JSON response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("\"status\":\"completed\""),
+            "expected completed pool_unavailable response payload, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("\"error\":null"),
+            "expected completed local response without fatal error object, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("\"output\"") && response_text.contains("\"output_text\""),
+            "expected local assistant output text, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("pool_unavailable")
+                || response_text.contains("API 服务号池")
+                || response_text.contains("暂无可调度账号"),
+            "expected pool_unavailable explanation, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("synthetic_pool_unavailable_notice")
+                && response_text.contains("retry_after_cooldown_or_start_new_task"),
+            "expected local completion metadata to explain the Cockpit closure mode, got: {}",
+            response_text
+        );
+        assert!(
+            !response_text.contains("503 Service Unavailable"),
+            "Codex-facing exhausted non-stream request must not expose transport 503: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"final_response\""));
+        assert!(audit.contains("\"status\":200"));
+        assert!(audit.contains("\"errorType\":\"pool_unavailable\""));
+        assert!(audit.contains("\"streamState\":\"json_completed\""));
+        assert!(audit.contains("\"outcome\":\"in_band_json_local_completion\""));
+        assert!(!audit.contains("\"streamState\":\"json_failed\""));
+        assert!(!audit.contains("\"outcome\":\"in_band_synthetic\""));
+
+        let server_result = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("server task should finish")
+            .expect("server task should not panic");
+        assert!(server_result.is_ok(), "server error: {:?}", server_result);
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pool_unavailable_non_responses_keeps_http_error_contract() {
+        let error = ProxyDispatchError {
+            status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            message: "API 服务号池暂无可调度账号".to_string(),
+            account_id: None,
+            account_email: None,
+            error_category: Some("pool_unavailable".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
+        };
+        assert_eq!(
+            classify_codex_api_failure(Some(error.status), error.message.as_str()),
+            "pool_unavailable"
+        );
+        let request = ParsedRequest {
+            method: "GET".to_string(),
+            target: "/v1/models".to_string(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+            gateway_request_id: "gw-test-13".to_string(),
+        };
+        assert!(!should_write_in_band_pool_unavailable_response(
+            &request,
+            &GatewayResponseAdapter::Passthrough {
+                request_is_stream: false
+            },
+            &error
+        ));
+    }
+
+    #[test]
+    fn pool_unavailable_sticky_responses_keeps_http_error_contract() {
+        let error = ProxyDispatchError {
+            status: StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+            message: "API 服务号池暂无可调度账号".to_string(),
+            account_id: None,
+            account_email: None,
+            error_category: Some("pool_unavailable".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
+        };
+
+        let turn_state_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([(
+                "x-codex-turn-state".to_string(),
+                "turn-state-token".to_string(),
+            )]),
+            body: br#"{"model":"gpt-5.5","input":"continue"}"#.to_vec(),
+            gateway_request_id: "gw-test-sticky-pool-1".to_string(),
+        };
+        assert!(!should_write_in_band_pool_unavailable_response(
+            &turn_state_request,
+            &GatewayResponseAdapter::Passthrough {
+                request_is_stream: true
+            },
+            &error
+        ));
+
+        let continuation_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::new(),
+            body: br#"{"model":"gpt-5.5","previous_response_id":"resp-1","input":"continue"}"#
+                .to_vec(),
+            gateway_request_id: "gw-test-sticky-pool-2".to_string(),
+        };
+        assert!(!should_write_in_band_pool_unavailable_response(
+            &continuation_request,
+            &GatewayResponseAdapter::Passthrough {
+                request_is_stream: false
+            },
+            &error
+        ));
+
+        let metadata_only_request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([(
+                "x-codex-turn-metadata".to_string(),
+                r#"{"turn_id":"turn-observable-only"}"#.to_string(),
+            )]),
+            body: br#"{"model":"gpt-5.5","input":"new independent request"}"#.to_vec(),
+            gateway_request_id: "gw-test-sticky-pool-3".to_string(),
+        };
+        assert!(
+            should_write_in_band_pool_unavailable_response(
+                &metadata_only_request,
+                &GatewayResponseAdapter::Passthrough {
+                    request_is_stream: true
+                },
+                &error
+            ),
+            "x-codex-turn-metadata is official observability lineage, not a hard-affinity boundary"
+        );
+    }
+
+    #[test]
+    fn pool_unavailable_message_reports_all_exhausted_without_reset_hint() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        for account_id in ["exhausted-a", "exhausted-b"] {
+            registry.accounts.insert(
+                account_id.to_string(),
+                CodexLocalAccessAccountHealth {
+                    status: CodexLocalAccessAccountHealthStatus::Exhausted,
+                    updated_at: now,
+                    ..CodexLocalAccessAccountHealth::default()
+                },
+            );
+        }
+
+        let summary = summarize_pool_unavailability(
+            &registry,
+            &["exhausted-a".to_string(), "exhausted-b".to_string()],
+            Some("gpt-5.5"),
+            now,
+        );
+
+        assert_eq!(summary.total_count, 2);
+        assert_eq!(summary.schedulable_count, 0);
+        assert_eq!(summary.exhausted_count, 2);
+        assert_eq!(summary.nearest_wait, None);
+        assert!(should_use_pool_unavailable_summary(&summary));
+        assert_eq!(
+            status_for_pool_unavailable(&summary),
+            StatusCode::SERVICE_UNAVAILABLE.as_u16()
+        );
+
+        let message = build_pool_unavailable_message("gpt-5.5", &summary);
+        assert!(message.contains("额度均已耗尽"));
+        assert!(message.contains("未拿到上游 reset 时间"));
+        assert!(message.contains("调整号池"));
+        assert!(!message.contains("切换账号"));
+    }
+
+    #[test]
+    fn pool_unavailable_message_reports_manual_required_accounts() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        for account_id in ["manual-a", "manual-b"] {
+            registry.accounts.insert(
+                account_id.to_string(),
+                CodexLocalAccessAccountHealth {
+                    status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                    manual_required: true,
+                    updated_at: now,
+                    ..CodexLocalAccessAccountHealth::default()
+                },
+            );
+        }
+
+        let summary = summarize_pool_unavailability(
+            &registry,
+            &["manual-a".to_string(), "manual-b".to_string()],
+            Some("gpt-5.5"),
+            now,
+        );
+
+        assert_eq!(summary.total_count, 2);
+        assert_eq!(summary.schedulable_count, 0);
+        assert_eq!(summary.manual_required_count, 2);
+        assert!(should_use_pool_unavailable_summary(&summary));
+        assert_eq!(
+            status_for_pool_unavailable(&summary),
+            StatusCode::UNAUTHORIZED.as_u16()
+        );
+
+        let message = build_pool_unavailable_message("gpt-5.5", &summary);
+        assert!(message.contains("均需人工处理"));
+        assert!(message.contains("重新登录或风控验证"));
+        assert_eq!(
+            classify_codex_api_failure(Some(status_for_pool_unavailable(&summary)), &message),
+            "auth_failed"
+        );
+
+        let error = ProxyDispatchError {
+            status: status_for_pool_unavailable(&summary),
+            message,
+            account_id: None,
+            account_email: None,
+            error_category: Some("auth_failed".to_string()),
+            retry_after: None,
+            defer_until_pool_available: false,
+        };
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::new(),
+            body: Vec::new(),
+            gateway_request_id: "gw-test-14".to_string(),
+        };
+        assert!(!should_write_in_band_pool_unavailable_response(
+            &request,
+            &GatewayResponseAdapter::Passthrough {
+                request_is_stream: true,
+            },
+            &error
+        ));
+    }
+
+    #[test]
+    fn pool_unavailable_summary_uses_in_request_failover_health_updates() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"insufficient_quota"}}"#,
+        );
+
+        for account_id in ["failover-a", "failover-b"] {
+            update_health_registry_from_classified_error(
+                &mut registry,
+                account_id,
+                Some("gpt-5.5"),
+                Some("req-pool"),
+                &classified,
+                now,
+            );
+        }
+
+        let summary = summarize_pool_unavailability(
+            &registry,
+            &["failover-a".to_string(), "failover-b".to_string()],
+            Some("gpt-5.5"),
+            now,
+        );
+
+        assert_eq!(summary.schedulable_count, 0);
+        assert_eq!(summary.exhausted_count, 2);
+        assert!(should_use_pool_unavailable_summary(&summary));
+        assert!(build_pool_unavailable_message("gpt-5.5", &summary).contains("额度均已耗尽"));
+    }
+
+    #[test]
+    fn manual_recovery_clears_account_and_model_cooldowns() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "account-cooling".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 60_000),
+                exhausted_at_ms: Some(now - 1),
+                estimated_reset_at_ms: Some(now + 60_000),
+                estimated_remaining_percentage: Some(0),
+                last_observed_remaining_percentage: Some(0),
+                reset_source: Some("upstream_reset_hint".to_string()),
+                confidence: Some("confirmed".to_string()),
+                manual_required: true,
+                last_status: Some(429),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_request_id: Some("req-cooling".to_string()),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.model_cooldowns.insert(
+            health_registry_model_key("account-cooling", "gpt-5.5"),
+            CodexLocalAccessModelCooldown {
+                account_id: "account-cooling".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + 60_000,
+                last_error_type: Some("model_capacity".to_string()),
+                last_request_id: Some("req-model".to_string()),
+                updated_at: now,
+            },
+        );
+
+        assert!(recover_health_registry_account(
+            &mut registry,
+            "account-cooling",
+            None,
+            now + 1
+        ));
+
+        let account = registry
+            .accounts
+            .get("account-cooling")
+            .expect("account health should still exist");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+        );
+        assert!(!account.manual_required);
+        assert_eq!(account.cooldown_until_ms, None);
+        assert_eq!(account.exhausted_at_ms, None);
+        assert_eq!(account.estimated_reset_at_ms, None);
+        assert_eq!(account.estimated_remaining_percentage, Some(100));
+        assert_eq!(account.reset_source.as_deref(), Some("manual_recovery"));
+        assert_eq!(account.confidence.as_deref(), Some("manual"));
+        assert!(registry.model_cooldowns.is_empty());
+        assert!(health_registry_account_is_schedulable(
+            &registry,
+            "account-cooling",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+    }
+
+    #[test]
+    fn manual_recovery_clears_only_selected_model_cooldown() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "account-model".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        for model in ["gpt-5.5", "gpt-5.4"] {
+            registry.model_cooldowns.insert(
+                health_registry_model_key("account-model", model),
+                CodexLocalAccessModelCooldown {
+                    account_id: "account-model".to_string(),
+                    model: model.to_string(),
+                    cooldown_until_ms: now + 60_000,
+                    last_error_type: Some("upstream_rate_limit".to_string()),
+                    last_request_id: Some(format!("req-{model}")),
+                    updated_at: now,
+                },
+            );
+        }
+
+        assert!(recover_health_registry_account(
+            &mut registry,
+            "account-model",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+
+        assert!(!registry
+            .model_cooldowns
+            .contains_key(&health_registry_model_key("account-model", "gpt-5.5")));
+        assert!(registry
+            .model_cooldowns
+            .contains_key(&health_registry_model_key("account-model", "gpt-5.4")));
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-model",
+            Some("gpt-5.4"),
+            now + 1
+        ));
+        assert!(health_registry_account_is_schedulable(
+            &registry,
+            "account-model",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+    }
+
+    #[test]
+    fn successful_model_admission_clears_only_that_persisted_model_cooldown() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "account-model-success".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                last_status: Some(429),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        for model in ["gpt-5.5", "gpt-5.4-mini"] {
+            registry.model_cooldowns.insert(
+                health_registry_model_key("account-model-success", model),
+                CodexLocalAccessModelCooldown {
+                    account_id: "account-model-success".to_string(),
+                    model: model.to_string(),
+                    cooldown_until_ms: now + 60_000,
+                    last_error_type: Some("usage_limit_reached".to_string()),
+                    last_request_id: Some(format!("req-{model}")),
+                    updated_at: now,
+                },
+            );
+        }
+
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-model-success",
+            Some("gpt-5.5"),
+            now
+        ));
+
+        assert!(upsert_successful_account_health(
+            &mut registry,
+            "account-model-success",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+
+        let account = registry
+            .accounts
+            .get("account-model-success")
+            .expect("account health should remain tracked");
+        assert_eq!(account.last_status, Some(StatusCode::OK.as_u16()));
+        assert_eq!(account.last_error_type, None);
+        assert_eq!(account.last_success_at_ms, Some(now + 1));
+        assert!(!registry
+            .model_cooldowns
+            .contains_key(&health_registry_model_key(
+                "account-model-success",
+                "gpt-5.5"
+            )));
+        assert!(registry
+            .model_cooldowns
+            .contains_key(&health_registry_model_key(
+                "account-model-success",
+                "gpt-5.4-mini"
+            )));
+        assert!(health_registry_account_is_schedulable(
+            &registry,
+            "account-model-success",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-model-success",
+            Some("gpt-5.4-mini"),
+            now + 1
+        ));
+    }
+
+    #[test]
+    fn manual_pause_marks_account_disabled_and_prunes_affinity() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "account-paused".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                last_success_at_ms: Some(now - 1),
+                api_service_success_count: 3,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        upsert_process_sticky_binding(&mut registry, "account-paused", now);
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                (
+                    "x-client-request-id".to_string(),
+                    "thread-request-id".to_string(),
+                ),
+                (
+                    "x-codex-turn-metadata".to_string(),
+                    r#"{"turn_id":"turn-manual-pause"}"#.to_string(),
+                ),
+                (
+                    "x-codex-turn-state".to_string(),
+                    "turn-manual-pause-state".to_string(),
+                ),
+            ]),
+            body: Vec::new(),
+            gateway_request_id: "gw-test-15".to_string(),
+        };
+        assert!(upsert_request_affinity_binding(
+            &mut registry,
+            &request,
+            "account-paused",
+            now
+        ));
+        registry.model_cooldowns.insert(
+            health_registry_model_key("account-paused", "gpt-5.5"),
+            CodexLocalAccessModelCooldown {
+                account_id: "account-paused".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + 60_000,
+                last_error_type: Some("model_capacity".to_string()),
+                last_request_id: Some("req-model-pause".to_string()),
+                updated_at: now,
+            },
+        );
+
+        assert!(pause_health_registry_account(
+            &mut registry,
+            "account-paused",
+            now + 1
+        ));
+
+        let account = registry
+            .accounts
+            .get("account-paused")
+            .expect("paused account health should remain visible");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::Disabled
+        );
+        assert_eq!(account.reset_source.as_deref(), Some("manual_pause"));
+        assert_eq!(account.confidence.as_deref(), Some("manual"));
+        assert_eq!(account.last_error_type.as_deref(), Some("manual_paused"));
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "account-paused",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+        assert!(registry.sticky_bindings.is_empty());
+        assert!(registry.request_affinity.is_empty());
+        assert!(registry.model_cooldowns.is_empty());
+    }
+
+    #[test]
+    fn health_summary_exposes_scoped_account_health_views() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "account-auth".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                manual_required: true,
+                last_status: Some(401),
+                last_error_type: Some("auth_error".to_string()),
+                last_provider_code: Some("invalid_token".to_string()),
+                last_request_id: Some("req-auth-secret".to_string()),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "account-outside".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                manual_required: true,
+                last_status: Some(401),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.model_cooldowns.insert(
+            health_registry_model_key("account-auth", "gpt-5.5"),
+            CodexLocalAccessModelCooldown {
+                account_id: "account-auth".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + 60_000,
+                last_error_type: Some("model_capacity".to_string()),
+                last_request_id: Some("req-model".to_string()),
+                updated_at: now,
+            },
+        );
+
+        let account_ids = vec!["account-auth".to_string(), "account-missing".to_string()];
+        let summary = build_health_summary_from_registry_for_accounts(&registry, now, &account_ids);
+
+        assert_eq!(summary.manual_required_count, 1);
+        assert_eq!(summary.healthy_count, 1);
+        assert_eq!(summary.active_model_cooldown_count, 1);
+        assert_eq!(summary.accounts.len(), 2);
+        assert!(summary
+            .accounts
+            .iter()
+            .all(|view| view.account_id != "account-outside"));
+
+        let auth = summary
+            .accounts
+            .iter()
+            .find(|view| view.account_id == "account-auth")
+            .expect("auth account health should be exposed");
+        assert_eq!(
+            auth.status,
+            CodexLocalAccessAccountHealthStatus::ManualRequired
+        );
+        assert!(auth.manual_required);
+        assert_eq!(auth.last_status, Some(401));
+        assert_eq!(auth.last_error_type.as_deref(), Some("auth_error"));
+        assert_eq!(auth.last_provider_code.as_deref(), Some("invalid_token"));
+        assert_eq!(auth.active_model_cooldown_count, 1);
+        assert_eq!(auth.nearest_model_cooldown_until_ms, Some(now + 60_000));
+
+        let missing = summary
+            .accounts
+            .iter()
+            .find(|view| view.account_id == "account-missing")
+            .expect("missing scoped account should default to healthy");
+        assert_eq!(missing.status, CodexLocalAccessAccountHealthStatus::Healthy);
+        assert!(!missing.manual_required);
+    }
+
+    #[test]
+    fn manual_recovery_restores_manually_paused_account_locally() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+
+        assert!(pause_health_registry_account(
+            &mut registry,
+            "account-paused",
+            now
+        ));
+        assert!(recover_health_registry_account(
+            &mut registry,
+            "account-paused",
+            None,
+            now + 1
+        ));
+
+        let account = registry
+            .accounts
+            .get("account-paused")
+            .expect("recovered account health should remain visible");
+        assert_eq!(
+            account.status,
+            CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+        );
+        assert_eq!(account.reset_source.as_deref(), Some("manual_recovery"));
+        assert_eq!(account.confidence.as_deref(), Some("manual"));
+        assert_eq!(account.last_error_type, None);
+        assert!(health_registry_account_is_schedulable(
+            &registry,
+            "account-paused",
+            Some("gpt-5.5"),
+            now + 1
+        ));
+    }
+
+    #[test]
+    fn manual_pause_and_recovery_audit_events_are_redacted() {
+        let _guard = lock_local_access_env_test();
+        let previous = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-manual-audit-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        record_manual_pause_audit_event("account-secret-user@example.com", true);
+        record_manual_recovery_audit_event(
+            "account-secret-user@example.com",
+            Some("gpt-5.5"),
+            true,
+        );
+
+        let audit = fs::read_to_string(root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("manual audit log should be written");
+        assert!(audit.contains("\"phase\":\"manual_pause\""));
+        assert!(audit.contains("\"phase\":\"manual_recovery\""));
+        assert!(audit.contains("\"errorType\":\"manual_paused\""));
+        assert!(audit.contains("\"accountHash\":\"sha256:"));
+        for secret in ["account-secret-user@example.com", "@", "sk-"] {
+            assert!(!audit.contains(secret), "manual audit leaked {secret}");
+        }
+
+        match previous {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn health_summary_counts_statuses_and_redacts_sticky_account() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "account-secret-user@example.com".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "cooling-account".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 60_000),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_status: Some(429),
+                last_request_id: Some("req-health".to_string()),
+                updated_at: now + 1,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "manual-account".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                manual_required: true,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        upsert_process_sticky_binding(&mut registry, "account-secret-user@example.com", now);
+
+        let summary = build_health_summary_from_registry(&registry, now);
+
+        assert_eq!(summary.healthy_count, 1);
+        assert_eq!(summary.cooling_count, 1);
+        assert_eq!(summary.manual_required_count, 1);
+        assert_eq!(summary.active_model_cooldown_count, 0);
+        assert_eq!(
+            summary.last_error_type.as_deref(),
+            Some("usage_limit_reached")
+        );
+        assert_eq!(summary.last_status, Some(429));
+        assert_eq!(summary.last_request_id.as_deref(), Some("req-health"));
+        assert_eq!(summary.nearest_cooldown_until_ms, Some(now + 60_000));
+        assert!(summary
+            .sticky_account_hash
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("sha256:"));
+
+        let serialized = serde_json::to_string(&summary).expect("summary should serialize");
+        for secret in [
+            "account-secret-user@example.com",
+            "cooling-account",
+            "manual-account",
+        ] {
+            assert!(
+                !serialized.contains(secret),
+                "health summary leaked {secret}"
+            );
+        }
+    }
+
+    #[test]
+    fn scoped_health_summary_ignores_accounts_outside_current_pool() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "current-healthy".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "old-cooling".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 60_000),
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_status: Some(429),
+                last_request_id: Some("old-req".to_string()),
+                updated_at: now + 1,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.model_cooldowns.insert(
+            health_registry_model_key("old-cooling", "gpt-5.5"),
+            CodexLocalAccessModelCooldown {
+                account_id: "old-cooling".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + 60_000,
+                last_error_type: Some("usage_limit_reached".to_string()),
+                last_request_id: Some("old-req".to_string()),
+                updated_at: now + 1,
+                ..CodexLocalAccessModelCooldown::default()
+            },
+        );
+        upsert_process_sticky_binding(&mut registry, "old-cooling", now);
+
+        let account_ids = vec![
+            "current-healthy".to_string(),
+            "current-no-record".to_string(),
+        ];
+        let summary = build_health_summary_from_registry_for_accounts(&registry, now, &account_ids);
+
+        assert_eq!(summary.healthy_count, 2);
+        assert_eq!(summary.estimated_available_count, 0);
+        assert_eq!(summary.cooling_count, 0);
+        assert_eq!(summary.active_model_cooldown_count, 0);
+        assert_eq!(summary.nearest_cooldown_until_ms, None);
+        assert_eq!(summary.last_error_type, None);
+        assert_eq!(summary.last_status, None);
+        assert_eq!(summary.last_request_id, None);
+        assert_eq!(summary.sticky_account_hash, None);
+    }
+
+    #[test]
+    fn health_registry_parse_error_is_fail_closed() {
+        let path = temp_health_registry_path("corrupt");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("temp dir should be created");
+        }
+        fs::write(&path, "{not valid json").expect("corrupt health file should be written");
+
+        let err = load_health_registry_from_path(&path)
+            .expect_err("corrupt health registry must not silently open scheduling");
+        assert!(err.contains("解析 API 服务健康状态失败"));
+    }
+
+    #[test]
+    fn health_registry_save_and_load_roundtrips_atomically() {
+        let path = temp_health_registry_path("roundtrip");
+        let mut registry = empty_health_registry(1_700_000_000_000);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"type":"usage_limit_reached","resets_in_seconds":30}}"#,
+        );
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "account-4",
+            Some("gpt-5.5"),
+            Some("req-4"),
+            &classified,
+            1_700_000_000_000,
+        );
+
+        save_health_registry_to_path(&path, &registry).expect("health registry should save");
+        let loaded = load_health_registry_from_path(&path).expect("health registry should load");
+
+        assert_eq!(loaded.schema_version, registry.schema_version);
+        assert!(loaded.accounts.contains_key("account-4"));
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn health_registry_load_persists_stale_oauth_auth_recovery() {
+        let _guard = lock_local_access_env_test();
+        let _env = IsolatedLocalAccessEnv::new("cockpit-local-access-health-load-recovery");
+        let path = temp_health_registry_path("load-recovery");
+        let old_error_at = 1_700_000_000_000;
+        let refreshed_token_at = 1_700_000_060;
+
+        let mut oauth = CodexAccount::new(
+            "account-oauth-load-recovery".to_string(),
+            "oauth-load-recovery@example.com".to_string(),
+            CodexTokens {
+                id_token: String::new(),
+                access_token: test_jwt_with_exp(refreshed_token_at + 3600),
+                refresh_token: Some("refresh-oauth-load-recovery".to_string()),
+            },
+        );
+        oauth.token_updated_at = Some(refreshed_token_at);
+        crate::modules::codex_account::save_account(&oauth).expect("save refreshed oauth account");
+
+        let mut registry = empty_health_registry(old_error_at);
+        registry.accounts.insert(
+            oauth.id.clone(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::ManualRequired,
+                manual_required: true,
+                last_status: Some(401),
+                last_error_type: Some("auth_error".to_string()),
+                last_error_scope: Some("account".to_string()),
+                updated_at: old_error_at,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        save_health_registry_to_path(&path, &registry).expect("stale health registry should save");
+
+        let loaded =
+            load_health_registry_from_path(&path).expect("health registry should load and recover");
+        let loaded_account = loaded
+            .accounts
+            .get(&oauth.id)
+            .expect("loaded health should contain oauth account");
+        assert_eq!(
+            loaded_account.status,
+            CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+        );
+        assert!(!loaded_account.manual_required);
+        assert_eq!(loaded_account.last_status, None);
+
+        let persisted =
+            load_health_registry_from_path(&path).expect("persisted health registry should reload");
+        let persisted_account = persisted
+            .accounts
+            .get(&oauth.id)
+            .expect("persisted health should contain oauth account");
+        assert_eq!(
+            persisted_account.status,
+            CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+        );
+        assert!(!persisted_account.manual_required);
+        assert_eq!(
+            persisted_account.reset_source.as_deref(),
+            Some("token_refresh_recovery")
+        );
+    }
+
+    #[test]
+    fn audit_event_uses_redacted_structured_metadata_only() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/chat/completions?api_key=sk-query-secret".to_string(),
+            headers: HashMap::from([
+                ("x-client-request-id".to_string(), "req-audit-1".to_string()),
+                ("authorization".to_string(), "Bearer raw-secret".to_string()),
+            ]),
+            body: br#"{"messages":[{"role":"user","content":"raw prompt"}],"model":"gpt-5.5"}"#
+                .to_vec(),
+            gateway_request_id: "gw-test-16".to_string(),
+        };
+        let context = build_audit_context(&request, Some("account-secret-user@example.com"));
+        let event = build_audit_event(
+            1_700_000_000_000,
+            &context,
+            "classifier",
+            Some(429),
+            Some("usage_limit_reached"),
+            None,
+            Some("cooldown"),
+            BTreeMap::from([
+                ("raw_body".to_string(), "raw prompt sk-secret".to_string()),
+                ("authorization".to_string(), "Bearer raw-secret".to_string()),
+                ("retry_after_ms".to_string(), "60000".to_string()),
+            ]),
+        );
+
+        assert_eq!(event.request_id, "req-audit-1");
+        assert_eq!(event.route, "/v1/chat/completions");
+        assert_eq!(event.model, "gpt-5.5");
+        assert!(event.account_hash.starts_with("sha256:"));
+        assert_eq!(
+            event.detail.get("request_id_source").map(String::as_str),
+            Some("client_request_id")
+        );
+        assert_eq!(
+            event.detail.get("gateway_request_id").map(String::as_str),
+            Some("gw-test-16")
+        );
+        assert_eq!(
+            event.detail.get("retry_after_ms").map(String::as_str),
+            Some("60000")
+        );
+
+        let serialized = serde_json::to_string(&event).expect("audit event should serialize");
+        for secret in [
+            "raw prompt",
+            "sk-secret",
+            "raw-secret",
+            "user@example.com",
+            "account-secret-user@example.com",
+        ] {
+            assert!(!serialized.contains(secret), "audit event leaked {secret}");
+        }
+    }
+
+    #[test]
+    fn audit_context_marks_turn_lineage_continuation_and_compaction_without_raw_ids() {
+        let metadata = r#"{"turn_id":"turn-compact"}"#;
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([("x-codex-turn-metadata".to_string(), metadata.to_string())]),
+            body: br#"{"model":"gpt-5.5","previous_response_id":"resp_secret_previous","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"type":"compaction_trigger"}]}"#.to_vec(),
+            gateway_request_id: "gw-lineage-1".to_string(),
+        };
+
+        let context = build_audit_context(&request, Some("account-lineage@example.com"));
+        let event = build_audit_event(
+            1_700_000_000_001,
+            &context,
+            "listener",
+            None,
+            None,
+            None,
+            Some("accepted"),
+            BTreeMap::new(),
+        );
+
+        assert_eq!(
+            event.detail.get("gateway_request_id").map(String::as_str),
+            Some("gw-lineage-1")
+        );
+        assert_eq!(
+            event.detail.get("turn_lineage_source").map(String::as_str),
+            Some("codex_turn_metadata_turn_id")
+        );
+        assert!(event
+            .detail
+            .get("turn_lineage_id")
+            .is_some_and(|value| value.starts_with("x-codex-turn-metadata.turn_id:sha256:")));
+        assert!(event
+            .detail
+            .get("previous_response_id_hash")
+            .is_some_and(|value| value.starts_with("response:sha256:")));
+        assert_eq!(
+            event.detail.get("is_continuation").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            event
+                .detail
+                .get("is_auto_compact_candidate")
+                .map(String::as_str),
+            Some("true")
+        );
+
+        let serialized = serde_json::to_string(&event).expect("audit event should serialize");
+        assert!(!serialized.contains("turn-compact"));
+        assert!(!serialized.contains("resp_secret_previous"));
+        assert!(!serialized.contains("hello"));
+        assert!(!serialized.contains("account-lineage@example.com"));
+    }
+
+    #[test]
+    fn audit_context_marks_turn_state_sticky_boundary_as_safe_lineage() {
+        let turn_state = "turn_state_secret_for_audit";
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([("x-codex-turn-state".to_string(), turn_state.to_string())]),
+            body: br#"{"model":"gpt-5.5","input":"continue same turn"}"#.to_vec(),
+            gateway_request_id: "gw-lineage-sticky".to_string(),
+        };
+
+        let context = build_audit_context(&request, Some("sticky-account@example.com"));
+        let event = build_audit_event(
+            1_700_000_000_002,
+            &context,
+            "listener",
+            None,
+            None,
+            None,
+            Some("accepted"),
+            BTreeMap::new(),
+        );
+
+        assert_eq!(
+            event.detail.get("sticky_boundary").map(String::as_str),
+            Some("codex_turn_state")
+        );
+        assert_eq!(
+            event
+                .detail
+                .get("sticky_boundary_present")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            event
+                .detail
+                .get("is_sticky_continuation")
+                .map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            event.detail.get("is_continuation").map(String::as_str),
+            Some("false")
+        );
+        assert!(
+            !serde_json::to_string(&event).unwrap().contains(turn_state),
+            "raw x-codex-turn-state must not be written to audit"
+        );
+    }
+
+    #[test]
+    fn final_429_detail_attributes_sticky_failure_to_pre_stream_admission() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([(
+                "x-codex-turn-state".to_string(),
+                "turn-state-terminal-quota".to_string(),
+            )]),
+            body: br#"{"model":"gpt-5.5","input":"continue same turn"}"#.to_vec(),
+            gateway_request_id: "gw-final-429-attribution".to_string(),
+        };
+
+        let detail = proxy_dispatch_final_error_detail(
+            &request,
+            StatusCode::TOO_MANY_REQUESTS.as_u16(),
+            "usage_limit_reached",
+            Some(Duration::from_secs(3600)),
+            123,
+        );
+
+        assert_eq!(
+            detail.get("sticky_boundary").map(String::as_str),
+            Some("codex_turn_state")
+        );
+        assert_eq!(
+            detail.get("admission_stage").map(String::as_str),
+            Some("upstream_admission_rejected")
+        );
+        assert_eq!(
+            detail.get("admission_outcome").map(String::as_str),
+            Some("terminal_quota_before_stream")
+        );
+        assert_eq!(
+            detail.get("safe_account_switch").map(String::as_str),
+            Some("false")
+        );
+        assert_eq!(
+            detail
+                .get("account_switch_block_reason")
+                .map(String::as_str),
+            Some("hard_affinity_terminal_quota")
+        );
+    }
+
+    #[test]
+    fn audit_event_append_writes_jsonl_and_rotates_by_size() {
+        let path = temp_audit_path("rotate");
+        let context = AuditContext {
+            request_id: "req-rotate".to_string(),
+            request_id_source: "test".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:abc123abc123".to_string(),
+            gateway_request_id: "gw-context-test-5".to_string(),
+            turn_lineage_id: None,
+            turn_lineage_source: None,
+            previous_response_id_hash: None,
+            sticky_boundary: None,
+            is_continuation: false,
+            is_sticky_continuation: false,
+            is_auto_compact_candidate: false,
+        };
+        let first = build_audit_event(
+            1,
+            &context,
+            "listener",
+            None,
+            None,
+            None,
+            Some("accepted"),
+            BTreeMap::new(),
+        );
+        let second = build_audit_event(
+            2,
+            &context,
+            "stream_write",
+            Some(200),
+            None,
+            Some("headers_written"),
+            Some("ok"),
+            BTreeMap::new(),
+        );
+
+        append_audit_event_to_path(&path, &first, usize::MAX).expect("first append should work");
+        append_audit_event_to_path(&path, &second, 1).expect("second append should rotate");
+
+        let active = fs::read_to_string(&path).expect("active audit log should exist");
+        assert!(active.contains("\"phase\":\"stream_write\""));
+        assert!(!active.contains("\"phase\":\"listener\""));
+
+        let rotated =
+            fs::read_to_string(path.with_extension("jsonl.1")).expect("rotated audit log exists");
+        assert!(rotated.contains("\"phase\":\"listener\""));
+    }
+
+    #[test]
+    fn audit_event_append_rotates_when_event_day_changes() {
+        let path = temp_audit_path("rotate-day");
+        let context = AuditContext {
+            request_id: "req-rotate-day".to_string(),
+            request_id_source: "test".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:day123day123".to_string(),
+            gateway_request_id: "gw-context-test-6".to_string(),
+            turn_lineage_id: None,
+            turn_lineage_source: None,
+            previous_response_id_hash: None,
+            sticky_boundary: None,
+            is_continuation: false,
+            is_sticky_continuation: false,
+            is_auto_compact_candidate: false,
+        };
+        let first = build_audit_event(
+            DAY_WINDOW_MS,
+            &context,
+            "listener",
+            None,
+            None,
+            None,
+            Some("accepted"),
+            BTreeMap::new(),
+        );
+        let second = build_audit_event(
+            DAY_WINDOW_MS * 2,
+            &context,
+            "stream_write",
+            Some(200),
+            None,
+            Some("headers_written"),
+            Some("ok"),
+            BTreeMap::new(),
+        );
+
+        append_audit_event_to_path(&path, &first, usize::MAX).expect("first append should work");
+        append_audit_event_to_path(&path, &second, usize::MAX)
+            .expect("second append should rotate by day");
+
+        let active = fs::read_to_string(&path).expect("active audit log should exist");
+        assert!(active.contains("\"phase\":\"stream_write\""));
+        assert!(!active.contains("\"phase\":\"listener\""));
+
+        let rotated =
+            fs::read_to_string(path.with_extension("jsonl.1")).expect("rotated audit log exists");
+        assert!(rotated.contains("\"phase\":\"listener\""));
+    }
+
+    #[test]
+    fn audit_timestamp_reader_tolerates_concatenated_jsonl_objects() {
+        let path = temp_audit_path("concatenated");
+        let context = AuditContext {
+            request_id: "req-concat".to_string(),
+            request_id_source: "test".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:concat123".to_string(),
+            gateway_request_id: "gw-context-test-7".to_string(),
+            turn_lineage_id: None,
+            turn_lineage_source: None,
+            previous_response_id_hash: None,
+            sticky_boundary: None,
+            is_continuation: false,
+            is_sticky_continuation: false,
+            is_auto_compact_candidate: false,
+        };
+        let first = build_audit_event(
+            DAY_WINDOW_MS,
+            &context,
+            "listener",
+            None,
+            None,
+            None,
+            Some("accepted"),
+            BTreeMap::new(),
+        );
+        let second = build_audit_event(
+            DAY_WINDOW_MS + 1,
+            &context,
+            "stream_write",
+            Some(200),
+            None,
+            Some("headers_written"),
+            Some("ok"),
+            BTreeMap::new(),
+        );
+        let content = format!(
+            "{}{}\n",
+            serde_json::to_string(&first).expect("first event should serialize"),
+            serde_json::to_string(&second).expect("second event should serialize")
+        );
+        fs::write(&path, content).expect("test audit log should be written");
+
+        assert_eq!(
+            first_audit_timestamp_from_path(&path).expect("timestamp should be readable"),
+            Some(DAY_WINDOW_MS)
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn audit_status_is_exposed_in_health_summary() {
+        let mut summary = CodexLocalAccessHealthSummary::default();
+        let status = AuditTrailStatus {
+            degraded: true,
+            error: Some("audit path unavailable".to_string()),
+            degraded_at_ms: Some(1_700_000_000_000),
+        };
+
+        apply_audit_trail_status_to_health_summary(&mut summary, &status);
+
+        assert!(summary.audit_degraded);
+        assert_eq!(
+            summary.audit_error.as_deref(),
+            Some("audit path unavailable")
+        );
+        assert_eq!(summary.audit_degraded_at_ms, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn audit_stream_write_events_have_boundary_states() {
+        let context = AuditContext {
+            request_id: "req-stream".to_string(),
+            request_id_source: "test".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:stream123456".to_string(),
+            gateway_request_id: "gw-context-test-8".to_string(),
+            turn_lineage_id: None,
+            turn_lineage_source: None,
+            previous_response_id_hash: None,
+            sticky_boundary: None,
+            is_continuation: false,
+            is_sticky_continuation: false,
+            is_auto_compact_candidate: false,
+        };
+        let headers = build_audit_event(
+            1,
+            &context,
+            "stream_write",
+            Some(200),
+            None,
+            Some("headers_written"),
+            Some("ok"),
+            BTreeMap::new(),
+        );
+        let first_chunk = build_audit_event(
+            2,
+            &context,
+            "stream_write",
+            Some(200),
+            None,
+            Some("first_chunk_written"),
+            Some("ok"),
+            BTreeMap::new(),
+        );
+
+        assert_eq!(headers.stream_state.as_deref(), Some("headers_written"));
+        assert_eq!(
+            first_chunk.stream_state.as_deref(),
+            Some("first_chunk_written")
+        );
+    }
+
+    fn temp_health_registry_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "cockpit-local-health-{name}-{}-{}.json",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        path
+    }
+
+    fn temp_audit_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "cockpit-local-audit-{name}-{}-{}.jsonl",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        path
+    }
+
+    #[test]
     fn retries_next_account_for_transient_upstream_status() {
         assert!(should_try_next_account(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -17801,6 +33100,643 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         assert!(!should_retry_single_account_upstream_status(
             StatusCode::FORBIDDEN
         ));
+    }
+
+    #[test]
+    fn codex_api_failure_log_omits_sensitive_context() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses?api_key=sk-query-secret-1234567890".to_string(),
+            headers: HashMap::from([
+                (
+                    "authorization".to_string(),
+                    "Bearer sk-header-secret-1234567890".to_string(),
+                ),
+                (
+                    "x-client-request-id".to_string(),
+                    "req-test-123".to_string(),
+                ),
+            ]),
+            body: br#"{"model":"gpt-5.5","prompt":"raw prompt text","content":"raw response text","access_token":"oauth-token-1234567890"}"#.to_vec(),
+            gateway_request_id: "gw-test-17".to_string(),
+        };
+
+        let line = build_codex_api_failure_log(
+            Some(&request),
+            Some(429),
+            Some("account-secret-id-1234567890"),
+            Some(128),
+            r#"upstream body {"error":{"message":"raw upstream text"},"email":"user.name@example.com","api_key":"sk-body-secret-1234567890"}"#,
+        );
+
+        assert!(line.contains("status=429"));
+        assert!(line.contains("route=/v1/responses"));
+        assert!(line.contains("model=gpt-5.5"));
+        assert!(line.contains("request_id=req-test-123"));
+        assert!(line.contains("account_hash="));
+
+        for secret in [
+            "sk-query-secret-1234567890",
+            "sk-header-secret-1234567890",
+            "sk-body-secret-1234567890",
+            "oauth-token-1234567890",
+            "account-secret-id-1234567890",
+            "user.name@example.com",
+            "raw prompt text",
+            "raw response text",
+            "raw upstream text",
+        ] {
+            assert!(
+                !line.contains(secret),
+                "failure log should not contain {secret}: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_api_safety_config_defaults_for_legacy_collection() {
+        let mut collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": 45335,
+            "apiKey": "ck-test",
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": [],
+            "createdAt": 1,
+            "updatedAt": 2
+        }))
+        .expect("legacy collection should deserialize");
+
+        let changed = normalize_local_api_safety_config(&mut collection);
+
+        assert!(changed);
+        assert_eq!(collection.safety_config.schema_version, 1);
+        assert!(collection.safety_config.hardened_local_mode);
+        assert_eq!(collection.safety_config.max_concurrent_requests, 1);
+        assert_eq!(collection.safety_config.min_request_interval_seconds, 20);
+        assert_eq!(collection.safety_config.max_queue_wait_seconds, 21);
+        assert_eq!(collection.safety_config.request_timeout_seconds, 600);
+        assert_eq!(
+            collection.safety_config.max_request_body_mb,
+            CodexLocalApiSafetyConfig::default().max_request_body_mb
+        );
+        assert_eq!(collection.safety_config.max_retries, 1);
+        assert_eq!(collection.safety_config.max_retry_accounts, 2);
+        assert_eq!(collection.safety_config.fallback_mode.as_str(), "disabled");
+        assert!(collection.safety_config.logging.redact_sensitive_values);
+        assert!(!collection.safety_config.logging.include_prompt_response);
+        assert!(!collection.safety_config.logging.include_raw_upstream_body);
+    }
+
+    #[test]
+    fn local_api_safety_config_future_schema_fails_closed() {
+        let mut collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": 45335,
+            "apiKey": "ck-test",
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": [],
+            "createdAt": 1,
+            "updatedAt": 2,
+            "safetyConfig": {
+                "schemaVersion": 999,
+                "hardenedLocalMode": false,
+                "maxConcurrentRequests": 999,
+                "minRequestIntervalSeconds": 0,
+                "maxQueueWaitSeconds": 0,
+                "requestTimeoutSeconds": 1,
+                "maxRequestBodyMb": 999,
+                "maxRetries": 999,
+                "maxRetryAccounts": 999,
+                "fallbackMode": "aggressive",
+                "logging": {
+                    "redactSensitiveValues": false,
+                    "includePromptResponse": true,
+                    "includeRawUpstreamBody": true
+                }
+            }
+        }))
+        .expect("future collection should deserialize");
+
+        let changed = normalize_local_api_safety_config(&mut collection);
+
+        assert!(changed);
+        assert_eq!(collection.safety_config.schema_version, 1);
+        assert!(collection.safety_config.hardened_local_mode);
+        assert_eq!(collection.safety_config.max_concurrent_requests, 1);
+        assert_eq!(collection.safety_config.max_retry_accounts, 2);
+        assert_eq!(collection.safety_config.fallback_mode.as_str(), "disabled");
+        assert!(collection.safety_config.logging.redact_sensitive_values);
+        assert!(!collection.safety_config.logging.include_prompt_response);
+        assert!(!collection.safety_config.logging.include_raw_upstream_body);
+    }
+
+    #[test]
+    fn request_body_limit_uses_configured_value_with_hard_cap() {
+        let mut config = CodexLocalApiSafetyConfig::default();
+        assert_eq!(
+            super::request_body_limit_bytes_from_safety_config(&config),
+            64 * 1024 * 1024
+        );
+
+        config.max_request_body_mb = 192;
+        assert_eq!(
+            super::request_body_limit_bytes_from_safety_config(&config),
+            192 * 1024 * 1024
+        );
+
+        config.max_request_body_mb = 999;
+        assert_eq!(
+            super::request_body_limit_bytes_from_safety_config(&config),
+            MAX_HTTP_REQUEST_BYTES
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_http_request_applies_configured_limit() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        client
+            .write_all(
+                b"POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 128\r\n\r\n",
+            )
+            .await
+            .expect("test request headers should be written");
+        client
+            .shutdown()
+            .await
+            .expect("test request writer should close cleanly");
+
+        let error = super::read_http_request(&mut server, 96, super::DEFAULT_REQUEST_READ_TIMEOUT)
+            .await
+            .expect_err("configured limit should reject a declared oversized body");
+
+        match error {
+            super::HttpRequestReadError::RequestTooLarge {
+                limit_bytes,
+                content_length,
+                ..
+            } => {
+                assert_eq!(limit_bytes, 96);
+                assert_eq!(content_length, Some(128));
+            }
+            other => panic!("expected RequestTooLarge, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn local_api_safety_presets_expand_to_safe_contracts() {
+        let maximum_safety =
+            local_api_safety_config_for_preset(CodexLocalApiSafetyPresetId::MaximumSafety);
+        assert!(maximum_safety.hardened_local_mode);
+        assert_eq!(maximum_safety.max_concurrent_requests, 1);
+        assert_eq!(maximum_safety.min_request_interval_seconds, 60);
+        assert_eq!(maximum_safety.max_queue_wait_seconds, 61);
+        assert_eq!(maximum_safety.max_retry_accounts, 2);
+        assert_eq!(maximum_safety.fallback_mode.as_str(), "disabled");
+        assert!(maximum_safety.logging.redact_sensitive_values);
+        assert!(!maximum_safety.logging.include_prompt_response);
+        assert!(!maximum_safety.logging.include_raw_upstream_body);
+
+        let balanced =
+            local_api_safety_config_for_preset(CodexLocalApiSafetyPresetId::BalancedSelfUse);
+        assert_eq!(balanced.max_concurrent_requests, 1);
+        assert_eq!(balanced.min_request_interval_seconds, 20);
+        assert_eq!(balanced.max_queue_wait_seconds, 21);
+        assert_eq!(balanced.max_retry_accounts, 2);
+        assert_eq!(balanced.fallback_mode.as_str(), "disabled");
+
+        let quota_drain =
+            local_api_safety_config_for_preset(CodexLocalApiSafetyPresetId::QuotaDrainCareful);
+        assert_eq!(quota_drain.max_concurrent_requests, 1);
+        assert_eq!(quota_drain.min_request_interval_seconds, 30);
+        assert_eq!(quota_drain.max_queue_wait_seconds, 31);
+        assert_eq!(quota_drain.max_retry_accounts, 2);
+        assert_eq!(quota_drain.fallback_mode.as_str(), "next_request_only");
+    }
+
+    #[test]
+    fn applying_safety_preset_resets_collection_to_hardened_fill_first() {
+        let mut collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 45335,
+            api_key: "ck-test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig {
+                hardened_local_mode: false,
+                max_concurrent_requests: 4,
+                min_request_interval_seconds: 1,
+                max_retry_accounts: 2,
+                fallback_mode: CodexLocalApiFallbackMode::NextRequestOnly,
+                ..CodexLocalApiSafetyConfig::default()
+            },
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec!["acc-a".to_string(), "acc-b".to_string()],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        let changed = apply_local_api_safety_preset_to_collection(
+            &mut collection,
+            CodexLocalApiSafetyPresetId::MaximumSafety,
+        );
+
+        assert!(changed);
+        assert_eq!(
+            collection.routing_strategy,
+            CodexLocalAccessRoutingStrategy::Auto
+        );
+        assert!(collection.safety_config.hardened_local_mode);
+        assert_eq!(collection.safety_config.max_concurrent_requests, 1);
+        assert_eq!(collection.safety_config.min_request_interval_seconds, 60);
+        assert_eq!(collection.safety_config.max_queue_wait_seconds, 61);
+        assert_eq!(collection.safety_config.max_retry_accounts, 2);
+        assert_eq!(collection.safety_config.fallback_mode.as_str(), "disabled");
+    }
+
+    #[test]
+    fn normalizes_queue_wait_to_cover_start_interval() {
+        let mut collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 45335,
+            api_key: "ck-test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig {
+                min_request_interval_seconds: 20,
+                max_queue_wait_seconds: 10,
+                ..CodexLocalApiSafetyConfig::default()
+            },
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec!["acc-a".to_string()],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        assert!(normalize_local_api_safety_config(&mut collection));
+        assert_eq!(collection.safety_config.max_queue_wait_seconds, 21);
+    }
+
+    #[test]
+    fn local_backpressure_wait_duration_respects_min_start_interval() {
+        let config = CodexLocalApiSafetyConfig {
+            max_concurrent_requests: 1,
+            min_request_interval_seconds: 1,
+            ..Default::default()
+        };
+
+        let now = std::time::Instant::now();
+        let state = LocalApiBackpressureState {
+            active_requests: 0,
+            last_started_at: Some(now - Duration::from_millis(250)),
+        };
+
+        let wait = local_backpressure_wait_duration(&state, &config, now)
+            .expect("recent request should enforce start interval");
+
+        assert!(wait > Duration::from_millis(0));
+        assert!(wait <= Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn local_backpressure_rejects_when_single_permit_is_busy_past_queue_wait() {
+        let _guard = lock_local_backpressure_test_async().await;
+        reset_local_api_backpressure_for_tests();
+        let config = CodexLocalApiSafetyConfig {
+            max_concurrent_requests: 1,
+            min_request_interval_seconds: 1,
+            max_queue_wait_seconds: 1,
+            ..Default::default()
+        };
+
+        let first = acquire_local_api_backpressure(&config)
+            .await
+            .expect("first request should acquire permit");
+        let err = acquire_local_api_backpressure(&config)
+            .await
+            .expect_err("second request should time out while permit is busy");
+
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS.as_u16());
+        assert!(err.message.contains("本地接入队列"));
+        assert_eq!(err.retry_after, Some(Duration::from_secs(1)));
+        drop(first);
+        reset_local_api_backpressure_for_tests();
+    }
+
+    #[tokio::test]
+    async fn extended_local_backpressure_wait_can_outlive_default_queue_wait() {
+        let _guard = lock_local_backpressure_test_async().await;
+        reset_local_api_backpressure_for_tests();
+        let config = CodexLocalApiSafetyConfig {
+            max_concurrent_requests: 1,
+            min_request_interval_seconds: 1,
+            max_queue_wait_seconds: 1,
+            ..Default::default()
+        };
+
+        let first = acquire_local_api_backpressure(&config)
+            .await
+            .expect("first request should acquire permit");
+        let waiter_config = config.clone();
+        let waiter = tokio::spawn(async move {
+            acquire_local_api_backpressure_with_wait(&waiter_config, Duration::from_secs(3)).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        drop(first);
+        let second = waiter
+            .await
+            .expect("waiter task should not panic")
+            .expect("extended request-timeout budget should allow waiting past max_queue_wait");
+        drop(second);
+        reset_local_api_backpressure_for_tests();
+    }
+
+    #[test]
+    fn backpressure_wait_budget_reserves_request_timeout_guard() {
+        assert_eq!(
+            backpressure_wait_budget(Duration::from_secs(10), Duration::from_secs(60)),
+            Some(Duration::from_secs(48))
+        );
+        assert_eq!(
+            backpressure_wait_budget(Duration::from_secs(59), Duration::from_secs(60)),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn local_backpressure_permit_drop_releases_capacity() {
+        let _guard = lock_local_backpressure_test_async().await;
+        reset_local_api_backpressure_for_tests();
+        let config = CodexLocalApiSafetyConfig {
+            max_concurrent_requests: 1,
+            min_request_interval_seconds: 0,
+            max_queue_wait_seconds: 1,
+            ..Default::default()
+        };
+
+        let first = acquire_local_api_backpressure(&config)
+            .await
+            .expect("first request should acquire permit");
+        drop(first);
+        let second = acquire_local_api_backpressure(&config)
+            .await
+            .expect("dropped permit should release capacity");
+
+        drop(second);
+        reset_local_api_backpressure_for_tests();
+    }
+
+    #[tokio::test]
+    async fn active_stream_admission_release_allows_next_request_without_waiting_for_stream() {
+        let _guard = lock_local_backpressure_test_async().await;
+        reset_local_api_backpressure_for_tests();
+        let config = CodexLocalApiSafetyConfig {
+            max_concurrent_requests: 1,
+            min_request_interval_seconds: 0,
+            max_queue_wait_seconds: 1,
+            ..Default::default()
+        };
+
+        let mut first = acquire_local_api_backpressure(&config)
+            .await
+            .expect("first admission should acquire permit");
+        first.release();
+
+        let second = acquire_local_api_backpressure(&config)
+            .await
+            .expect("released admission permit should not wait for active stream body");
+
+        drop(second);
+        reset_local_api_backpressure_for_tests();
+    }
+
+    #[tokio::test]
+    async fn local_backpressure_admission_queue_is_fifo_across_start_interval() {
+        let _guard = lock_local_backpressure_test_async().await;
+        reset_local_api_backpressure_for_tests();
+        let config = CodexLocalApiSafetyConfig {
+            max_concurrent_requests: 1,
+            min_request_interval_seconds: 2,
+            max_queue_wait_seconds: 3,
+            ..Default::default()
+        };
+
+        let first = acquire_local_api_backpressure(&config)
+            .await
+            .expect("initial request should acquire permit");
+        drop(first);
+
+        let first_waiter_config = config.clone();
+        let first_waiter = tokio::spawn(async move {
+            let permit = acquire_local_api_backpressure(&first_waiter_config)
+                .await
+                .expect("first queued waiter should acquire next start slot");
+            drop(permit);
+            std::time::Instant::now()
+        });
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let second_waiter_config = config.clone();
+        let second_waiter = tokio::spawn(async move {
+            let permit = acquire_local_api_backpressure(&second_waiter_config)
+                .await
+                .expect("later queued waiter should not time out behind the first waiter");
+            drop(permit);
+            std::time::Instant::now()
+        });
+
+        let first_started = tokio::time::timeout(Duration::from_secs(6), first_waiter)
+            .await
+            .expect("first queued waiter should not hang")
+            .expect("first queued waiter task should not panic");
+        let second_started = tokio::time::timeout(Duration::from_secs(6), second_waiter)
+            .await
+            .expect("second queued waiter should not hang")
+            .expect("second queued waiter task should not panic");
+
+        assert!(second_started >= first_started);
+        reset_local_api_backpressure_for_tests();
+    }
+
+    #[test]
+    fn active_stream_lease_survives_cooldown_until_terminal_release() {
+        let _env_guard = lock_local_access_env_test();
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-active-stream-test-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        reset_active_stream_leases_for_tests();
+        let now = 1_700_000_000_000;
+        let context = AuditContext {
+            request_id: "req-active".to_string(),
+            request_id_source: "test".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "hash-active".to_string(),
+            gateway_request_id: "gw-context-test-9".to_string(),
+            turn_lineage_id: None,
+            turn_lineage_source: None,
+            previous_response_id_hash: None,
+            sticky_boundary: None,
+            is_continuation: false,
+            is_sticky_continuation: false,
+            is_auto_compact_candidate: false,
+        };
+        let mut lease = grant_active_stream_lease(&context, "acc-active");
+        assert_eq!(active_stream_lease_count_for_account("acc-active"), 1);
+
+        let mut registry = empty_health_registry(now);
+        let classified = classify_codex_upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            None,
+            r#"{"error":{"message":"rate limit exceeded"}}"#,
+        );
+        update_health_registry_from_classified_error(
+            &mut registry,
+            "acc-active",
+            Some("gpt-5.5"),
+            Some("req-followup"),
+            &classified,
+            now,
+        );
+
+        assert!(!health_registry_account_is_schedulable(
+            &registry,
+            "acc-active",
+            Some("gpt-5.5"),
+            now
+        ));
+        assert_eq!(active_stream_lease_count_for_account("acc-active"), 1);
+
+        lease.release(ActiveStreamTerminal::Completed);
+        assert_eq!(active_stream_lease_count_for_account("acc-active"), 0);
+        reset_active_stream_leases_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn active_stream_error_classifier_distinguishes_client_abort_from_upstream_error() {
+        assert_eq!(
+            classify_active_stream_terminal_error("写入上游响应失败: broken pipe"),
+            ActiveStreamTerminal::ClientAborted
+        );
+        assert_eq!(
+            classify_active_stream_terminal_error("读取上游响应失败: timeout"),
+            ActiveStreamTerminal::StreamError
+        );
+    }
+
+    #[test]
+    fn env_proxy_resolution_uses_priority_order_and_ignores_blank_values() {
+        let values = HashMap::from([
+            ("HTTPS_PROXY", "   "),
+            ("ALL_PROXY", "socks5://127.0.0.1:7890"),
+            ("HTTP_PROXY", "http://127.0.0.1:10808"),
+        ]);
+
+        assert_eq!(
+            first_non_empty_proxy_value(|key| values.get(key).map(|value| value.to_string())),
+            Some("socks5://127.0.0.1:7890".to_string())
+        );
+    }
+
+    #[test]
+    fn upstream_signature_uses_env_proxy_when_api_and_global_proxy_are_empty() {
+        let signature = current_upstream_http_client_signature_with_env_proxy(
+            None,
+            false,
+            "",
+            Some(" http://127.0.0.1:10808 ".to_string()),
+            Duration::from_secs(9),
+        );
+
+        assert_eq!(signature.proxy_source, UpstreamProxySource::SystemEnv);
+        assert_eq!(
+            signature.proxy_url.as_deref(),
+            Some("http://127.0.0.1:10808")
+        );
+        assert_eq!(signature.connect_timeout_ms, 9_000);
+    }
+
+    #[test]
+    fn upstream_signature_prefers_explicit_api_service_proxy_over_env_proxy() {
+        let signature = current_upstream_http_client_signature_with_env_proxy(
+            Some("http://127.0.0.1:18080"),
+            true,
+            "http://127.0.0.1:28080",
+            Some("http://127.0.0.1:10808".to_string()),
+            Duration::from_secs(9),
+        );
+
+        assert_eq!(signature.proxy_source, UpstreamProxySource::ApiService);
+        assert_eq!(
+            signature.proxy_url.as_deref(),
+            Some("http://127.0.0.1:18080")
+        );
+    }
+
+    #[test]
+    fn local_backpressure_error_response_includes_retry_after_header() {
+        let raw = String::from_utf8(json_response_with_retry_after(
+            429,
+            "Too Many Requests",
+            &json!({ "error": "本地接入队列等待超时，请稍后重试" }),
+            Some(Duration::from_secs(3)),
+        ))
+        .expect("response should be utf8");
+
+        assert!(raw.contains("\r\nRetry-After: 3\r\n"));
+    }
+
+    #[test]
+    fn local_backpressure_failure_log_has_local_error_type() {
+        let line = build_codex_api_failure_log(
+            None,
+            Some(429),
+            None,
+            Some(10),
+            "本地接入队列等待超时，请稍后重试",
+        );
+
+        assert!(line.contains("error_type=local_backpressure"));
+    }
+
+    #[test]
+    fn pool_unavailable_failure_log_has_local_error_type_even_with_quota_words() {
+        let line = build_codex_api_failure_log(
+            None,
+            Some(StatusCode::SERVICE_UNAVAILABLE.as_u16()),
+            None,
+            Some(10),
+            "模型 gpt-5.5 的API 服务号池账号额度均已耗尽，请 1 小时后重试",
+        );
+
+        assert!(line.contains("error_type=pool_unavailable"));
+        assert!(!line.contains("error_type=rate_limited"));
     }
 
     #[test]
@@ -18129,17 +34065,1782 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
     }
 
     #[test]
+    fn hardened_routing_uses_stable_fill_first_start_index() {
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 2876,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec!["acc-a".to_string(), "acc-b".to_string()],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        assert_eq!(next_routing_start_index(&collection), 0);
+        assert_eq!(next_routing_start_index(&collection), 0);
+    }
+
+    #[test]
+    fn hardened_routing_pins_schedulable_process_sticky_account() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "acc-primary".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                estimated_remaining_percentage: Some(10),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "acc-secondary".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                estimated_remaining_percentage: Some(90),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        upsert_process_sticky_binding(&mut registry, "acc-primary", now);
+
+        let mut health_sorted = vec!["acc-primary".to_string(), "acc-secondary".to_string()];
+        sort_account_ids_by_health_estimate(&mut health_sorted, &registry, now);
+        assert_eq!(
+            health_sorted,
+            vec!["acc-secondary".to_string(), "acc-primary".to_string()]
+        );
+
+        let sticky_ordered =
+            pin_process_sticky_account(health_sorted, &registry, Some("gpt-5.5"), now);
+        assert_eq!(
+            sticky_ordered,
+            vec!["acc-primary".to_string(), "acc-secondary".to_string()]
+        );
+    }
+
+    #[test]
+    fn hardened_routing_prunes_process_sticky_account_when_model_cools_down() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        upsert_process_sticky_binding(&mut registry, "acc-primary", now);
+        registry.model_cooldowns.insert(
+            health_registry_model_key("acc-primary", "gpt-5.5"),
+            crate::models::codex_local_access::CodexLocalAccessModelCooldown {
+                account_id: "acc-primary".to_string(),
+                model: "gpt-5.5".to_string(),
+                cooldown_until_ms: now + 60_000,
+                updated_at: now,
+                ..crate::models::codex_local_access::CodexLocalAccessModelCooldown::default()
+            },
+        );
+
+        let account_ids = vec!["acc-primary".to_string(), "acc-secondary".to_string()];
+        assert!(prune_process_sticky_binding(
+            &mut registry,
+            &account_ids,
+            Some("gpt-5.5"),
+            now
+        ));
+        assert!(registry.sticky_bindings.is_empty());
+    }
+
+    #[test]
+    fn state_effective_pool_order_uses_health_and_recent_success_without_rewriting_config() {
+        let now = 1_700_000_000_000;
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 2876,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec![
+                "acc-primary".to_string(),
+                "acc-secondary".to_string(),
+                "acc-third".to_string(),
+            ],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "acc-primary".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 60_000),
+                last_observed_remaining_percentage: Some(0),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+
+        assert!(upsert_process_sticky_binding(
+            &mut registry,
+            "acc-secondary",
+            now
+        ));
+        assert!(upsert_successful_account_health(
+            &mut registry,
+            "acc-secondary",
+            None,
+            now + 1_000
+        ));
+
+        assert_eq!(
+            build_effective_local_access_account_ids_from_registry(&collection, &registry, now),
+            vec![
+                "acc-secondary".to_string(),
+                "acc-third".to_string(),
+                "acc-primary".to_string(),
+            ]
+        );
+        assert_eq!(
+            collection.account_ids,
+            vec![
+                "acc-primary".to_string(),
+                "acc-secondary".to_string(),
+                "acc-third".to_string(),
+            ]
+        );
+
+        let account = registry
+            .accounts
+            .get("acc-secondary")
+            .expect("successful account health should be recorded");
+        assert_eq!(account.status, CodexLocalAccessAccountHealthStatus::Healthy);
+        assert_eq!(account.last_success_at_ms, Some(now + 1_000));
+        assert_eq!(account.api_service_success_count, 1);
+    }
+
+    #[test]
+    fn hardened_routing_considers_full_pool_but_keeps_single_attempt_cap() {
+        let now = 1_700_000_000_000;
+        let mut collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 2876,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: (0..500).map(|index| format!("acc-{index:03}")).collect(),
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "acc-000".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 60_000),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+
+        let routing_pool = build_routing_pool_account_ids(&collection);
+        assert_eq!(routing_pool.len(), 500);
+        assert_eq!(
+            retry_failover_account_attempt_limit(&collection.safety_config),
+            2
+        );
+
+        let mut candidate_ids = apply_collection_routing_strategy(&routing_pool, &collection);
+        sort_account_ids_by_health_estimate(&mut candidate_ids, &registry, now);
+        let next_schedulable = candidate_ids
+            .iter()
+            .find(|account_id| {
+                health_registry_account_is_schedulable(&registry, account_id, Some("gpt-5.5"), now)
+            })
+            .map(String::as_str);
+
+        assert_eq!(next_schedulable, Some("acc-001"));
+
+        collection.safety_config.max_retry_accounts = 2;
+        collection.safety_config.fallback_mode = CodexLocalApiFallbackMode::NextRequestOnly;
+        assert_eq!(
+            retry_failover_account_attempt_limit(&collection.safety_config),
+            2
+        );
+        assert_eq!(build_routing_pool_account_ids(&collection).len(), 500);
+    }
+
+    #[test]
+    fn selector_audit_summary_records_redacted_counts_and_selected_reason() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        registry.accounts.insert(
+            "acc-sticky".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Healthy,
+                estimated_remaining_percentage: Some(10),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "acc-cooling".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                cooldown_until_ms: Some(now + 60_000),
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        registry.accounts.insert(
+            "acc-disabled".to_string(),
+            CodexLocalAccessAccountHealth {
+                status: CodexLocalAccessAccountHealthStatus::Disabled,
+                updated_at: now,
+                ..CodexLocalAccessAccountHealth::default()
+            },
+        );
+        upsert_process_sticky_binding(&mut registry, "acc-sticky", now);
+
+        let candidate_ids = vec![
+            "acc-cooling".to_string(),
+            "acc-sticky".to_string(),
+            "acc-new".to_string(),
+            "acc-disabled".to_string(),
+        ];
+        let summary = build_selector_audit_summary(
+            &candidate_ids,
+            &registry,
+            Some("gpt-5.5"),
+            now,
+            3,
+            None,
+            false,
+        );
+        let selected_reason =
+            selector_selected_reason("acc-sticky", None, None, None, Some("acc-sticky"));
+        let detail = selector_audit_detail(&summary, selected_reason, "gpt-5.5");
+
+        assert_eq!(detail.get("candidate_count").map(String::as_str), Some("4"));
+        assert_eq!(detail.get("eligible_count").map(String::as_str), Some("2"));
+        assert_eq!(
+            detail.get("selected_reason").map(String::as_str),
+            Some("sticky_selected")
+        );
+        assert_eq!(detail.get("cap_applied").map(String::as_str), Some("true"));
+        assert_eq!(detail.get("cap_limit").map(String::as_str), Some("3"));
+
+        let skipped: Value = serde_json::from_str(
+            detail
+                .get("skipped_counts_by_reason")
+                .expect("skip counts should be serialized"),
+        )
+        .expect("skip counts should parse");
+        assert_eq!(skipped["health_skipped"], json!(1));
+        assert_eq!(skipped["cap_truncated"], json!(1));
+
+        let serialized = serde_json::to_string(&detail).expect("detail should serialize");
+        for secret in ["acc-sticky", "acc-cooling", "acc-disabled", "@", "sk-"] {
+            assert!(
+                !serialized.contains(secret),
+                "selector audit detail leaked sensitive value {secret}: {serialized}"
+            );
+        }
+    }
+
+    #[test]
+    fn selector_audit_reason_distinguishes_previous_response_and_sticky_clear() {
+        let now = 1_700_000_000_000;
+        let registry = empty_health_registry(now);
+        let candidate_ids = vec!["acc-prev".to_string()];
+        let summary = build_selector_audit_summary(
+            &candidate_ids,
+            &registry,
+            Some("gpt-5.5"),
+            now,
+            2,
+            Some("acc-prev"),
+            true,
+        );
+        let selected_reason =
+            selector_selected_reason("acc-prev", None, Some("acc-prev"), None, None);
+        let detail = selector_audit_detail(&summary, selected_reason, "gpt-5.5");
+
+        assert_eq!(
+            detail.get("selected_reason").map(String::as_str),
+            Some("previous_response_affinity_selected")
+        );
+        assert_eq!(
+            detail.get("sticky_cleared").map(String::as_str),
+            Some("true")
+        );
+
+        let skipped: Value = serde_json::from_str(
+            detail
+                .get("skipped_counts_by_reason")
+                .expect("skip counts should be serialized"),
+        )
+        .expect("skip counts should parse");
+        assert_eq!(skipped["sticky_cleared"], json!(1));
+        assert_eq!(
+            selector_selected_reason("acc-fill", None, None, None, None),
+            "fill_first_selected"
+        );
+    }
+
+    #[test]
+    fn selector_audit_summary_handles_large_pool_in_milliseconds() {
+        let now = 1_700_000_000_000;
+        let mut registry = empty_health_registry(now);
+        for index in 0..10 {
+            registry.accounts.insert(
+                format!("acc-{index:03}"),
+                CodexLocalAccessAccountHealth {
+                    status: CodexLocalAccessAccountHealthStatus::CoolingDown,
+                    cooldown_until_ms: Some(now + 60_000),
+                    updated_at: now,
+                    ..CodexLocalAccessAccountHealth::default()
+                },
+            );
+        }
+        let candidate_ids: Vec<String> = (0..600).map(|index| format!("acc-{index:03}")).collect();
+
+        let started = std::time::Instant::now();
+        let summary = build_selector_audit_summary(
+            &candidate_ids,
+            &registry,
+            Some("gpt-5.5"),
+            now,
+            24,
+            None,
+            false,
+        );
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "selector audit summary should remain a pure millisecond-scale pass"
+        );
+        assert_eq!(summary.candidate_count, 600);
+        assert_eq!(summary.eligible_count, 14);
+        assert!(summary.cap_applied);
+        assert_eq!(summary.cap_limit, 24);
+        assert_eq!(
+            summary.skipped_counts_by_reason.get("health_skipped"),
+            Some(&10)
+        );
+        assert_eq!(
+            summary.skipped_counts_by_reason.get("cap_truncated"),
+            Some(&576)
+        );
+    }
+
+    #[test]
+    fn previous_response_affinity_disallows_direct_cross_account_reuse() {
+        let candidates = vec![
+            "acc-primary".to_string(),
+            "acc-secondary".to_string(),
+            "acc-third".to_string(),
+        ];
+
+        assert_eq!(
+            constrain_previous_response_affinity(candidates.clone(), Some("acc-secondary")),
+            vec!["acc-secondary".to_string()]
+        );
+        assert_eq!(
+            constrain_previous_response_affinity(candidates.clone(), Some("missing-affinity")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            constrain_previous_response_affinity(candidates.clone(), None),
+            candidates
+        );
+    }
+
+    #[test]
+    fn hardened_routing_fill_first_does_not_preserve_configured_order_after_health_sort() {
+        let now = 1_700_000_000_000;
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 2876,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::PlanHighFirst,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec!["acc-b".to_string(), "acc-a".to_string()],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        let mut candidate_ids =
+            apply_collection_routing_strategy(&collection.account_ids, &collection);
+        sort_account_ids_by_health_estimate(&mut candidate_ids, &empty_health_registry(now), now);
+
+        assert_eq!(
+            candidate_ids,
+            vec!["acc-a".to_string(), "acc-b".to_string()]
+        );
+    }
+
+    #[test]
+    fn effective_local_access_pool_matches_configured_members() {
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 2876,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec![
+                "acc-third".to_string(),
+                "acc-primary".to_string(),
+                "acc-secondary".to_string(),
+            ],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        assert_eq!(
+            build_effective_local_access_account_ids(&collection),
+            vec![
+                "acc-third".to_string(),
+                "acc-primary".to_string(),
+                "acc-secondary".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn retry_failover_defaults_to_one_retry_and_current_request_failover_account() {
+        let config = CodexLocalApiSafetyConfig::default();
+
+        assert_eq!(retry_failover_max_retries(&config), 1);
+        assert_eq!(retry_failover_account_attempt_limit(&config), 2);
+    }
+
+    #[test]
+    fn retry_failover_account_limit_supports_three_account_acceptance() {
+        let config = CodexLocalApiSafetyConfig {
+            max_retry_accounts: 3,
+            fallback_mode: CodexLocalApiFallbackMode::Disabled,
+            ..CodexLocalApiSafetyConfig::default()
+        };
+
+        assert_eq!(retry_failover_account_attempt_limit(&config), 3);
+    }
+
+    #[test]
+    fn local_api_safety_config_keeps_three_retry_accounts_for_acceptance() {
+        let mut collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 45335,
+            api_key: "ck-test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig {
+                max_retry_accounts: 3,
+                fallback_mode: CodexLocalApiFallbackMode::NextRequestOnly,
+                ..CodexLocalApiSafetyConfig::default()
+            },
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec![
+                "acc-primary".to_string(),
+                "acc-secondary".to_string(),
+                "acc-third".to_string(),
+            ],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        let changed = normalize_local_api_safety_config(&mut collection);
+
+        assert!(!changed);
+        assert_eq!(collection.safety_config.max_retry_accounts, 3);
+    }
+
+    #[test]
+    fn effective_local_access_pool_ignores_retry_account_limit() {
+        let mut collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 2876,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig {
+                max_retry_accounts: 2,
+                fallback_mode: CodexLocalApiFallbackMode::Disabled,
+                ..CodexLocalApiSafetyConfig::default()
+            },
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec![
+                "acc-primary".to_string(),
+                "acc-secondary".to_string(),
+                "acc-third".to_string(),
+            ],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        assert_eq!(
+            build_effective_local_access_account_ids(&collection),
+            vec![
+                "acc-primary".to_string(),
+                "acc-secondary".to_string(),
+                "acc-third".to_string()
+            ]
+        );
+
+        collection.safety_config.fallback_mode = CodexLocalApiFallbackMode::NextRequestOnly;
+
+        assert_eq!(
+            build_effective_local_access_account_ids(&collection),
+            vec![
+                "acc-primary".to_string(),
+                "acc-secondary".to_string(),
+                "acc-third".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn retry_failover_account_limit_lifts_legacy_enabled_fallback_to_second_account() {
+        let config = CodexLocalApiSafetyConfig {
+            max_retry_accounts: 1,
+            fallback_mode: CodexLocalApiFallbackMode::NextRequestOnly,
+            ..CodexLocalApiSafetyConfig::default()
+        };
+
+        assert_eq!(retry_failover_account_attempt_limit(&config), 2);
+    }
+
+    #[test]
+    fn local_access_account_filter_preserves_user_order() {
+        let valid_account_ids = HashSet::from([
+            "acc-primary".to_string(),
+            "acc-secondary".to_string(),
+            "acc-third".to_string(),
+        ]);
+
+        let filtered = filter_local_access_account_ids(
+            vec![
+                "acc-third".to_string(),
+                "missing".to_string(),
+                "acc-secondary".to_string(),
+                "acc-third".to_string(),
+                "acc-primary".to_string(),
+            ],
+            &valid_account_ids,
+        );
+
+        assert_eq!(
+            filtered,
+            vec![
+                "acc-third".to_string(),
+                "acc-secondary".to_string(),
+                "acc-primary".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_write_state_blocks_fallback_after_headers_or_first_chunk() {
+        let mut state = StreamWriteState::default();
+        assert!(state.can_attempt_account_fallback());
+
+        state.mark_headers_written();
+        assert!(!state.can_attempt_account_fallback());
+
+        let mut state = StreamWriteState::default();
+        state.mark_first_chunk_written();
+        assert!(!state.can_attempt_account_fallback());
+    }
+
+    #[test]
+    fn upstream_stream_error_sse_has_explicit_failed_terminal_event() {
+        let body = build_responses_upstream_stream_error_sse(
+            "读取上游响应失败: stream closed before response.completed",
+        );
+        let text = String::from_utf8(body).expect("failure SSE should be UTF-8");
+
+        assert!(text.contains("event: response.failed"));
+        assert!(text.contains("\"code\":\"cockpit_upstream_stream_error\""));
+        assert!(text.contains("openai_codex_response_failed_with_done"));
+        assert!(text.ends_with("data: [DONE]\n\n"));
+
+        let mut collector = ResponseUsageCollector::new(true);
+        collector.feed(text.as_bytes());
+        let capture = collector.finish();
+        assert!(
+            !capture.response_completed_seen,
+            "response.failed must not be reported as a successful completion"
+        );
+    }
+
+    #[test]
+    fn cockpit_api_service_account_switch_preserves_pool_without_follow_toggle() {
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 45335,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec!["acc-old".to_string()],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        assert!(!should_sync_local_access_collection_on_account_switch(
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            &collection
+        ));
+    }
+
+    #[test]
+    fn legacy_follow_current_account_switch_is_ignored() {
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 45335,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: true,
+            bound_oauth_account_id: None,
+            account_ids: vec![
+                "acc-old".to_string(),
+                "acc-third".to_string(),
+                "acc-new".to_string(),
+            ],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        assert!(
+            !should_sync_local_access_collection_on_account_switch(
+                CodexRuntimeIntegrationMode::DirectProjection,
+                &collection
+            ),
+            "legacy follow-current flag must not mutate the API service account pool"
+        );
+    }
+
+    #[test]
+    fn cockpit_api_service_projection_seeds_only_missing_collection() {
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 45335,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec!["acc-old".to_string(), "acc-third".to_string()],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        assert_eq!(
+            build_projection_seed_local_access_account_ids("acc-current", None),
+            Some(vec!["acc-current".to_string()])
+        );
+        assert_eq!(
+            build_projection_seed_local_access_account_ids("acc-current", Some(&collection)),
+            None
+        );
+    }
+
+    #[test]
+    fn direct_projection_account_switch_does_not_replace_pool_without_follow_toggle() {
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: 45335,
+            api_key: "agt_test".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::Auto,
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: vec!["acc-old".to_string()],
+            created_at: 1,
+            updated_at: 2,
+            ..default_test_collection()
+        };
+
+        assert!(!should_sync_local_access_collection_on_account_switch(
+            CodexRuntimeIntegrationMode::DirectProjection,
+            &collection
+        ));
+    }
+
+    #[test]
+    fn app_exit_projection_guard_preserves_user_selected_runtime_mode() {
+        assert!(!should_restore_direct_projection_before_app_exit(
+            CodexRuntimeIntegrationMode::CockpitApiService
+        ));
+        assert!(!should_restore_direct_projection_before_app_exit(
+            CodexRuntimeIntegrationMode::DirectProjection
+        ));
+    }
+
+    fn continuity_risk_for_test(
+        active_stream_count: usize,
+        codex_app_process_count: usize,
+        recent_audit_activity: bool,
+    ) -> RuntimeProjectionContinuityRisk {
+        RuntimeProjectionContinuityRisk {
+            active_stream_count,
+            codex_app_process_count,
+            recent_audit_activity,
+            audit_last_modified_age_ms: if recent_audit_activity {
+                Some(1_000)
+            } else {
+                None
+            },
+        }
+    }
+
+    #[test]
+    fn direct_projection_change_blocks_when_continuity_risk_exists() {
+        let risk = continuity_risk_for_test(1, 0, false);
+
+        assert!(should_block_direct_projection_change(
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            CodexRuntimeIntegrationMode::DirectProjection,
+            false,
+            &risk,
+        ));
+    }
+
+    #[test]
+    fn runtime_projection_change_blocks_both_auth_replacing_directions() {
+        let risk = continuity_risk_for_test(1, 0, false);
+
+        assert!(should_block_runtime_projection_change(
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            CodexRuntimeIntegrationMode::DirectProjection,
+            false,
+            &risk,
+        ));
+        assert!(should_block_runtime_projection_change(
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            false,
+            &risk,
+        ));
+    }
+
+    #[test]
+    fn runtime_projection_change_to_api_service_ignores_static_codex_app_presence() {
+        let risk = continuity_risk_for_test(0, 1, false);
+
+        assert!(!should_block_runtime_projection_change(
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            false,
+            &risk,
+        ));
+    }
+
+    #[test]
+    fn runtime_projection_change_allows_force_no_risk_or_same_mode() {
+        let risk = continuity_risk_for_test(2, 1, true);
+        let no_risk = continuity_risk_for_test(0, 0, false);
+
+        assert!(!should_block_runtime_projection_change(
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            true,
+            &risk,
+        ));
+        assert!(!should_block_runtime_projection_change(
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            false,
+            &no_risk,
+        ));
+        assert!(!should_block_runtime_projection_change(
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            false,
+            &risk,
+        ));
+    }
+
+    #[test]
+    fn codex_auth_projection_change_blocks_when_continuity_risk_exists() {
+        let risk = continuity_risk_for_test(1, 0, false);
+
+        assert!(should_block_codex_auth_projection_change(false, &risk));
+    }
+
+    #[test]
+    fn codex_auth_projection_change_allows_force_or_no_risk() {
+        let risk = continuity_risk_for_test(2, 1, true);
+        let no_risk = continuity_risk_for_test(0, 0, false);
+
+        assert!(!should_block_codex_auth_projection_change(true, &risk));
+        assert!(!should_block_codex_auth_projection_change(false, &no_risk));
+    }
+
+    #[test]
+    fn direct_projection_change_blocks_for_codex_app_or_recent_audit() {
+        for risk in [
+            continuity_risk_for_test(0, 1, false),
+            continuity_risk_for_test(0, 0, true),
+        ] {
+            assert!(should_block_direct_projection_change(
+                CodexRuntimeIntegrationMode::CockpitApiService,
+                CodexRuntimeIntegrationMode::DirectProjection,
+                false,
+                &risk,
+            ));
+        }
+    }
+
+    #[test]
+    fn direct_projection_change_allows_force_or_no_risk() {
+        let risk = continuity_risk_for_test(2, 1, true);
+        let no_risk = continuity_risk_for_test(0, 0, false);
+
+        assert!(!should_block_direct_projection_change(
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            CodexRuntimeIntegrationMode::DirectProjection,
+            true,
+            &risk,
+        ));
+        assert!(!should_block_direct_projection_change(
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            CodexRuntimeIntegrationMode::DirectProjection,
+            false,
+            &no_risk,
+        ));
+    }
+
+    #[test]
+    fn runtime_projection_audit_events_do_not_extend_recent_audit_window() {
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-runtime-projection-audit-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE);
+        let now = 1_000_000_i64;
+        let grace = super::RUNTIME_PROJECTION_RECENT_AUDIT_GRACE_MS as i64;
+
+        let old_api_event = test_concurrency_audit_event(now - grace - 1, "final_response", None);
+        append_audit_event_to_path(&path, &old_api_event, usize::MAX)
+            .expect("old API audit event should write");
+
+        let mut projection_event =
+            test_concurrency_audit_event(now - 1, "runtime_mode_transition", None);
+        projection_event.request_id = "runtime_projection".to_string();
+        projection_event.route = "runtime_projection".to_string();
+        projection_event.model = "-".to_string();
+        projection_event.account_hash = "-".to_string();
+        projection_event.outcome = Some("blocked".to_string());
+        append_audit_event_to_path(&path, &projection_event, usize::MAX)
+            .expect("runtime projection audit event should write");
+
+        let (recent, age_ms) = super::recent_audit_activity_from_path(&path, now);
+        assert!(!recent);
+        assert_eq!(
+            age_ms,
+            Some(super::RUNTIME_PROJECTION_RECENT_AUDIT_GRACE_MS + 1)
+        );
+
+        let recent_api_event = test_concurrency_audit_event(now - 1_000, "listener", None);
+        append_audit_event_to_path(&path, &recent_api_event, usize::MAX)
+            .expect("recent API audit event should write");
+        let (recent, age_ms) = super::recent_audit_activity_from_path(&path, now);
+        assert!(recent);
+        assert_eq!(age_ms, Some(1_000));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn direct_projection_guard_only_blocks_cockpit_to_direct_transition() {
+        let risk = continuity_risk_for_test(1, 1, true);
+
+        assert!(!should_block_direct_projection_change(
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeIntegrationMode::DirectProjection,
+            false,
+            &risk,
+        ));
+        assert!(!should_block_direct_projection_change(
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            false,
+            &risk,
+        ));
+    }
+
+    #[test]
+    fn runtime_mode_projection_noop_requires_loaded_matching_state() {
+        let direct_state = crate::models::codex_local_access::CodexRuntimeModeState {
+            mode: CodexRuntimeIntegrationMode::DirectProjection,
+            account_kind: CodexRuntimeAccountKind::OAuth,
+            current_account_id: Some("codex-oauth".to_string()),
+            updated_at: 1,
+        };
+        let api_state = crate::models::codex_local_access::CodexRuntimeModeState {
+            mode: CodexRuntimeIntegrationMode::CockpitApiService,
+            account_kind: CodexRuntimeAccountKind::Api,
+            current_account_id: Some("codex-api-service".to_string()),
+            updated_at: 2,
+        };
+
+        assert!(is_runtime_mode_projection_noop_for_target(
+            Some(&direct_state),
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeAccountKind::OAuth,
+            Some("codex-oauth"),
+        ));
+        assert!(is_runtime_mode_projection_noop_for_target(
+            Some(&api_state),
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            CodexRuntimeAccountKind::Api,
+            Some("codex-api-service"),
+        ));
+        assert!(!is_runtime_mode_projection_noop_for_target(
+            Some(&direct_state),
+            CodexRuntimeIntegrationMode::CockpitApiService,
+            CodexRuntimeAccountKind::Api,
+            Some("codex-api-service"),
+        ));
+        assert!(!is_runtime_mode_projection_noop_for_target(
+            None,
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeAccountKind::OAuth,
+            Some("codex-oauth"),
+        ));
+        assert!(!is_runtime_mode_projection_noop_for_target(
+            Some(&direct_state),
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeAccountKind::Unknown,
+            None,
+        ));
+        assert!(!is_runtime_mode_projection_noop_for_target(
+            Some(&direct_state),
+            CodexRuntimeIntegrationMode::DirectProjection,
+            CodexRuntimeAccountKind::OAuth,
+            Some("other-codex-oauth"),
+        ));
+    }
+
+    #[test]
+    fn api_service_runtime_mode_uses_fixed_service_account_identity() {
+        let state = build_runtime_mode_state(CodexRuntimeIntegrationMode::CockpitApiService);
+
+        assert_eq!(state.mode, CodexRuntimeIntegrationMode::CockpitApiService);
+        assert_eq!(state.account_kind, CodexRuntimeAccountKind::Api);
+        assert_eq!(
+            state.current_account_id.as_deref(),
+            Some(CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID)
+        );
+    }
+
+    #[test]
+    fn runtime_mode_state_mirrors_to_codex_home_for_desktop_visibility() {
+        let _env_guard = lock_local_access_env_test();
+        let env = IsolatedLocalAccessEnv::new("cockpit-local-access-runtime-mode-mirror");
+        let state = crate::models::codex_local_access::CodexRuntimeModeState {
+            mode: CodexRuntimeIntegrationMode::CockpitApiService,
+            account_kind: CodexRuntimeAccountKind::Api,
+            current_account_id: Some(CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID.to_string()),
+            updated_at: 42,
+        };
+
+        super::save_runtime_mode_state(&state).expect("save runtime mode state");
+
+        let local_access_state = fs::read_to_string(env.root.join(super::CODEX_RUNTIME_MODE_FILE))
+            .expect("read local access runtime mode");
+        let codex_home_state =
+            fs::read_to_string(env.codex_home().join(super::CODEX_RUNTIME_MODE_FILE))
+                .expect("read codex home runtime mode");
+        assert_eq!(codex_home_state, local_access_state);
+        assert!(codex_home_state.contains("\"mode\": \"cockpit_api_service\""));
+        assert!(codex_home_state.contains(CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_mode_load_repairs_missing_codex_home_mirror_for_desktop_visibility() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let env = IsolatedLocalAccessEnv::new("cockpit-local-access-runtime-mode-load-mirror");
+        let mut collection = default_test_collection();
+        collection.enabled = true;
+        collection.port = 14998;
+        collection.api_key = "agt_codex_test".to_string();
+        collection.account_ids = vec!["codex-api-key".to_string()];
+        let api_key_account = CodexAccount::new_api_key(
+            "codex-api-key".to_string(),
+            "api-key@example.com".to_string(),
+            "sk-upstream".to_string(),
+            CodexApiProviderMode::Custom,
+            Some("https://upstream.example/v1".to_string()),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&api_key_account)
+            .expect("save API key pool member");
+        save_collection_to_disk(&collection).expect("save local access collection");
+        write_local_access_profile_takeover(&env.codex_home(), &collection)
+            .await
+            .expect("write matching API service profile takeover");
+
+        let state = crate::models::codex_local_access::CodexRuntimeModeState {
+            mode: CodexRuntimeIntegrationMode::CockpitApiService,
+            account_kind: CodexRuntimeAccountKind::Api,
+            current_account_id: Some(CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID.to_string()),
+            updated_at: 42,
+        };
+        let content = serde_json::to_string_pretty(&state).expect("serialize runtime mode");
+        fs::write(env.root.join(super::CODEX_RUNTIME_MODE_FILE), &content)
+            .expect("write local access runtime mode");
+        let mirror_path = env.codex_home().join(super::CODEX_RUNTIME_MODE_FILE);
+        let _ = fs::remove_file(&mirror_path);
+
+        let loaded = load_runtime_mode_state().expect("load runtime mode should repair mirror");
+
+        assert_eq!(loaded.mode, CodexRuntimeIntegrationMode::CockpitApiService);
+        let repaired_mirror =
+            fs::read_to_string(mirror_path).expect("read repaired codex home mirror");
+        assert_eq!(repaired_mirror, content);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_mode_noop_requires_codex_home_mirror_for_desktop_visibility() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let env = IsolatedLocalAccessEnv::new("cockpit-local-access-runtime-mode-noop-mirror");
+        let mut collection = default_test_collection();
+        collection.enabled = true;
+        collection.port = 14998;
+        collection.api_key = "agt_codex_test".to_string();
+        collection.account_ids = vec!["codex-api-key".to_string()];
+        let api_key_account = CodexAccount::new_api_key(
+            "codex-api-key".to_string(),
+            "api-key@example.com".to_string(),
+            "sk-upstream".to_string(),
+            CodexApiProviderMode::Custom,
+            Some("https://upstream.example/v1".to_string()),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&api_key_account)
+            .expect("save API key pool member");
+        save_collection_to_disk(&collection).expect("save local access collection");
+        let state = crate::models::codex_local_access::CodexRuntimeModeState {
+            mode: CodexRuntimeIntegrationMode::CockpitApiService,
+            account_kind: CodexRuntimeAccountKind::Api,
+            current_account_id: Some(CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID.to_string()),
+            updated_at: 42,
+        };
+
+        super::save_runtime_mode_state(&state).expect("save runtime mode state");
+        fs::remove_file(env.codex_home().join(super::CODEX_RUNTIME_MODE_FILE))
+            .expect("remove codex home mirror");
+        assert!(
+            !is_runtime_mode_projection_noop(
+                Some(&state),
+                CodexRuntimeIntegrationMode::CockpitApiService
+            ),
+            "missing ~/.codex runtime mode mirror must force re-materialization"
+        );
+
+        let wrong_state = crate::models::codex_local_access::CodexRuntimeModeState {
+            mode: CodexRuntimeIntegrationMode::DirectProjection,
+            account_kind: CodexRuntimeAccountKind::OAuth,
+            current_account_id: Some("codex-oauth".to_string()),
+            updated_at: 43,
+        };
+        fs::write(
+            env.codex_home().join(super::CODEX_RUNTIME_MODE_FILE),
+            serde_json::to_string_pretty(&wrong_state).expect("serialize wrong runtime mode"),
+        )
+        .expect("write wrong codex home mirror");
+        assert!(
+            !is_runtime_mode_projection_noop(
+                Some(&state),
+                CodexRuntimeIntegrationMode::CockpitApiService
+            ),
+            "stale ~/.codex runtime mode mirror must force re-materialization"
+        );
+
+        super::save_runtime_mode_state(&state).expect("save runtime mode state again");
+        write_local_access_profile_takeover(&env.codex_home(), &collection)
+            .await
+            .expect("write matching API service profile takeover");
+        assert!(
+            is_runtime_mode_projection_noop(
+                Some(&state),
+                CodexRuntimeIntegrationMode::CockpitApiService
+            ),
+            "matching ~/.codex runtime mode mirror may no-op"
+        );
+
+        collection.enabled = false;
+        save_collection_to_disk(&collection).expect("save disabled local access collection");
+        assert!(
+            !is_runtime_mode_projection_noop(
+                Some(&state),
+                CodexRuntimeIntegrationMode::CockpitApiService
+            ),
+            "disabled API service collection must force re-materialization even when profile still looks attached"
+        );
+    }
+
+    #[test]
+    fn api_service_runtime_noop_requires_default_profile_attachment() {
+        let _env_guard = lock_local_access_env_test();
+        let env = IsolatedLocalAccessEnv::new("cockpit-local-access-noop-attachment");
+        let mut collection = default_test_collection();
+        collection.enabled = true;
+        collection.port = 14998;
+        collection.api_key = "agt_codex_test".to_string();
+        collection.account_ids = vec!["codex-api-key".to_string()];
+        save_collection_to_disk(&collection).expect("save local access collection");
+
+        fs::write(
+            env.codex_home().join(CODEX_PROFILE_CONFIG_FILE),
+            r#"model_provider = "openai""#,
+        )
+        .expect("write drifted codex config");
+        fs::write(
+            env.codex_home().join(CODEX_PROFILE_AUTH_FILE),
+            r#"{"tokens":{"access_token":"oauth"}}"#,
+        )
+        .expect("write drifted codex auth");
+
+        let state = crate::models::codex_local_access::CodexRuntimeModeState {
+            mode: CodexRuntimeIntegrationMode::CockpitApiService,
+            account_kind: CodexRuntimeAccountKind::Api,
+            current_account_id: Some(CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID.to_string()),
+            updated_at: 1,
+        };
+
+        assert!(
+            !is_runtime_mode_projection_noop(
+                Some(&state),
+                CodexRuntimeIntegrationMode::CockpitApiService
+            ),
+            "API service mode must re-materialize when ~/.codex projection drifted away"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn api_key_only_pool_profile_takeover_does_not_require_oauth_binding() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let env = IsolatedLocalAccessEnv::new("cockpit-local-access-api-key-only-takeover");
+        let api_key_account = CodexAccount::new_api_key(
+            "codex-api-key".to_string(),
+            "api-key@example.com".to_string(),
+            "sk-upstream".to_string(),
+            CodexApiProviderMode::Custom,
+            Some("https://upstream.example/v1".to_string()),
+            Some("upstream-provider".to_string()),
+            Some("Upstream Provider".to_string()),
+        );
+        crate::modules::codex_account::save_account(&api_key_account)
+            .expect("save API key pool member");
+
+        let mut collection = default_test_collection();
+        collection.enabled = true;
+        collection.port = 14998;
+        collection.api_key = "agt_codex_test".to_string();
+        collection.account_ids = vec![api_key_account.id.clone()];
+
+        write_local_access_profile_takeover(&env.codex_home(), &collection)
+            .await
+            .expect("API key-only API service projection should not validate OAuth binding");
+
+        let config = fs::read_to_string(env.codex_home().join(CODEX_PROFILE_CONFIG_FILE))
+            .expect("read projected config");
+        assert!(config.contains("model_provider = \"codex_local_access\""));
+        assert!(config.contains("base_url = \"http://localhost:14998/v1\""));
+        assert!(config.contains("experimental_bearer_token = \"agt_codex_test\""));
+        let auth = fs::read_to_string(env.codex_home().join(CODEX_PROFILE_AUTH_FILE))
+            .expect("read projected auth");
+        assert!(is_codex_local_access_auth_text(&auth, "agt_codex_test"));
+        assert!(!auth.contains("sk-upstream"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn api_service_profile_takeover_ignores_stale_api_key_bound_oauth_id() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let env = IsolatedLocalAccessEnv::new("cockpit-local-access-stale-bound-api-key");
+        let api_key_account = CodexAccount::new_api_key(
+            "codex-api-key-bound".to_string(),
+            "api-key-bound@example.com".to_string(),
+            "sk-upstream".to_string(),
+            CodexApiProviderMode::Custom,
+            Some("https://upstream.example/v1".to_string()),
+            Some("upstream-provider".to_string()),
+            Some("Upstream Provider".to_string()),
+        );
+        crate::modules::codex_account::save_account(&api_key_account)
+            .expect("save API key pool member");
+
+        let mut collection = default_test_collection();
+        collection.enabled = true;
+        collection.port = 14998;
+        collection.api_key = "agt_codex_test".to_string();
+        collection.account_ids = vec![api_key_account.id.clone()];
+        collection.bound_oauth_account_id = Some(api_key_account.id.clone());
+
+        write_local_access_profile_takeover(&env.codex_home(), &collection)
+            .await
+            .expect("stale API key bound_oauth_account_id must not block API service takeover");
+
+        let auth = fs::read_to_string(env.codex_home().join(CODEX_PROFILE_AUTH_FILE))
+            .expect("read projected auth");
+        assert!(is_codex_local_access_auth_text(&auth, "agt_codex_test"));
+        assert!(!auth.contains("sk-upstream"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn save_local_access_accounts_turns_member_order_into_custom_routing() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _env = IsolatedLocalAccessEnv::new("cockpit-local-access-save-order");
+        let accounts = vec![
+            CodexAccount::new_api_key(
+                "codex-api-key-third".to_string(),
+                "third@example.com".to_string(),
+                "sk-third".to_string(),
+                CodexApiProviderMode::Custom,
+                Some("https://third.example/v1".to_string()),
+                None,
+                None,
+            ),
+            CodexAccount::new_api_key(
+                "codex-api-key-first".to_string(),
+                "first@example.com".to_string(),
+                "sk-first".to_string(),
+                CodexApiProviderMode::Custom,
+                Some("https://first.example/v1".to_string()),
+                None,
+                None,
+            ),
+            CodexAccount::new_api_key(
+                "codex-api-key-second".to_string(),
+                "second@example.com".to_string(),
+                "sk-second".to_string(),
+                CodexApiProviderMode::Custom,
+                Some("https://second.example/v1".to_string()),
+                None,
+                None,
+            ),
+        ];
+        for account in &accounts {
+            crate::modules::codex_account::save_account(account).expect("save API key account");
+        }
+        let mut index = CodexAccountIndex::new();
+        for account in &accounts {
+            index.accounts.push(CodexAccountSummary {
+                id: account.id.clone(),
+                email: account.email.clone(),
+                plan_type: account.plan_type.clone(),
+                subscription_active_until: account.subscription_active_until.clone(),
+                created_at: account.created_at,
+                last_used: account.last_used,
+            });
+        }
+        crate::modules::codex_account::save_account_index(&index).expect("save account index");
+
+        let state = save_local_access_accounts(
+            vec![
+                "codex-api-key-third".to_string(),
+                "codex-api-key-first".to_string(),
+                "codex-api-key-second".to_string(),
+            ],
+            false,
+        )
+        .await
+        .expect("save local access account order");
+        let collection = state.collection.expect("collection");
+
+        assert_eq!(
+            collection.account_ids,
+            vec![
+                "codex-api-key-third".to_string(),
+                "codex-api-key-first".to_string(),
+                "codex-api-key-second".to_string(),
+            ]
+        );
+        assert_eq!(
+            collection.routing_strategy,
+            CodexLocalAccessRoutingStrategy::Custom
+        );
+        assert_eq!(
+            apply_routing_strategy(
+                &collection.account_ids,
+                collection.routing_strategy,
+                &collection.custom_routing_rules,
+                0,
+            ),
+            collection.account_ids
+        );
+    }
+
+    #[test]
+    fn health_summary_cache_requires_same_scope_revision_status_and_no_active_deadline() {
+        let now = 1_700_000_000_000;
+        let account_ids = vec!["account-a".to_string(), "account-b".to_string()];
+        let cached = CachedHealthSummary {
+            account_ids: account_ids.clone(),
+            file_modified_ms: Some(11),
+            audit_status: AuditTrailStatus::default(),
+            cached_at_ms: now,
+            summary: CodexLocalAccessHealthSummary {
+                updated_at: now,
+                healthy_count: 2,
+                ..CodexLocalAccessHealthSummary::default()
+            },
+        };
+
+        assert!(is_cached_health_summary_valid(
+            &cached,
+            &account_ids,
+            Some(11),
+            &AuditTrailStatus::default(),
+            now + HEALTH_SUMMARY_CACHE_TTL_MS,
+        ));
+        assert!(!is_cached_health_summary_valid(
+            &cached,
+            &["account-a".to_string()],
+            Some(11),
+            &AuditTrailStatus::default(),
+            now,
+        ));
+        assert!(!is_cached_health_summary_valid(
+            &cached,
+            &account_ids,
+            Some(12),
+            &AuditTrailStatus::default(),
+            now,
+        ));
+        assert!(!is_cached_health_summary_valid(
+            &cached,
+            &account_ids,
+            Some(11),
+            &AuditTrailStatus {
+                degraded: true,
+                error: Some("audit error".to_string()),
+                degraded_at_ms: Some(now),
+            },
+            now,
+        ));
+        assert!(!is_cached_health_summary_valid(
+            &cached,
+            &account_ids,
+            Some(11),
+            &AuditTrailStatus::default(),
+            now + HEALTH_SUMMARY_CACHE_TTL_MS + 1,
+        ));
+
+        let with_deadline = CachedHealthSummary {
+            summary: CodexLocalAccessHealthSummary {
+                nearest_cooldown_until_ms: Some(now + 30_000),
+                ..cached.summary.clone()
+            },
+            ..cached
+        };
+        assert!(!is_cached_health_summary_valid(
+            &with_deadline,
+            &account_ids,
+            Some(11),
+            &AuditTrailStatus::default(),
+            now,
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn oversized_request_returns_413_instead_of_transport_disconnect() {
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let request = format!(
+            "POST /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            MAX_HTTP_REQUEST_BYTES + 1
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("oversized request headers should be written");
+        client
+            .shutdown()
+            .await
+            .expect("client write side should close after headers");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), client.read_to_end(&mut response))
+            .await
+            .expect("oversized request should receive a prompt local response")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+
+        assert!(
+            response_text.contains("HTTP/1.1 413 Payload Too Large"),
+            "expected explicit 413 response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("request_body_too_large"),
+            "expected structured request-body error, got: {}",
+            response_text
+        );
+
+        server
+            .await
+            .expect("server task should not panic")
+            .expect("server should handle oversized request as a response, not an error");
+    }
+
+    #[tokio::test]
+    #[ignore = "live test mutates local Codex/Cockpit projection; set COCKPIT_TOOLS_LIVE_RUNTIME_SWITCH=1"]
+    async fn live_runtime_mode_roundtrip_direct_and_api_service() {
+        assert_eq!(
+            std::env::var("COCKPIT_TOOLS_LIVE_RUNTIME_SWITCH").as_deref(),
+            Ok("1"),
+            "set COCKPIT_TOOLS_LIVE_RUNTIME_SWITCH=1 to run this live projection test"
+        );
+
+        let direct = set_runtime_integration_mode(CodexRuntimeIntegrationMode::DirectProjection)
+            .await
+            .expect("switch to direct projection");
+        assert_eq!(direct.mode, CodexRuntimeIntegrationMode::DirectProjection);
+
+        let gateway = set_runtime_integration_mode(CodexRuntimeIntegrationMode::CockpitApiService)
+            .await
+            .expect("switch back to cockpit api service");
+        assert_eq!(gateway.mode, CodexRuntimeIntegrationMode::CockpitApiService);
+        assert_eq!(
+            load_runtime_mode_state().expect("runtime mode").mode,
+            CodexRuntimeIntegrationMode::CockpitApiService
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_ensure_does_not_wait_forever_for_stale_lifecycle_task() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let stale_task = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.running = false;
+            runtime.task = Some(stale_task);
+        }
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(200),
+            super::ensure_gateway_matches_runtime(),
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "stale lifecycle task must not block gateway reconciliation forever"
+        );
+
+        let mut runtime = gateway_runtime().lock().await;
+        assert!(runtime.task.is_none());
+        *runtime = super::GatewayRuntime::default();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ensure_runtime_loaded_without_start_sanitizes_loaded_runtime_collection() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let previous_root = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let previous_accounts_root = std::env::var_os("COCKPIT_TOOLS_TEST_DATA_DIR");
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-sanitize-loaded-runtime-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+        std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", &root);
+
+        let api_key_account = CodexAccount::new_api_key(
+            "codex-api-key".to_string(),
+            "api-key@example.com".to_string(),
+            "sk-local-test".to_string(),
+            CodexApiProviderMode::Custom,
+            Some("https://example.invalid/v1".to_string()),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&api_key_account)
+            .expect("api key account should be persisted");
+
+        let mut collection = default_test_collection();
+        collection.enabled = true;
+        collection.bound_oauth_account_id = Some(api_key_account.id.clone());
+        collection.updated_at = 1;
+
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+        }
+
+        super::ensure_runtime_loaded_without_start()
+            .await
+            .expect("loaded runtime should sanitize invalid bound oauth account");
+
+        let runtime = gateway_runtime().lock().await;
+        let sanitized = runtime
+            .collection
+            .as_ref()
+            .expect("runtime collection should remain present");
+        assert_eq!(
+            sanitized.bound_oauth_account_id, None,
+            "loaded runtime should clear invalid API key bound oauth account"
+        );
+        drop(runtime);
+
+        match previous_root {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        match previous_accounts_root {
+            Some(value) => std::env::set_var("COCKPIT_TOOLS_TEST_DATA_DIR", value),
+            None => std::env::remove_var("COCKPIT_TOOLS_TEST_DATA_DIR"),
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn builds_routing_hint_from_previous_response_id_and_model() {
         let request = ParsedRequest {
             method: "POST".to_string(),
             target: "/v1/responses".to_string(),
             headers: HashMap::new(),
             body: br#"{"model":"GPT-5.4-mini","previous_response_id":"resp_prev"}"#.to_vec(),
+            gateway_request_id: "gw-test-18".to_string(),
         };
 
         let hint = build_request_routing_hint(&request);
         assert_eq!(hint.model_key, "gpt-5.4-mini");
         assert_eq!(hint.previous_response_id.as_deref(), Some("resp_prev"));
+    }
+
+    #[test]
+    fn runtime_mode_renames_gateway_litellm_to_cockpit_api_service() {
+        let legacy: crate::models::codex_local_access::CodexRuntimeModeState =
+            serde_json::from_value(json!({
+                "mode": "gateway_litellm",
+                "accountKind": "api",
+                "currentAccountId": "codex-test",
+                "updatedAt": 1
+            }))
+            .expect("legacy runtime mode should deserialize");
+        assert_eq!(legacy.mode, CodexRuntimeIntegrationMode::CockpitApiService);
+
+        let serialized = serde_json::to_value(build_runtime_mode_state(
+            CodexRuntimeIntegrationMode::CockpitApiService,
+        ))
+        .expect("serialize runtime mode");
+        assert_eq!(serialized["mode"], "cockpit_api_service");
+    }
+
+    #[test]
+    fn runtime_account_kind_serializes_oauth_without_acronym_split() {
+        let legacy: CodexRuntimeAccountKind =
+            serde_json::from_value(json!("o_auth")).expect("legacy oauth kind");
+        assert_eq!(legacy, CodexRuntimeAccountKind::OAuth);
+        assert_eq!(
+            serde_json::to_value(CodexRuntimeAccountKind::OAuth).expect("serialize oauth kind"),
+            json!("oauth")
+        );
+    }
+
+    #[test]
+    fn stable_local_access_port_prefers_first_available_fixed_port() {
+        let expected = PREFERRED_CODEX_LOCAL_ACCESS_PORTS[0];
+        assert_eq!(
+            first_stable_local_access_port(None, |port| port == expected),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn stable_local_access_port_skips_occupied_fixed_port() {
+        let occupied_port = PREFERRED_CODEX_LOCAL_ACCESS_PORTS[0];
+        let expected = PREFERRED_CODEX_LOCAL_ACCESS_PORTS[1];
+
+        assert_eq!(
+            first_stable_local_access_port(Some(occupied_port), |port| {
+                port == occupied_port || port == expected
+            }),
+            Some(expected)
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_reuses_healthy_external_listener_on_configured_port_conflict() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let previous = std::env::var_os(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV);
+        let root = std::env::temp_dir().join(format!(
+            "cockpit-local-access-external-relay-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test data root should be created");
+        std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, &root);
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("external relay fixture should bind");
+        let external_port = listener
+            .local_addr()
+            .expect("listener should expose local addr")
+            .port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener
+                .accept()
+                .await
+                .expect("external relay fixture should accept health probe");
+            let mut buffer = vec![0_u8; 4096];
+            let read = socket
+                .read(&mut buffer)
+                .await
+                .expect("health probe should be readable");
+            let request = String::from_utf8_lossy(&buffer[..read]);
+            let normalized_request = request.to_ascii_lowercase();
+            assert!(normalized_request.contains("get /v1/models"));
+            assert!(normalized_request.contains("authorization: bearer test-local-key"));
+            let body = r#"{"object":"list","data":[]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("health response should be written");
+        });
+
+        let now = now_ms();
+        let collection = CodexLocalAccessCollection {
+            enabled: true,
+            port: external_port,
+            api_key: "test-local-key".to_string(),
+            safety_config: CodexLocalApiSafetyConfig::default(),
+            access_scope: CodexLocalAccessScope::Localhost,
+            upstream_proxy_url: None,
+            routing_strategy: CodexLocalAccessRoutingStrategy::default(),
+            custom_routing_rules: Vec::new(),
+            restrict_free_accounts: false,
+            follow_current_account: false,
+            bound_oauth_account_id: None,
+            account_ids: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            ..default_test_collection()
+        };
+        super::save_collection_to_disk(&collection).expect("collection should be saved");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            super::sync_runtime_collection(&mut runtime, collection.clone());
+        }
+
+        super::ensure_gateway_matches_runtime()
+            .await
+            .expect("healthy external relay should be reused");
+        server.await.expect("external relay fixture should finish");
+
+        let saved = super::load_collection_from_disk()
+            .expect("collection should load")
+            .expect("collection should exist");
+        assert_eq!(
+            saved.port, external_port,
+            "healthy external relay must not trigger persisted port rewrites"
+        );
+        let mut runtime = gateway_runtime().lock().await;
+        assert!(runtime.running);
+        assert_eq!(runtime.actual_port, Some(external_port));
+        assert!(runtime.shutdown_sender.is_none());
+        assert!(runtime.task.is_none());
+        assert!(runtime.last_error.is_none());
+        *runtime = super::GatewayRuntime::default();
+
+        match previous {
+            Some(value) => std::env::set_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV, value),
+            None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -18189,6 +35890,30 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
     }
 
     #[test]
+    fn runtime_account_uses_dedicated_local_access_provider_bucket() {
+        let runtime = build_runtime_account(
+            "http://127.0.0.1:2876/v1".to_string(),
+            "agt_codex_local".to_string(),
+        );
+
+        assert_eq!(runtime.id, CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID);
+        assert_eq!(
+            runtime.api_base_url.as_deref(),
+            Some("http://127.0.0.1:2876/v1")
+        );
+        assert_eq!(
+            runtime.api_provider_id.as_deref(),
+            Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID)
+        );
+        assert_eq!(
+            runtime.api_provider_name.as_deref(),
+            Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME)
+        );
+        assert_eq!(runtime.openai_api_key.as_deref(), Some("agt_codex_local"));
+        assert_eq!(runtime.bound_oauth_account_id, None);
+    }
+
+    #[test]
     fn codex_client_models_use_models_catalog_shape() {
         let response = build_codex_client_models_response(&[
             "gpt-5.4".to_string(),
@@ -18219,8 +35944,6 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         let api_key = ResolvedLocalApiKey {
             id: "key-1".to_string(),
             label: "Key".to_string(),
-            provider_gateway: None,
-            account_ids: Vec::new(),
             model_prefix: Some("team".to_string()),
             allowed_models: vec!["gpt-*".to_string()],
             excluded_models: vec!["codex-*".to_string()],
@@ -18244,43 +35967,6 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
     }
 
     #[test]
-    fn provider_gateway_models_are_visible_for_gateway_api_key() {
-        let collection = test_local_access_collection(vec!["account-1".to_string()]);
-        let api_key = ResolvedLocalApiKey {
-            id: "provider_gateway_account-1".to_string(),
-            label: "Provider Gateway: DeepSeek".to_string(),
-            provider_gateway: Some(CodexLocalAccessProviderGateway {
-                base_url: "https://api.deepseek.com/v1".to_string(),
-                api_key: "sk-test".to_string(),
-                upstream_model: "deepseek-v4-pro".to_string(),
-                upstream_models: vec![
-                    "deepseek-v4-pro".to_string(),
-                    "deepseek-v4-flash".to_string(),
-                ],
-                wire_api: Some("chat_completions".to_string()),
-                supports_vision: false,
-                model_capabilities: HashMap::new(),
-            }),
-            account_ids: vec!["account-1".to_string()],
-            model_prefix: None,
-            allowed_models: Vec::new(),
-            excluded_models: Vec::new(),
-        };
-
-        let models = visible_codex_model_ids_for_api_key(&collection, &api_key, None);
-
-        assert!(models.iter().any(|model| model == "deepseek-v4-pro"));
-        assert!(models.iter().any(|model| model == "deepseek-v4-flash"));
-        assert!(validate_client_model_visible(
-            "deepseek-v4-pro",
-            "deepseek-v4-pro",
-            &collection,
-            &api_key,
-            None,
-        ));
-    }
-
-    #[test]
     fn prepares_chat_completions_request_for_responses_proxy() {
         let request = ParsedRequest {
             method: "POST".to_string(),
@@ -18288,6 +35974,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             headers: HashMap::new(),
             body: br#"{"model":"GPT-5.4","stream":true,"messages":[{"role":"user","content":"hello"}]}"#
                 .to_vec(),
+            gateway_request_id: "gw-test-19".to_string(),
         };
 
         let (prepared, adapter) = prepare_gateway_request(request).expect("request should map");
@@ -18340,6 +36027,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             target: "/v1/images/generations".to_string(),
             headers: HashMap::new(),
             body: br#"{"model":"gpt-image-2","prompt":"draw a clean icon","size":"1024x1024","response_format":"b64_json"}"#.to_vec(),
+            gateway_request_id: "gw-test-20".to_string(),
         };
 
         let (prepared, adapter) = prepare_gateway_request(request).expect("request should map");
@@ -18397,6 +36085,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             target: "/v1/images/generations".to_string(),
             headers: HashMap::new(),
             body: br#"{"model":"gpt-image-1.5","prompt":"draw"}"#.to_vec(),
+            gateway_request_id: "gw-test-21".to_string(),
         };
 
         let err = prepare_gateway_request(request).expect_err("model should be rejected");
@@ -18430,6 +36119,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             target: "/v1/images/edits".to_string(),
             headers,
             body,
+            gateway_request_id: "gw-test-22".to_string(),
         };
 
         let (prepared, adapter) = prepare_gateway_request(request).expect("request should map");
@@ -18522,6 +36212,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             target: "/v1/responses".to_string(),
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4-2026-03-05","input":"hello"}"#.to_vec(),
+            gateway_request_id: "gw-test-23".to_string(),
         };
 
         let (prepared, adapter) = prepare_gateway_request(request).expect("request should map");
@@ -18552,6 +36243,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             headers: HashMap::from([("accept".to_string(), "text/event-stream".to_string())]),
             body: br#"{"model":"gpt-5.4","stream":false,"store":true,"input":"hello","temperature":0.2}"#
                 .to_vec(),
+            gateway_request_id: "gw-test-24".to_string(),
         };
 
         let (prepared, adapter) = prepare_gateway_request(request).expect("request should map");
@@ -18587,12 +36279,45 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
     }
 
     #[test]
-    fn injects_image_generation_tool_only_for_non_free_responses_accounts() {
+    fn detects_responses_websocket_upgrade_probe() {
+        let request = ParsedRequest {
+            method: "GET".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([
+                ("connection".to_string(), "keep-alive, Upgrade".to_string()),
+                ("upgrade".to_string(), "websocket".to_string()),
+                ("sec-websocket-key".to_string(), "test-key".to_string()),
+            ]),
+            body: Vec::new(),
+            gateway_request_id: "gw-test-25".to_string(),
+        };
+
+        assert!(is_websocket_upgrade_request(&request));
+        assert!(is_responses_websocket_upgrade_request(&request));
+    }
+
+    #[test]
+    fn websocket_upgrade_probe_must_not_match_regular_responses_stream() {
+        let request = ParsedRequest {
+            method: "POST".to_string(),
+            target: "/v1/responses".to_string(),
+            headers: HashMap::from([("accept".to_string(), "text/event-stream".to_string())]),
+            body: br#"{"model":"gpt-5.4","stream":true,"input":"hello"}"#.to_vec(),
+            gateway_request_id: "gw-test-26".to_string(),
+        };
+
+        assert!(!is_websocket_upgrade_request(&request));
+        assert!(!is_responses_websocket_upgrade_request(&request));
+    }
+
+    #[test]
+    fn injects_image_generation_tool_for_responses_requests() {
         let request = ParsedRequest {
             method: "POST".to_string(),
             target: "/v1/responses".to_string(),
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4","input":"draw an icon"}"#.to_vec(),
+            gateway_request_id: "gw-test-27".to_string(),
         };
 
         let (prepared, adapter) = prepare_gateway_request(request).expect("request should map");
@@ -18700,6 +36425,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4","input":[{"type":"message","role":"system","content":"be concise"},{"type":"message","role":"user","content":[{"type":"text","text":"hello"}]}],"tools":[{"type":"web_search_preview"}]}"#
                 .to_vec(),
+            gateway_request_id: "gw-test-25".to_string(),
         };
 
         let (prepared, _) = prepare_gateway_request(request).expect("request should map");
@@ -18736,6 +36462,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             body:
                 br#"{"model":"gpt-5.4-2026-03-05","messages":[{"role":"user","content":"hello"}]}"#
                     .to_vec(),
+            gateway_request_id: "gw-test-28".to_string(),
         };
 
         let (prepared, adapter) = prepare_gateway_request(request).expect("request should map");
@@ -18764,6 +36491,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4","temperature":0.2,"top_p":0.7,"messages":[{"role":"user","content":"hello"}]}"#
                 .to_vec(),
+            gateway_request_id: "gw-test-29".to_string(),
         };
 
         let (prepared, _) = prepare_gateway_request(request).expect("request should map");
@@ -18781,6 +36509,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}"#
                 .to_vec(),
+            gateway_request_id: "gw-test-30".to_string(),
         };
 
         let (prepared, _) = prepare_gateway_request(request).expect("request should map");
@@ -18806,6 +36535,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4","messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather","parameters":{"type":"object","properties":{"location":{"type":"string"}}},"strict":true}}],"tool_choice":{"type":"function","function":{"name":"get_weather"}}}"#
                 .to_vec(),
+            gateway_request_id: "gw-test-31".to_string(),
         };
 
         let (prepared, _) = prepare_gateway_request(request).expect("request should map");
@@ -18846,6 +36576,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Paris\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"{\"temperature_c\":18}"}]}"#
                 .to_vec(),
+            gateway_request_id: "gw-test-32".to_string(),
         };
 
         let (prepared, _) = prepare_gateway_request(request).expect("request should map");
@@ -18880,6 +36611,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4","messages":[{"role":"user","content":"weather?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"location\":\"Paris\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"{\"temperature_c\":18}"}]}"#
                 .to_vec(),
+            gateway_request_id: "gw-test-33".to_string(),
         };
 
         let (prepared, _) = prepare_gateway_request(request).expect("request should map");
@@ -19094,6 +36826,23 @@ data: [DONE]
     }
 
     #[test]
+    fn extracts_output_text_from_stream_summary_response() {
+        let parsed = json!({
+            "response": {
+                "id": "resp_stream",
+                "status": "completed",
+                "output": [],
+                "output_text": "hello from stream",
+            }
+        });
+
+        assert_eq!(
+            extract_output_text_from_response(&parsed),
+            "hello from stream"
+        );
+    }
+
+    #[test]
     fn parses_response_done_sse_payload_to_json() {
         let sse = br#"event: response.output_text.delta
 data: {"type":"response.output_text.delta","delta":"done body"}
@@ -19178,8 +36927,6 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
         let api_key = ResolvedLocalApiKey {
             id: "client-key-1".to_string(),
             label: "Client".to_string(),
-            provider_gateway: None,
-            account_ids: Vec::new(),
             model_prefix: None,
             allowed_models: Vec::new(),
             excluded_models: Vec::new(),
@@ -19194,6 +36941,7 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
                 "prompt_cache_key": "cache-123",
             }))
             .unwrap(),
+            gateway_request_id: "gw-test".to_string(),
         };
 
         align_codex_prompt_cache(&mut request, &api_key).unwrap();
@@ -19217,8 +36965,6 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
         let api_key = ResolvedLocalApiKey {
             id: "client-key-1".to_string(),
             label: "Client".to_string(),
-            provider_gateway: None,
-            account_ids: Vec::new(),
             model_prefix: None,
             allowed_models: Vec::new(),
             excluded_models: Vec::new(),
@@ -19233,6 +36979,7 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
                 "prompt_cache_key": "cache-123",
             }))
             .unwrap(),
+            gateway_request_id: "gw-legacy-metadata".to_string(),
         };
 
         align_codex_prompt_cache(&mut request, &api_key).unwrap();
@@ -19292,8 +37039,6 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
         let api_key = ResolvedLocalApiKey {
             id: "client-key-1".to_string(),
             label: "Client".to_string(),
-            provider_gateway: None,
-            account_ids: Vec::new(),
             model_prefix: None,
             allowed_models: Vec::new(),
             excluded_models: Vec::new(),
@@ -19334,6 +37079,7 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
                 "prompt_cache_key": "cache-123"
             }))
             .unwrap(),
+            gateway_request_id: "gw-legacy-sanitize-reasoning".to_string(),
         };
 
         align_codex_prompt_cache(&mut request, &api_key).unwrap();
@@ -19348,25 +37094,32 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
     }
 
     #[test]
-    fn applies_codex_official_empty_headers() {
+    fn applies_codex_official_empty_headers_without_synthesizing_affinity() {
         let mut request = ParsedRequest {
             method: "POST".to_string(),
             target: "/backend-api/codex/responses".to_string(),
             headers: HashMap::new(),
             body: br#"{"model":"gpt-5.4","input":"hello"}"#.to_vec(),
+            gateway_request_id: "gw-test".to_string(),
         };
 
         apply_codex_official_headers(&mut request);
 
         for key in [
             "version",
-            "x-codex-turn-state",
-            "x-codex-turn-metadata",
             "x-client-request-id",
             "x-responsesapi-include-timing-metrics",
         ] {
             assert_eq!(request.headers.get(key).map(String::as_str), Some(""));
         }
+        assert!(
+            !request.headers.contains_key("x-codex-turn-state"),
+            "missing turn-state must remain absent; an empty header changes Codex turn affinity"
+        );
+        assert!(
+            !request.headers.contains_key("x-codex-turn-metadata"),
+            "missing turn metadata must remain absent"
+        );
     }
 
     #[test]
@@ -19428,7 +37181,6 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
             Some("https://relay.example/v1".to_string()),
             Some("relay".to_string()),
             Some("Relay".to_string()),
-            Vec::new(),
         );
 
         assert!(is_local_access_eligible_account(&account, true));
@@ -19448,7 +37200,6 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
             Some("https://relay.example/v1".to_string()),
             Some("relay".to_string()),
             Some("Relay".to_string()),
-            Vec::new(),
         );
         let http_account = CodexAccount::new_api_key(
             "api-2".to_string(),
@@ -19458,7 +37209,6 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
             Some("http://127.0.0.1:8080/v1".to_string()),
             Some("local".to_string()),
             Some("Local".to_string()),
-            Vec::new(),
         );
 
         assert_eq!(
