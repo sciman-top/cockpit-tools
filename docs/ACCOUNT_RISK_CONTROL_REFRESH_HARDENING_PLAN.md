@@ -1,6 +1,6 @@
 # 账号风控刷新降噪专项计划
 
-更新时间：2026-06-03
+更新时间：2026-06-06
 
 ## 目标与边界
 
@@ -11,10 +11,11 @@
 ## 证据分层
 
 - 本仓代码事实、focused tests、smoke/preflight report 是最终裁决源。
-- 官方 `openai-codex` 源码用于 Codex-facing turn、stream、quota/status 和 `previous_response_id` 语义；当前本地参考源为 `D:\CODE\external\_reference_gateway_sources\openai-codex`，2026-06-03 已刷新到 `4417e4c19`。
+- 官方 `openai-codex` 源码用于 Codex-facing turn、stream、quota/status 和 `previous_response_id` 语义；当前本地参考源为 `D:\CODE\external\_reference_gateway_sources\openai-codex`，2026-06-06 已刷新到 `87b808bb5`。
 - OpenAI 官方错误码与 rate limit 文档用于解释 429/503、`Retry-After`、backoff 和“失败重试仍消耗 per-minute limit”。
 - Sub2API、CLIProxyAPI、LiteLLM、New API 只借鉴可本地化的 `IsSchedulable()`、persistent cooldown、fill-first、pre-call limiter、首字节后不重试和 channel disable 结构。
 - 社区文章、issue 和最佳实践只作为待核线索，不覆盖官方源码、本仓实测或本专项合同。
+- 统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
 
 ## 当前问题判断
 
@@ -43,6 +44,7 @@
 - [x] 新增本专项计划文档。
 - [x] 刷新本地官方 `openai-codex` 参考源到 `4417e4c19`。
 - [x] 更新 `docs/reference-gateway-best-practices.md` 的 OpenAI Codex 快照。
+- [x] 2026-06-06 再次刷新本地官方 `openai-codex` 参考源到 `87b808bb5`，并同步 `docs/reference-gateway-best-practices.md` / `docs/reference-sources.md`。
 - [x] 在每个代码任务完成后把状态回写到本文件。
 
 验证：

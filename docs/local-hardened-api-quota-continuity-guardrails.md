@@ -1,6 +1,7 @@
 # Local Hardened API Quota Continuity Guardrails
 
 Last reviewed: 2026-05-30
+Mirror refreshed: 2026-06-06
 
 ## Verdict
 
@@ -14,6 +15,9 @@ Reviewed against local official source mirror:
 
 - `D:\CODE\external\_reference_gateway_sources\openai-codex`
 - commit `8a827d6` (`Expose MCP server info as part of server status (#24698)`)
+- current local mirror HEAD `87b808bb5` (`Support custom shell environment for local shell tool (#27023)`)
+
+说明：本备忘录的结论最初锚定到 2026-05-30 审查时使用的 `8a827d6`。当前本地镜像已经刷新到 `87b808bb5`，后续如继续扩展 continuity / sticky-boundary 结论，应优先对照新镜像和 `docs/reference-sources.md`。
 
 Relevant official source facts:
 

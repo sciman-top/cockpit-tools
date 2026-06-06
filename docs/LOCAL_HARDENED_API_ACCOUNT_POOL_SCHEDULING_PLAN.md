@@ -24,6 +24,7 @@
 - Gemini API 官方 rate limits 明确限制按 project 统计，不按 API key 统计；多个 key 不应被假设为多个独立额度池。参考：<https://ai.google.dev/gemini-api/docs/rate-limits>
 - Anthropic 官方 rate limits 文档说明限制按 organization/workspace/model class 管理，并通过 `retry-after` header 表达等待窗口。参考：<https://docs.anthropic.com/en/api/rate-limits>
 - 本地参考源仍优先使用 `D:\CODE\external\_reference_gateway_sources` 和 `docs/reference-gateway-best-practices.md`，只吸收 `IsSchedulable()`、persistent cooldown、fill-first/session affinity、pre-call rate checks、首字节后不重试等可本地文件化的模式。
+- 统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
 
 变更准入要求：
 

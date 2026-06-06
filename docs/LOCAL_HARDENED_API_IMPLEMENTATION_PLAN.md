@@ -10,6 +10,8 @@
 
 本地参考源：`D:\CODE\external\_reference_gateway_sources` 保存 `CLIProxyAPI`、`litellm`、`new-api`、`sub2api` 的源码快照。改动 retry/fallback、health registry、audit trail、selector、stream guard 或路线图时，优先参考该目录和 `docs/reference-gateway-best-practices.md`，再决定是否需要外部资料。账号池调度后续专项任务以 `docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md` 为任务清单入口；账号刷新、配额刷新、托盘刷新和当前账号自动刷新降噪以 `docs/ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md` 为任务清单入口。
 
+统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
+
 ## 审查结论固化
 
 ### Cockpit 当前代码事实

@@ -4,6 +4,8 @@
 日期：2026-05-31
 适用范围：从 `jlcodes99/cockpit-tools` 吸收更新到 Cockpit Tools Local 自用版
 
+官方上游镜像、本地网关参考源和框架参考源的统一入口见 `docs/reference-sources.md`。其中 `D:\CODE\external\_reference_gateway_sources\cockpit-tools-upstream` 作为只读源码镜像，便于在不污染当前工作区的情况下对照官方实现。
+
 ## 1. 分支模型
 
 | 分支或 ref | 归宿 |

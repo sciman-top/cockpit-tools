@@ -10,6 +10,8 @@
 
 本地参考源码优先使用 `D:\CODE\external\_reference_gateway_sources`，其中包含官方 `openai-codex`、`CLIProxyAPI`、`litellm`、`new-api`、`sub2api` 快照；参考结论汇总在 `docs/reference-gateway-best-practices.md`。Codex-facing 行为以官方 `openai-codex` 源码和本仓实测为最高语义锚点，社区项目只作为调度、cooldown、限流和可观测性结构参考。
 
+统一清单和当前本地 revision 见 `docs/reference-sources.md`。
+
 账号池调度的下一阶段专项计划见 `docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md`。该文档只负责多账号 API 服务号池调度、风控降噪、可观测性和验收任务清单，不替代本路线图的总体阶段划分。
 
 账号刷新、配额刷新、托盘刷新和当前账号自动刷新降噪的专项计划见 `docs/ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md`。该文档只负责减少刷新尖峰、默认强制 live refresh、UI 低间隔误导和跨平台批量刷新风险，不改变本路线图的 API service 总体架构。

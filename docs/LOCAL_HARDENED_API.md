@@ -6,6 +6,8 @@
 
 Codex-facing 行为优先参考官方 `openai-codex` 源码：`D:\CODE\external\_reference_gateway_sources\openai-codex`。社区网关项目可以提供号池调度、cooldown、pre-call limiter 和 stream guard 的结构参考，但不能覆盖官方 Codex turn/stream/Responses terminal 语义。
 
+统一参考清单、当前本地 revision 和刷新命令见 `docs/reference-sources.md`。
+
 ## 目标
 
 - 只监听 `127.0.0.1`，不提供 LAN/public 入口。
