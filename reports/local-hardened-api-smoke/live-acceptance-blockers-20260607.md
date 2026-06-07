@@ -12,6 +12,7 @@
 - 关联证据：
   - `reports/local-hardened-api-smoke/live-ui-smoke-readonly-baseline-20260607.md`
   - `reports/local-hardened-api-live-monitor/live-monitor-20260607-231751.json`
+  - `reports/local-hardened-api-smoke/smoke-20260608-001034.json`
 
 ## 2. 当前现场事实
 
@@ -29,6 +30,44 @@
 - `listenerCount = 0`
 
 结论：当前 live API service 并未运行，也没有 listener 可供真实 tray / 系统通知 / live continuity 提示验收复用。
+
+### 2.1.1 隔离 listener 旁路事实
+
+2026-06-08 追加执行：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-local-hardened-api.ps1 -Stage single -StartEphemeralGateway -AppSafeIsolatedProbe -AssertCodexCliConfigUntouched -AssertCodexAppProcessStable -WriteReport
+```
+
+关键结果见 `reports/local-hardened-api-smoke/smoke-20260608-001034.json`：
+
+- `ephemeralGateway.ready.statusCode = 200`
+- `loopback_models_endpoint = pass`
+- `invalid_key_auth_guard = pass`
+- `codex_cli_config_auth_untouched = pass`
+- `codex_app_process_stable = pass`
+
+结论：`enabled=false` 与 `listenerCount=0` 只说明“当前 live 现场未启用”，不等于项目没有无扰动 listener 验证路径。隔离 `ephemeral gateway` 已证明旁路 listener 可以在不改当前 `~/.codex`、不破坏当前 `Codex App` 进程稳定性的前提下成功拉起。
+
+### 2.1.2 号池成员前置条件
+
+同一份隔离 smoke 同时显示：
+
+- `routing.candidate_pool_count = 0`
+- `config_single_contract.reason = "single 阶段要求 accountIds 恰好为 1"`
+- 当前 live `codex_local_access.json` 中 `accountIds = []`
+
+后续继续执行：
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/smoke-local-hardened-api.ps1 -Stage fallback_probe -StartEphemeralGateway -TemporaryFallbackConfig -AppSafeIsolatedProbe -AssertCodexCliConfigUntouched -AssertCodexAppProcessStable -WriteReport
+```
+
+脚本直接在 `Set-TemporaryFallbackProbeConfig` 阶段抛错：
+
+- `fallback_probe 需要至少 1 个手动配置的 API 服务号池账号，当前 accountCount=0`
+
+结论：当前 continuity / fallback acceptance 的直接脚本阻塞不仅是 live listener 未启用，更是“当前 API 服务号池没有任何手动成员”。
 
 ### 2.2 连续性护栏
 
@@ -63,6 +102,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/monitor-live-codex-app-coc
 原因：
 
 - 当前 live API service `enabled = false` 且无 listener。
+- 当前 `accountIds = []`，即使走 `AppSafeIsolatedProbe + StartEphemeralGateway + TemporaryFallbackConfig` 旁路，也无法继续进入 continuity/fallback 验收。
 - 在“当前 `Codex App` 不断线、本会话持续”的约束下，自动启用 live API service 或触发系统级 wakeup / notification 都不属于只读动作。
 - 缺少 OS 级 tray / notification 自动观察能力，无法只靠 browser-preview 取代。
 
@@ -84,12 +124,14 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/monitor-live-codex-app-coc
 ### 4.1 `gate_na`：剩余 live API service 验收
 
 - `reason`: 2026-06-07 当前 live API service 为 `enabled=false`、`apiServiceRuntime.available=false`、`listenerCount=0`；在“当前 `Codex App` 不断线、本会话持续”的护栏下，不应自动把 live runtime 改到可测状态。
+- `reason`: 2026-06-08 新增隔离 smoke 证据表明旁路 listener 可拉起，但 continuity/fallback acceptance 仍受 `accountIds=[]` / `accountCount=0` 阻塞。
 - `alternative_verification`: browser-preview reports、app-safe isolated probe、只读 live monitor、代码入口审查。
 - `evidence_link`:
   - `reports/local-hardened-api-smoke/live-ui-smoke-readonly-baseline-20260607.md`
   - `reports/local-hardened-api-live-monitor/live-monitor-20260607-231751.json`
+  - `reports/local-hardened-api-smoke/smoke-20260608-001034.json`
   - 本报告
-- `expires_at`: 当 live API service 已处于可观察运行态，且已确认允许执行不会破坏当前会话连续性的真实 live smoke 时失效。
+- `expires_at`: 当 API 服务号池已有至少 1 个手动成员，且已确认允许执行不会破坏当前会话连续性的真实 live smoke 或隔离 continuity probe 时失效。
 
 ### 4.2 `platform_na`：tray / notification 桌面断言
 
@@ -107,6 +149,7 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/monitor-live-codex-app-coc
 ## 5. 下次安全执行顺序
 
 1. 先确认一个单一 live 场景，不同时推进 tray、notification、continuity、performance。
+1.5. 若目标是 continuity / fallback acceptance，先确认 API 服务号池已有至少 1 个手动成员；否则脚本会在 `accountCount=0` 直接阻塞。
 2. 全程并行运行只读 monitor：
 
 ```powershell
@@ -127,4 +170,5 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/monitor-live-codex-app-coc
 ## 6. 结论
 
 - 截至 2026-06-07，`NPB-06` 与 `NPB-03` 的剩余项不是文档缺失，而是受 live runtime 事实、连续性护栏和桌面观察能力共同限制。
+- 截至 2026-06-08，新增证据进一步表明：隔离 listener 路径已经可用；当前真正挡住 continuity / fallback acceptance 自动推进的，是 live API 服务号池仍为空。
 - 当前最诚实的项目状态是：低风险 / browser-preview / app-safe 证据已收口，高风险 live 验收仍未完成，但阻塞原因和下一次安全入口已经明确。

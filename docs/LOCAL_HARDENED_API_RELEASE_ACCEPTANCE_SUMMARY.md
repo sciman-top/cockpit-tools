@@ -119,6 +119,9 @@ git diff --check
 - `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md`
   - 已明确当前 `enabled=false` / listener 缺失下的剩余 `gate_na`
   - 已明确 tray / notification 桌面断言当前属于 `platform_na`
+- `reports/local-hardened-api-smoke/smoke-20260608-001034.json`
+  - 已证明 `AppSafeIsolatedProbe + StartEphemeralGateway` 可在不改 `~/.codex`、不影响当前 `Codex App` 进程稳定性的前提下拉起隔离 listener
+  - 已证明当前 continuity / fallback acceptance 的直接脚本阻塞是 `accountIds=[]` / `accountCount=0`
 
 ### 5.2 协议与连续性入口
 
@@ -191,3 +194,4 @@ git diff --check
 - `NPB-06` 已补 smoke 分层地图；后续真正进入 tray / 系统通知 / live continuity 验收前，应先按该地图判断是否需要用户确认。
 - 当前已补 live UI 只读现场基线；它证明现场可观测性和风险边界已清楚，但不等于真实 tray/系统通知 smoke 已完成。
 - `NPB-06` / `NPB-03` 剩余 live blocker 现已有单独报告；当前阻塞来自 `enabled=false`、listener 缺失和“当前 Codex App 不断线”护栏，而不是文档入口缺失。
+- 2026-06-08 新增隔离 smoke 证据后，可进一步区分：`enabled=false` 不是绝对无解；当前 continuity / fallback acceptance 的直接脚本阻塞已收敛为 `accountIds=[]`。
