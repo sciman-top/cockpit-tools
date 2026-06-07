@@ -1,7 +1,7 @@
 # Local Hardened API Next Phase Backlog
 
 状态：active
-更新时间：2026-06-06
+更新时间：2026-06-07
 
 ## 1. 作用
 
@@ -22,7 +22,7 @@
 | --- | --- | --- | --- |
 | NPB-01 | `fallbackMode` 语义彻底收敛 | 产品、路线图、实现、UI 容易把 `fallbackMode`、same-request rescue、next-request reselection 混为一谈 | 固化统一术语、配置命名草案、UI 文案和 release summary 对照表 |
 | NPB-02 | 高级显式 LAN 模式合同 | 已确认“可以有，但不能是默认”，仍缺正式 release 级边界 | 独立合同：开启条件、风险提示、可绑定范围、回滚、验收和 hotspot review |
-| NPB-03 | 性能基线报告 | 性能计划已有阈值，但缺真实样本和阶段性报告 | `reports/` 下的启动、轮询、切换、刷新、大号池排序基线与复测报告 |
+| NPB-03 | 性能基线报告 | 已补首份 isolated synthetic `M/L` 基线；仍缺 app-safe/live 真实交互样本和阶段性复测 | `reports/` 下的启动、轮询、切换、刷新、大号池排序基线与复测报告 |
 | NPB-04 | Release acceptance summary | `docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md` 已补齐总表；剩余工作是随新报告持续同步 U10/高风险 live evidence | 把 release 读表保持成“当前证据总入口”，而不是一次性文档 |
 | NPB-05 | Windows-first / cross-platform 发布语义 | release summary 已明确 Windows 一级体验、macOS/Linux 兼容级口径；剩余工作只在未来非 Windows 也要承担同权 release 时展开 | 若未来要发布 macOS/Linux 一级体验，再补独立 acceptance 与打包语义 |
 | NPB-06 | UI smoke 自动化 | preview/default 与 wakeup/reset UI 已由 browser-preview 覆盖，仍缺 live Tauri/tray 等高风险交互自动化 | 聚焦高风险 live UI smoke：tray、系统通知、live continuity 提示 |

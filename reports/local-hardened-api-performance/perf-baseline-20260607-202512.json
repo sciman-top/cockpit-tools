@@ -1,0 +1,75 @@
+{
+  "dataRoot": "C:\\Users\\sciman\\AppData\\Local\\Temp\\cockpit-local-access-performance-baseline-34676-b155bb06-61e6-4579-8862-0135b706f837",
+  "deviceClass": "isolated_test_root",
+  "generatedAt": "2026-06-07T12:25:12.277667200+00:00",
+  "notes": [
+    "Synthetic isolated baseline; safe for CI/local repeat without touching live Cockpit/Codex runtime.",
+    "Covers state_light, state_full, and selector sorting. Live tray/system-notification/runtime-switch UX latency still needs separate app-safe evidence."
+  ],
+  "reportKind": "isolated_local_access_performance_baseline",
+  "schemaVersion": 1,
+  "tiers": [
+    {
+      "accountCount": 50,
+      "metrics": {
+        "selectorSortMs": {
+          "maxMs": 10.837,
+          "p50Ms": 8.889,
+          "p95Ms": 9.986,
+          "sampleCount": 25
+        },
+        "stateFullMs": {
+          "maxMs": 17.412,
+          "p50Ms": 15.255,
+          "p95Ms": 17.289,
+          "sampleCount": 25
+        },
+        "stateLightMs": {
+          "maxMs": 4.305,
+          "p50Ms": 3.635,
+          "p95Ms": 4.302,
+          "sampleCount": 25
+        }
+      },
+      "sampleCount": 25,
+      "targets": {
+        "selectorSortP95MaxMs": 80,
+        "stateFullP95MaxMs": 800,
+        "stateLightP95MaxMs": 150
+      },
+      "tier": "M",
+      "warmupCount": 5
+    },
+    {
+      "accountCount": 200,
+      "metrics": {
+        "selectorSortMs": {
+          "maxMs": 61.734,
+          "p50Ms": 36.829,
+          "p95Ms": 58.278,
+          "sampleCount": 25
+        },
+        "stateFullMs": {
+          "maxMs": 98.419,
+          "p50Ms": 51.391,
+          "p95Ms": 94.315,
+          "sampleCount": 25
+        },
+        "stateLightMs": {
+          "maxMs": 12.733,
+          "p50Ms": 10.964,
+          "p95Ms": 12.484,
+          "sampleCount": 25
+        }
+      },
+      "sampleCount": 25,
+      "targets": {
+        "selectorSortP95MaxMs": 150,
+        "stateFullP95MaxMs": 1500,
+        "stateLightP95MaxMs": 300
+      },
+      "tier": "L",
+      "warmupCount": 5
+    }
+  ]
+}

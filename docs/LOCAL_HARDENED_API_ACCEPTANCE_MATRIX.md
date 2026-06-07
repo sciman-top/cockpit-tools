@@ -1,7 +1,7 @@
 # Local Hardened API Acceptance Matrix
 
 状态：active
-更新时间：2026-06-06
+更新时间：2026-06-07
 
 ## 1. 目的
 
@@ -28,7 +28,7 @@
 | U7 | Hard-affinity 不跨账号续接 | 请求带 `previous_response_id` 或 `x-codex-turn-state` | 原账号触发 quota/cooldown | 只允许原账号短等待或显式 terminal error；无跨账号复用旧 continuation | `fallback_blocked` 后被标记 pass；跨账号复用旧 `previous_response_id` | continuity script + focused Rust tests |
 | U8 | 默认低风控姿态 | balanced/self-use preset | 连续触发多次请求、刷新和状态读取 | 无高频 live probe；无全池扫射；refresh 不批量探测 OAuth 池 | 自动 2 分钟高频刷新；新账号因 100% 周额度强行压过已恢复老账号 | preset + refresh guard tests |
 | U9 | 可解释的账号选择 | selector audit 已启用 | 发起多次 admission | audit 能解释 selected/skipped/cap reasons；UI 能看懂 blocked reason | 只有最终 hash，没有原因；日志混入完整邮箱/账号 ID | selector tests + browser-preview modal smoke |
-| U10 | 性能不拖慢主流程 | telemetry/lightweight state 已启用 | 打开 modal、轮询、切换、刷新 | 达到性能计划阈值；无明显 UI 卡死 | full state 轮询拖死 UI；同模式切换仍全量 materialize | `docs/LOCAL_HARDENED_API_PERFORMANCE_PLAN.md` 对应测量 |
+| U10 | 性能不拖慢主流程 | telemetry/lightweight state 已启用 | 打开 modal、轮询、切换、刷新 | 达到性能计划阈值；无明显 UI 卡死 | full state 轮询拖死 UI；同模式切换仍全量 materialize | `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/measure-local-hardened-api-performance.ps1` |
 
 ## 4. 场景到脚本/门禁映射
 
@@ -67,6 +67,6 @@ node scripts/release/preflight.cjs --skip-typecheck --skip-build --skip-cargo --
 
 ## 6. 当前缺口
 
-1. U10 的性能阈值刚补齐，需要用真实基线报告验证。
+1. U10 已有首份 isolated synthetic `M/L` 基线报告；剩余缺口是 tray / 系统通知 / runtime switch / modal 首次打开 的 app-safe 真实交互基线。
 2. U3、U9 与 wakeup/reset 的 preview/default UI 已可通过 browser-preview + AI 审查覆盖，包含 modal 与首页 inline card explainability；剩余缺口集中在 live Tauri/tray 等高风险交互自动化。
-3. U10 的性能阈值和阶段性复测报告仍未形成正式 `M/L` 基线证据，这是当前 release 读表里最清晰的剩余缺口之一。
+3. U10 后续仍需阶段性复测，并把新增 live/app-safe 结果继续同步回 release 读表，而不是停留在单次 synthetic 报告。

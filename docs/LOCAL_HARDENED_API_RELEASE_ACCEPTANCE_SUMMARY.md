@@ -70,7 +70,7 @@ git diff --check
 | U7 | Hard-affinity 不跨账号续接 | hard-affinity focused tests + acceptance/monitor 脚本 | `previous_response_id_*` / `hard_affinity_*` focused tests | `previous_response_id` 或 `x-codex-turn-state` continuation 被静默切到新账号 |
 | U8 | 默认低风控姿态 | preflight risk guard + refresh guard + preset review | `scripts/test-local-hardened-api-live-risk-guard.ps1` / `scripts/test-refresh-risk-guard.cjs` | 高频 live probe、默认 2 分钟刷新、批量 OAuth 池探测、扩大真实上游消耗 |
 | U9 | 可解释的账号选择 | browser-preview explainability smoke + selector tests | `reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md` | UI 只剩结果没有理由；日志或 UI 暴露完整邮箱、key、账号 ID |
-| U10 | 性能不拖慢主流程 | 性能专项计划中的 baseline/report；至少给出 `M` 档基线 | `docs/LOCAL_HARDENED_API_PERFORMANCE_PLAN.md` + 后续 `reports/` 基线报告 | lightweight polling、启动、切换或刷新在 `M` 档明显超阈值，导致主路径卡顿 |
+| U10 | 性能不拖慢主流程 | 性能专项计划中的 baseline/report；当前至少要有 isolated `M` 档基线，并持续补 app-safe/live 基线 | `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/measure-local-hardened-api-performance.ps1` + `docs/LOCAL_HARDENED_API_PERFORMANCE_PLAN.md` + `reports/local-hardened-api-performance/` | lightweight polling、启动、切换或刷新在 `M` 档明显超阈值，导致主路径卡顿 |
 
 ## 5. 当前可复用证据入口
 
@@ -103,6 +103,14 @@ git diff --check
 
 这些历史文件主要用于说明 acceptance/realrun 的证据形态；是否可以直接复用，仍要看本轮改动影响面。
 
+### 5.5 性能基线入口
+
+- `scripts/measure-local-hardened-api-performance.ps1`
+- `reports/local-hardened-api-performance/perf-baseline-20260607-202512.md`
+- `reports/local-hardened-api-performance/perf-baseline-20260607-202512.json`
+
+当前已形成 `U10 / NPB-03` 的首份 isolated synthetic `M/L` 基线；剩余缺口是 live tray / 系统通知 / runtime switch / modal 首次打开等 app-safe 真实交互证据。
+
 ## 6. 阻断规则
 
 以下任一命中，都应视为 release blocker，而不是“还有点小问题”：
@@ -130,5 +138,6 @@ git diff --check
 
 - U3 / U9 / wakeup-reset 默认 UI 已有 browser-preview + AI 审查证据。
 - U5 的 Windows-first / 自用版发布语义已可以通过本文件、`docs/SELF_USE_DELTA.md` 和 preflight/hotspot review 统一判定。
-- U10 仍缺正式性能 baseline/report，这是当前最清晰的 release evidence 缺口之一。
+- U10 已补首份 isolated synthetic baseline/report，当前指标在 `M/L` 档均低于阈值。
 - live Tauri tray / 系统通知 / live continuity 仍属高风险场景，不能被 browser-preview 假装覆盖，只能继续走 app-safe probe 或显式 live acceptance。
+- U10 剩余缺口已从“完全缺 baseline”收敛为“仍缺 live / app-safe 真实交互基线”，这仍需要后续补证据，但不再是零起点。

@@ -24747,11 +24747,13 @@ mod tests {
         build_effective_local_access_account_ids,
         build_effective_local_access_account_ids_from_registry, build_health_summary_from_registry,
         build_health_summary_from_registry_for_accounts, build_images_api_payload,
-        build_local_models_response, build_ordered_account_ids, build_pool_unavailable_message,
+        build_light_state_snapshot, build_local_models_response, build_ordered_account_ids,
+        build_pool_unavailable_message,
         parse_blocked_insight_from_audit_event, parse_selector_insight_from_audit_event,
         build_projection_seed_local_access_account_ids, build_proxy_dispatch_error_body,
         build_request_routing_hint, build_responses_upstream_stream_error_sse,
         build_routing_pool_account_ids, build_runtime_account, build_runtime_mode_state,
+        build_state_snapshot_inner,
         build_selector_audit_summary, build_upstream_http_client, build_upstream_websocket_url,
         cache_prepared_account, calculate_usage_cost_usd, canonical_model_for_client_model,
         classified_audit_detail, classify_active_stream_terminal_error, classify_codex_api_failure,
@@ -24791,7 +24793,7 @@ mod tests {
         reset_local_api_backpressure_for_tests, resolve_plan_rank, resolve_supported_model_alias,
         resolve_upstream_target, restore_config_toml_from_takeover_backup,
         retry_failover_account_attempt_limit, retry_failover_max_retries, save_collection_to_disk,
-        save_health_registry_to_path, save_local_access_accounts, selector_audit_detail,
+        save_health_registry_to_disk, save_health_registry_to_path, save_local_access_accounts, selector_audit_detail,
         selector_selected_reason, set_runtime_integration_mode,
         should_block_codex_auth_projection_change, should_block_direct_projection_change,
         should_block_runtime_projection_change, should_defer_pool_unavailable,
@@ -24809,9 +24811,10 @@ mod tests {
         websocket_connect_error_from_http_response, write_local_access_profile_takeover,
         AccountQuotaSortHint, ActiveStreamTerminal, AuditContext, AuditTrailStatus,
         CachedHealthSummary, CodexLocalAccessErrorScope, CodexLocalAccessErrorType,
-        GatewayResponseAdapter, LocalApiBackpressureState, OfficialCodexStickyRoutingBoundary,
-        ParsedRequest, ProxyDispatchError, ResolvedLocalApiKey, ResponseUsageCollector,
-        RoutingCandidate, RuntimeProjectionContinuityRisk, SidecarUsageDetails, SidecarUsageEvent,
+        GatewayResponseAdapter, GatewayRuntime, LocalApiBackpressureState,
+        OfficialCodexStickyRoutingBoundary, ParsedRequest, ProxyDispatchError,
+        ResolvedLocalApiKey, ResponseUsageCollector, RoutingCandidate, RuntimeAccountHealth,
+        RuntimeProjectionContinuityRisk, SidecarUsageDetails, SidecarUsageEvent,
         StreamWriteState, UpstreamHttpClientSignature, UpstreamProxySource, UsageCapture,
         CODEX_AUTO_REVIEW_MODEL_ID, CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID,
         CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID, CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME,
@@ -24825,12 +24828,15 @@ mod tests {
     };
     use crate::models::codex_local_access::{
         CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
+        CodexLocalAccessAccountStats, CodexLocalAccessApiKeyStats,
         CodexLocalAccessAccountModelRule, CodexLocalAccessClientBaseUrlHost,
         CodexLocalAccessCollection, CodexLocalAccessCustomRoutingRule, CodexLocalAccessGatewayMode,
         CodexLocalAccessHealthSummary, CodexLocalAccessImageGenerationMode,
-        CodexLocalAccessModelCooldown, CodexLocalAccessRequestKind,
+        CodexLocalAccessHealthRegistry, CodexLocalAccessModelCooldown,
+        CodexLocalAccessModelStats, CodexLocalAccessRequestKind,
         CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessStats,
-        CodexLocalAccessTimeouts, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
+        CodexLocalAccessStatsWindow, CodexLocalAccessTimeouts, CodexLocalAccessUsageEvent,
+        CodexLocalAccessUsageStats, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
         CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
     };
     use crate::models::{
@@ -24845,6 +24851,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::LazyLock;
+    use std::time::Instant;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::{oneshot, Mutex as TokioMutex};
@@ -24896,6 +24903,262 @@ mod tests {
         collection.restrict_free_accounts = true;
         collection.account_ids = account_ids;
         collection
+    }
+
+    fn percentile_index(sample_count: usize, numerator: usize, denominator: usize) -> usize {
+        if sample_count == 0 {
+            return 0;
+        }
+        let rank = (sample_count * numerator).div_ceil(denominator);
+        rank.saturating_sub(1).min(sample_count.saturating_sub(1))
+    }
+
+    fn summarize_duration_samples(samples: &[u128]) -> Value {
+        let mut sorted = samples.to_vec();
+        sorted.sort_unstable();
+        let len = sorted.len();
+        let p50 = sorted
+            .get(percentile_index(len, 50, 100))
+            .copied()
+            .unwrap_or_default();
+        let p95 = sorted
+            .get(percentile_index(len, 95, 100))
+            .copied()
+            .unwrap_or_default();
+        let max = sorted.last().copied().unwrap_or_default();
+        json!({
+            "sampleCount": len,
+            "p50Ms": ((p50 as f64) / 1000.0),
+            "p95Ms": ((p95 as f64) / 1000.0),
+            "maxMs": ((max as f64) / 1000.0),
+        })
+    }
+
+    fn measure_duration_samples<F>(warmup_count: usize, sample_count: usize, mut task: F) -> Vec<u128>
+    where
+        F: FnMut(),
+    {
+        for _ in 0..warmup_count {
+            task();
+        }
+        let mut samples = Vec::with_capacity(sample_count);
+        for _ in 0..sample_count {
+            let started = Instant::now();
+            task();
+            samples.push(started.elapsed().as_micros());
+        }
+        samples
+    }
+
+    fn synthetic_usage_stats(request_count: u64, latency_ms: u64) -> CodexLocalAccessUsageStats {
+        CodexLocalAccessUsageStats {
+            request_count,
+            success_count: request_count.saturating_sub(1),
+            failure_count: 1,
+            total_latency_ms: latency_ms,
+            text_request_count: request_count,
+            total_tokens: request_count.saturating_mul(2_048),
+            input_tokens: request_count.saturating_mul(1_024),
+            output_tokens: request_count.saturating_mul(1_024),
+            ..CodexLocalAccessUsageStats::default()
+        }
+    }
+
+    fn synthetic_stats_window(
+        since: i64,
+        updated_at: i64,
+        accounts: &[CodexLocalAccessAccountStats],
+    ) -> CodexLocalAccessStatsWindow {
+        CodexLocalAccessStatsWindow {
+            since,
+            updated_at,
+            totals: synthetic_usage_stats(accounts.len() as u64 * 3, accounts.len() as u64 * 120),
+            accounts: accounts.to_vec(),
+            models: vec![CodexLocalAccessModelStats {
+                model_id: "gpt-5.5".to_string(),
+                usage: synthetic_usage_stats(accounts.len() as u64 * 2, accounts.len() as u64 * 90),
+                updated_at,
+            }],
+            api_keys: vec![CodexLocalAccessApiKeyStats {
+                api_key_id: "local-api-key".to_string(),
+                label: "Local API Key".to_string(),
+                usage: synthetic_usage_stats(accounts.len() as u64 * 3, accounts.len() as u64 * 120),
+                updated_at,
+            }],
+        }
+    }
+
+    fn build_synthetic_stats(
+        account_ids: &[String],
+        account_count: usize,
+        now: i64,
+    ) -> CodexLocalAccessStats {
+        let accounts = account_ids
+            .iter()
+            .enumerate()
+            .map(|(index, account_id)| CodexLocalAccessAccountStats {
+                account_id: account_id.clone(),
+                email: format!("perf-{:03}@example.com", index),
+                usage: synthetic_usage_stats(8 + (index % 5) as u64, 400 + (index % 11) as u64 * 17),
+                updated_at: now - index as i64 * 250,
+            })
+            .collect::<Vec<_>>();
+        let events = (0..account_count.min(100))
+            .map(|index| CodexLocalAccessUsageEvent {
+                timestamp: now - index as i64 * 1_000,
+                request_id: format!("perf-request-{:03}", index),
+                account_id: account_ids[index % account_ids.len()].clone(),
+                email: format!("perf-{:03}@example.com", index % account_ids.len()),
+                api_key_id: "local-api-key".to_string(),
+                api_key_label: "Local API Key".to_string(),
+                model_id: if index % 7 == 0 {
+                    "gpt-5.5-codex".to_string()
+                } else {
+                    "gpt-5.5".to_string()
+                },
+                gateway_mode: Some(CodexLocalAccessGatewayMode::Sidecar),
+                request_kind: CodexLocalAccessRequestKind::Text,
+                success: index % 9 != 0,
+                http_status: Some(if index % 9 == 0 { 429 } else { 200 }),
+                error_category: if index % 9 == 0 {
+                    "usage_limit_reached".to_string()
+                } else {
+                    String::new()
+                },
+                error_message: if index % 9 == 0 {
+                    "quota cooldown".to_string()
+                } else {
+                    String::new()
+                },
+                latency_ms: 120 + (index % 17) as u64 * 9,
+                total_tokens: 2_048,
+                input_tokens: 1_024,
+                output_tokens: 1_024,
+                ..CodexLocalAccessUsageEvent::default()
+            })
+            .collect::<Vec<_>>();
+
+        CodexLocalAccessStats {
+            since: now - 86_400_000,
+            updated_at: now,
+            totals: synthetic_usage_stats(account_count as u64 * 8, account_count as u64 * 420),
+            daily: synthetic_stats_window(now - 86_400_000, now, &accounts),
+            weekly: synthetic_stats_window(now - 7 * 86_400_000, now, &accounts),
+            monthly: synthetic_stats_window(now - 30 * 86_400_000, now, &accounts),
+            accounts,
+            models: vec![CodexLocalAccessModelStats {
+                model_id: "gpt-5.5".to_string(),
+                usage: synthetic_usage_stats(account_count as u64 * 8, account_count as u64 * 420),
+                updated_at: now,
+            }],
+            api_keys: vec![CodexLocalAccessApiKeyStats {
+                api_key_id: "local-api-key".to_string(),
+                label: "Local API Key".to_string(),
+                usage: synthetic_usage_stats(account_count as u64 * 8, account_count as u64 * 420),
+                updated_at: now,
+            }],
+            events,
+        }
+    }
+
+    fn build_synthetic_health_registry(
+        account_ids: &[String],
+        now: i64,
+    ) -> CodexLocalAccessHealthRegistry {
+        let mut registry = empty_health_registry(now);
+        for (index, account_id) in account_ids.iter().enumerate() {
+            let status = if index % 10 == 0 {
+                CodexLocalAccessAccountHealthStatus::CoolingDown
+            } else if index % 15 == 0 {
+                CodexLocalAccessAccountHealthStatus::ManualRequired
+            } else if index % 18 == 0 {
+                CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+            } else {
+                CodexLocalAccessAccountHealthStatus::Healthy
+            };
+            let cooldown_until_ms = (status == CodexLocalAccessAccountHealthStatus::CoolingDown)
+                .then_some(now + 120_000 + index as i64 * 100);
+            registry.accounts.insert(
+                account_id.clone(),
+                CodexLocalAccessAccountHealth {
+                    status,
+                    cooldown_until_ms,
+                    estimated_reset_at_ms: cooldown_until_ms,
+                    estimated_remaining_percentage: Some(if status
+                        == CodexLocalAccessAccountHealthStatus::EstimatedAvailable
+                    {
+                        65
+                    } else {
+                        100
+                    }),
+                    last_observed_remaining_percentage: Some(80),
+                    last_selected_at_ms: Some(now - index as i64 * 1_000),
+                    last_success_at_ms: Some(now - index as i64 * 1_000),
+                    api_service_success_count: (index % 7) as u64 + 1,
+                    manual_required: status == CodexLocalAccessAccountHealthStatus::ManualRequired,
+                    updated_at: now - index as i64 * 100,
+                    ..CodexLocalAccessAccountHealth::default()
+                },
+            );
+        }
+        registry
+    }
+
+    fn build_synthetic_runtime_account_health(
+        account_ids: &[String],
+        now: i64,
+    ) -> HashMap<String, RuntimeAccountHealth> {
+        account_ids
+            .iter()
+            .enumerate()
+            .map(|(index, account_id)| {
+                (
+                    account_id.clone(),
+                    RuntimeAccountHealth {
+                        email: format!("perf-{:03}@example.com", index),
+                        consecutive_failures: if index % 10 == 0 { 1 } else { 0 },
+                        last_success_at: Some(now - index as i64 * 1_000),
+                        last_failure_at: (index % 10 == 0).then_some(now - index as i64 * 500),
+                        last_failure_status: (index % 10 == 0).then_some(429),
+                        last_failure_category: (index % 10 == 0)
+                            .then_some("usage_limit_reached".to_string()),
+                        last_failure_message: (index % 10 == 0)
+                            .then_some("quota cooldown".to_string()),
+                        image_generation_status: super::CodexLocalAccessImageGenerationStatus::Available,
+                        image_generation_checked_at: Some(now - index as i64 * 500),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn build_synthetic_perf_runtime(
+        account_count: usize,
+        now: i64,
+    ) -> (GatewayRuntime, CodexLocalAccessCollection) {
+        let account_ids = (0..account_count)
+            .map(|index| format!("perf-account-{:03}", index))
+            .collect::<Vec<_>>();
+        let mut collection = default_test_collection();
+        collection.enabled = true;
+        collection.port = 14998;
+        collection.api_key = "agt_codex_perf_test".to_string();
+        collection.gateway_mode = CodexLocalAccessGatewayMode::Sidecar;
+        collection.account_ids = account_ids.clone();
+        collection.updated_at = now;
+        collection.created_at = now - 3_600_000;
+
+        let runtime = GatewayRuntime {
+            loaded: true,
+            collection: Some(collection.clone()),
+            stats: build_synthetic_stats(&account_ids, account_count, now),
+            account_health: build_synthetic_runtime_account_health(&account_ids, now),
+            running: true,
+            actual_port: Some(collection.port),
+            actual_bind_host: Some(super::CODEX_LOCAL_ACCESS_BIND_HOST.to_string()),
+            ..GatewayRuntime::default()
+        };
+        (runtime, collection)
     }
 
     #[test]
@@ -25187,6 +25450,80 @@ mod tests {
             outcome: Some("test".to_string()),
             detail: BTreeMap::new(),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[ignore = "manual synthetic performance baseline generator"]
+    async fn isolated_local_access_performance_baseline_emits_json() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let env = IsolatedLocalAccessEnv::new("cockpit-local-access-performance-baseline");
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let now = now_ms();
+        let warmup_count = 5usize;
+        let sample_count = 25usize;
+        let tiers = [("M", 50usize), ("L", 200usize)]
+            .into_iter()
+            .map(|(tier, account_count)| {
+                let (runtime, collection) = build_synthetic_perf_runtime(account_count, now);
+                let registry = build_synthetic_health_registry(&collection.account_ids, now);
+                save_health_registry_to_disk(&registry)
+                    .expect("synthetic health registry should be written");
+
+                let light_samples = measure_duration_samples(warmup_count, sample_count, || {
+                    let _ = build_light_state_snapshot(&runtime, None);
+                });
+                let full_samples = measure_duration_samples(warmup_count, sample_count, || {
+                    let _ = build_state_snapshot_inner(&runtime, true, None);
+                });
+                let selector_samples = measure_duration_samples(warmup_count, sample_count, || {
+                    let _ = build_effective_local_access_account_ids_from_registry(
+                        &collection,
+                        &registry,
+                        now,
+                    );
+                });
+
+                json!({
+                    "tier": tier,
+                    "accountCount": account_count,
+                    "warmupCount": warmup_count,
+                    "sampleCount": sample_count,
+                    "metrics": {
+                        "stateLightMs": summarize_duration_samples(&light_samples),
+                        "stateFullMs": summarize_duration_samples(&full_samples),
+                        "selectorSortMs": summarize_duration_samples(&selector_samples),
+                    },
+                    "targets": {
+                        "stateLightP95MaxMs": if tier == "M" { 150 } else { 300 },
+                        "stateFullP95MaxMs": if tier == "M" { 800 } else { 1500 },
+                        "selectorSortP95MaxMs": if tier == "M" { 80 } else { 150 },
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let report = json!({
+            "schemaVersion": 1,
+            "generatedAt": chrono::Utc::now().to_rfc3339(),
+            "reportKind": "isolated_local_access_performance_baseline",
+            "deviceClass": "isolated_test_root",
+            "notes": [
+                "Synthetic isolated baseline; safe for CI/local repeat without touching live Cockpit/Codex runtime.",
+                "Covers state_light, state_full, and selector sorting. Live tray/system-notification/runtime-switch UX latency still needs separate app-safe evidence."
+            ],
+            "tiers": tiers,
+            "dataRoot": env.root,
+        });
+
+        println!("PERF_BASELINE_JSON_START");
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("serialize perf baseline report")
+        );
+        println!("PERF_BASELINE_JSON_END");
     }
 
     #[test]
