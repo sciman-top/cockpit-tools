@@ -260,19 +260,21 @@ fallback continuity 验收只使用当前 API service 号池中已经手动添�
 
 - 启动 `npm run preview -- --host 127.0.0.1 --port 4173`
 - 通过 `localStorage` 注入 `agtools.codex.accounts.cache`、`agtools.codex.accounts.current`、
-  `agtools.codex.local_access.state.preview`
+  `agtools.codex.local_access.state.preview`、`agtools.codex.wakeup.overview.preview`
 - 由浏览器自动导航到 `codex-api-service` / `codex` 页面，核对默认文案、health panel、
-  selector reason、blocked reason、recover action 和 DOM 脱敏状态
+  selector reason、blocked reason、recover action、wakeup/reset 风险提示和 DOM 脱敏状态
 
 当前证据见
-`reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md`。
+`reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md` 和
+`reports/local-hardened-api-smoke/browser-preview-wakeup-ui-smoke-20260607.md`。
 它已覆盖：
 
 - API service key / client key 的 `<code title>` 不暴露完整密钥
 - hardened 默认文案保持 `仅本机 / 127.0.0.1`
 - local access modal 可见 `最近调度`、`当前阻断`、`恢复动作`、`建议等待` 等聚合解释
+- Codex wakeup 任务卡、quota reset 低频提示、reset window 说明、startup 延迟预览和完整邮箱/title 脱敏
 
-该路径只替代低风险 preview/default UI 验收，不替代 live Tauri、tray、wakeup、
+该路径只替代低风险 preview/default UI 验收，不替代 live Tauri、tray、
 release exe、Codex App 连续性或真实 upstream 风险场景。
 
 ## Live Codex App 手动实跑旁路监测

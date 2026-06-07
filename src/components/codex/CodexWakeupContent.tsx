@@ -54,11 +54,7 @@ import {
   MultiSelectFilterDropdown,
   type MultiSelectFilterOption,
 } from '../MultiSelectFilterDropdown';
-import {
-  isPrivacyModeEnabledByDefault,
-  maskSensitiveValue,
-  PRIVACY_MODE_CHANGED_EVENT,
-} from '../../utils/privacy';
+import { maskSensitiveValue } from '../../utils/privacy';
 import { sortCodexLocalAccessAccountsForScheduling } from '../../utils/codexAccountSort';
 
 interface CodexWakeupGeneralConfig {
@@ -1056,39 +1052,14 @@ export function CodexWakeupContent({
       modelReasoningEffort: resolvedModelSelection.modelReasoningEffort,
     };
   }, [defaultModelPreset, resolvedModelSelection]);
-  const [privacyModeEnabled, setPrivacyModeEnabled] = useState<boolean>(() =>
-    isPrivacyModeEnabledByDefault(),
-  );
   const maskAccountText = useCallback(
-    (value?: string | null) => maskSensitiveValue(value, privacyModeEnabled),
-    [privacyModeEnabled],
+    (value?: string | null) => maskSensitiveValue(value, true),
+    [],
   );
 
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
-
-  useEffect(() => {
-    const syncPrivacyMode = () => {
-      setPrivacyModeEnabled(isPrivacyModeEnabledByDefault());
-    };
-
-    const handlePrivacyModeChanged = (event: Event) => {
-      const detail = (event as CustomEvent<boolean>).detail;
-      if (typeof detail === 'boolean') {
-        setPrivacyModeEnabled(detail);
-      } else {
-        syncPrivacyMode();
-      }
-    };
-
-    window.addEventListener(PRIVACY_MODE_CHANGED_EVENT, handlePrivacyModeChanged as EventListener);
-    window.addEventListener('focus', syncPrivacyMode);
-    return () => {
-      window.removeEventListener(PRIVACY_MODE_CHANGED_EVENT, handlePrivacyModeChanged as EventListener);
-      window.removeEventListener('focus', syncPrivacyMode);
-    };
-  }, []);
 
   useEffect(() => {
     if (error) {

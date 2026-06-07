@@ -56,6 +56,89 @@ function readBrowserPreviewLocalAccessState(): ReturnType<
   );
 }
 
+function buildBrowserPreviewCodexWakeupRuntime() {
+  return {
+    available: true,
+    binaryPath: 'browser-preview-codex',
+    configuredCodexCliPath: null,
+    configuredNodePath: null,
+    version: 'browser-preview',
+    source: 'browser-preview',
+    message: 'Browser preview runtime',
+    requiredRuntimePaths: [],
+    checkedAt: Date.now(),
+    installHints: [],
+  };
+}
+
+function buildBrowserPreviewCodexWakeupState() {
+  const now = Date.now();
+  return {
+    enabled: false,
+    tasks: [
+      {
+        id: 'preview-quota-reset',
+        name: 'Browser Preview Quota Reset',
+        enabled: false,
+        accountIds: ['preview-codex-oauth'],
+        prompt: 'hello from browser preview',
+        model: 'gpt-5.3-codex',
+        modelDisplayName: 'GPT-5.3 Codex',
+        modelReasoningEffort: 'medium',
+        schedule: {
+          kind: 'quota_reset',
+          quotaResetWindow: 'either',
+        },
+        executionMode: 'confirm',
+        confirmTimeoutMinutes: 5,
+        createdAt: now - 60_000,
+        updatedAt: now - 30_000,
+        nextRunAt: null,
+      },
+      {
+        id: 'preview-startup-delayed',
+        name: 'Browser Preview Startup Wakeup',
+        enabled: false,
+        accountIds: ['preview-codex-oauth'],
+        prompt: 'hello from browser preview',
+        model: 'gpt-5.3-codex',
+        modelDisplayName: 'GPT-5.3 Codex',
+        modelReasoningEffort: 'medium',
+        schedule: {
+          kind: 'startup',
+          startupDelayMinutes: 10,
+        },
+        executionMode: 'confirm',
+        confirmTimeoutMinutes: 5,
+        createdAt: now - 50_000,
+        updatedAt: now - 20_000,
+        nextRunAt: null,
+      },
+    ],
+    modelPresets: [
+      {
+        id: 'preview-gpt-5-3-codex',
+        name: 'GPT-5.3 Codex',
+        model: 'gpt-5.3-codex',
+        allowedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+        defaultReasoningEffort: 'medium',
+      },
+    ],
+    modelPresetMigrations: [],
+  };
+}
+
+function readBrowserPreviewCodexWakeupOverview() {
+  return readBrowserPreviewJson(
+    'agtools.codex.wakeup.overview.preview',
+    {
+      runtime: buildBrowserPreviewCodexWakeupRuntime(),
+      state: buildBrowserPreviewCodexWakeupState(),
+      history: [],
+    },
+  );
+}
+
 function findBrowserPreviewCodexAccount(args: unknown): unknown {
   const accountId =
     args && typeof args === 'object' && 'accountId' in args
@@ -197,9 +280,21 @@ async function browserPreviewInvoke(
       theme: 'light',
       ui_scale: 1,
       auto_start: false,
+      auto_refresh_minutes: 0,
+      codex_auto_refresh_minutes: 0,
       minimize_to_tray: false,
       close_to_tray: false,
+      close_behavior: 'ask',
+      opencode_app_path: '',
+      antigravity_app_path: '',
+      codex_app_path: '',
+      vscode_app_path: '',
+      opencode_sync_on_switch: false,
+      codex_launch_on_switch: true,
     };
+  }
+  if (command === 'save_general_config' || command === 'wakeup_sync_state') {
+    return null;
   }
   if (command === 'check_version_jump') {
     return null;
@@ -260,6 +355,48 @@ async function browserPreviewInvoke(
       speed: 'standard',
       globalStatePath: 'browser-preview',
     };
+  }
+  if (command === 'codex_wakeup_get_cli_status') {
+    return readBrowserPreviewCodexWakeupOverview().runtime;
+  }
+  if (command === 'codex_wakeup_update_runtime_config') {
+    return readBrowserPreviewCodexWakeupOverview().runtime;
+  }
+  if (command === 'codex_wakeup_get_overview') {
+    return readBrowserPreviewCodexWakeupOverview();
+  }
+  if (command === 'codex_wakeup_get_state') {
+    return readBrowserPreviewCodexWakeupOverview().state;
+  }
+  if (command === 'codex_wakeup_load_history') {
+    return readBrowserPreviewCodexWakeupOverview().history;
+  }
+  if (command === 'codex_wakeup_save_state') {
+    return {
+      enabled:
+        args && typeof args === 'object' && 'enabled' in args
+          ? Boolean((args as { enabled?: unknown }).enabled)
+          : false,
+      tasks:
+        args && typeof args === 'object' && 'tasks' in args
+          ? ((args as { tasks?: unknown[] }).tasks ?? [])
+          : [],
+      modelPresets:
+        args && typeof args === 'object' && 'modelPresets' in args
+          ? ((args as { modelPresets?: unknown[] }).modelPresets ?? [])
+          : [],
+      modelPresetMigrations:
+        args && typeof args === 'object' && 'modelPresetMigrations' in args
+          ? ((args as { modelPresetMigrations?: unknown[] }).modelPresetMigrations ?? [])
+          : [],
+    };
+  }
+  if (
+    command === 'codex_wakeup_clear_history' ||
+    command === 'codex_wakeup_cancel_scope' ||
+    command === 'codex_wakeup_release_scope'
+  ) {
+    return null;
   }
   throw new Error(`[browser-preview] Tauri invoke unavailable: ${command}`);
 }

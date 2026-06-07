@@ -68,5 +68,5 @@ node scripts/release/preflight.cjs --skip-typecheck --skip-build --skip-cargo --
 ## 6. 当前缺口
 
 1. U10 的性能阈值刚补齐，需要用真实基线报告验证。
-2. U3、U9 的 preview/default UI 已可通过 browser-preview + AI 审查覆盖；剩余缺口集中在 live Tauri/tray/wakeup 等高风险交互自动化。
+2. U3、U9 与 wakeup/reset 的 preview/default UI 已可通过 browser-preview + AI 审查覆盖；剩余缺口集中在 live Tauri/tray 等高风险交互自动化。
 3. U5 的 Windows-first 发布语义仍需与正式 release 说明完全对齐。

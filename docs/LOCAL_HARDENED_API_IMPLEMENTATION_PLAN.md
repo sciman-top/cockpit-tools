@@ -454,7 +454,7 @@ flowchart TD
 
 描述：hardened mode 下把配额刷新、quota reset wakeup、startup wakeup 统一纳入低频和显式 opt-in 规则。
 
-状态：2026-05-18 已完成首个前端策略切片：`useAutoRefresh` 不再因 quota reset wakeup 自动把全局刷新间隔改为 2 分钟；Codex 自动刷新不再读取 API service OAuth 账号池做批量探测，只保留 API key 类账号刷新，且超过 50 个目标时跳过；后台唤醒总开关开启前增加风险确认。后续仍需补 backend wakeup/reset 单测或 smoke。
+状态：2026-05-18 已完成首个前端策略切片：`useAutoRefresh` 不再因 quota reset wakeup 自动把全局刷新间隔改为 2 分钟；Codex 自动刷新不再读取 API service OAuth 账号池做批量探测，只保留 API key 类账号刷新，且超过 50 个目标时跳过；后台唤醒总开关开启前增加风险确认。2026-06-07 已补 browser-preview wakeup/reset UI smoke，剩余 live tray/Tauri 系统级验证单独处理。
 
 验收：
 
@@ -465,7 +465,7 @@ flowchart TD
 
 验证：
 
-- [ ] wakeup/reset 相关单测或轻量 smoke。
+- [x] browser preview + AI 审查：`reports/local-hardened-api-smoke/browser-preview-wakeup-ui-smoke-20260607.md` 已覆盖 Codex wakeup 任务卡、quota reset 低频提示、reset window 说明、startup 延迟预览和完整邮箱/title 脱敏。
 - [x] `npm run typecheck`
 
 可能文件：
