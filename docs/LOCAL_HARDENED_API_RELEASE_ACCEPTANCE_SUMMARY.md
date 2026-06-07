@@ -84,6 +84,16 @@ git diff --check
 
 ## 5. 当前可复用证据入口
 
+### 5.0 当前关键证据映射
+
+| 主题 | 当前首选入口 | 说明 |
+| --- | --- | --- |
+| `fallbackMode` / rescue / reselection | `docs/HARDENED_API_MASTER_PLAN.md`、本文件 `4.1` | 先看语义合同，再看 release 读法，避免把历史字段名误读成当前请求切号 |
+| 高级显式 LAN 模式 | `docs/LOCAL_HARDENED_API_ADVANCED_LAN_MODE_CONTRACT.md` | 所有 `accessScope = lan` 的开启条件、风险提示、回滚和 hotspot review 以此为准 |
+| recent audit 脱敏事件链 | `reports/local-hardened-api-smoke/recent-audit-ui-contract-20260607.md` | 证明 modal / inline card 已能直出脱敏最近事件，不必先翻审计文件 |
+| `request_id_source` / `session_affinity_source` 解释链 | `reports/local-hardened-api-smoke/session-affinity-observability-contract-20260607.md` | 证明软亲和/观测来源可见，但不升级成 hard-affinity |
+| `U10 / NPB-03` 性能基线 | `reports/local-hardened-api-performance/perf-baseline-20260607-202512.md`、`reports/local-hardened-api-performance/browser-preview-modal-baseline-20260607.md` | synthetic 与 app-safe browser-preview 两层证据分开看，不能互相冒充 |
+
 ### 5.1 低风险默认 UI / 浏览器证据
 
 - `reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md`
@@ -92,6 +102,9 @@ git diff --check
 - `reports/local-hardened-api-smoke/recent-audit-ui-contract-20260607.md`
   - 已覆盖 recent audit 脱敏事件摘要合同
   - 已确认默认视图保持聚合状态 + 最近事件，不展开账号级 health 细节
+- `reports/local-hardened-api-smoke/session-affinity-observability-contract-20260607.md`
+  - 已覆盖 `request_id_source` / `session_affinity_source` 的 explainability 合同
+  - 已确认 `X-Client-Request-Id` 仅作 thread-scoped observability，不升级成 hard-affinity
 - `reports/local-hardened-api-smoke/browser-preview-wakeup-ui-smoke-20260607.md`
   - 已覆盖 wakeup/reset 默认 UI、startup delay 预览和邮箱/title 脱敏
 
@@ -108,6 +121,7 @@ git diff --check
 - `scripts/test-refresh-risk-guard.cjs`
 - `docs/SELF_USE_DELTA.md`
 - `docs/UPSTREAM_SYNC_POLICY.md`
+- `docs/LOCAL_HARDENED_API_ADVANCED_LAN_MODE_CONTRACT.md`
 
 ### 5.4 历史 acceptance / smoke 示例
 
@@ -150,7 +164,10 @@ git diff --check
 
 截至 2026-06-07，当前 release 收口状态是：
 
+- `fallbackMode` / rescue / reselection 语义已在总控与本文件对照表中统一，不再需要依赖零散讨论记录理解当前行为。
+- 高级显式 LAN 模式已具备独立合同与风险提示入口；剩余缺口是未来真实启用时的 live acceptance，而不是继续补概念定义。
 - U3 / U9 / wakeup-reset 默认 UI 已有 browser-preview + AI 审查证据。
+- recent audit 脱敏事件链与 `request_id_source` / `session_affinity_source` explainability 已有单独报告，可直接作为发布验收读表入口的一部分。
 - U5 的 Windows-first / 自用版发布语义已可以通过本文件、`docs/SELF_USE_DELTA.md` 和 preflight/hotspot review 统一判定。
 - U10 已补首份 isolated synthetic baseline/report，当前指标在 `M/L` 档均低于阈值；另有 browser-preview app-safe modal 首开样本可证明默认前端路径无明显卡顿。
 - live Tauri tray / 系统通知 / runtime switch / live continuity 仍属高风险场景，不能被 browser-preview 假装覆盖，只能继续走 app-safe probe 或显式 live acceptance。
