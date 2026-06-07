@@ -748,6 +748,13 @@ impl GatewayResponseAdapter {
             Self::Images { .. } => "images_generations",
         }
     }
+
+    fn supports_non_stream_structured_error_fallback(&self) -> bool {
+        matches!(
+            self,
+            Self::ChatCompletions { stream: false, .. } | Self::Images { stream: false, .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -11376,6 +11383,8 @@ fn is_stream_incomplete_error_message(message: &str) -> bool {
         || lower.contains("closed before response.completed")
         || lower.contains("closed before response.done")
         || lower.contains("stream ended before completion")
+        || lower.contains("missing response.completed/response.done")
+        || lower.contains("未捕获 response.completed/response.done")
         || lower.contains("incomplete_eof")
 }
 
@@ -24492,6 +24501,8 @@ async fn handle_connection(
         }
     };
     let response_adapter_kind = response_adapter.audit_kind();
+    let response_supports_non_stream_structured_error_fallback =
+        response_adapter.supports_non_stream_structured_error_fallback();
     let request_kind = request_kind_from_adapter(&response_adapter);
     let stats_context = RequestStatsContext {
         request_kind,
@@ -24768,6 +24779,26 @@ async fn handle_connection(
                         } else {
                             StatusCode::BAD_GATEWAY.as_u16()
                         };
+                        if response_supports_non_stream_structured_error_fallback {
+                            return write_proxy_dispatch_error_response(
+                                &mut stream,
+                                &addr,
+                                &prepared_request,
+                                ProxyDispatchError {
+                                    status,
+                                    message: err.clone(),
+                                    account_id: Some(success.account_id.clone()),
+                                    account_email: Some(success.account_email.clone()),
+                                    error_category: Some(error_category.to_string()),
+                                    retry_after: None,
+                                    defer_until_pool_available: false,
+                                },
+                                latency_ms,
+                                None,
+                                &stats_context,
+                            )
+                            .await;
+                        }
                         log_codex_api_failure(
                             Some(&addr),
                             Some(&prepared_request),
@@ -28307,6 +28338,180 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             None => std::env::remove_var(super::CODEX_LOCAL_ACCESS_DATA_ROOT_ENV),
         }
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_completions_non_stream_returns_structured_error_instead_of_empty_disconnect() {
+        let _env_guard = lock_local_access_env_test_async().await;
+        let _backpressure_guard = lock_local_backpressure_test_async().await;
+        let env = IsolatedLocalAccessEnv::new("cockpit-local-access-chat-nonstream-error");
+
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
+
+        let upstream_listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("fake upstream should bind");
+        let upstream_addr = upstream_listener
+            .local_addr()
+            .expect("fake upstream should have addr");
+        let upstream_server = tokio::spawn(async move {
+            let (mut socket, _) = upstream_listener
+                .accept()
+                .await
+                .expect("fake upstream should accept");
+            let request_text =
+                read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
+                    .await;
+            assert!(
+                request_text.contains("POST /v1/responses"),
+                "chat/completions should be rewritten to /v1/responses: {}",
+                request_text
+            );
+            let partial_body = concat!(
+                "event: response.created\n",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_chat_partial\",\"model\":\"gpt-5.5\",\"status\":\"in_progress\",\"output\":[]}}\n\n"
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                partial_body.len() + 128,
+                partial_body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("fake upstream should write partial response");
+        });
+
+        let now = now_ms();
+        let registry = empty_health_registry(now);
+        save_health_registry_to_path(&env.root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
+            .expect("health registry should be written to isolated test root");
+
+        let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
+            .await
+            .expect("test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener should have local addr");
+        let collection: CodexLocalAccessCollection = serde_json::from_value(json!({
+            "enabled": true,
+            "port": addr.port(),
+            "apiKey": "test-local-key",
+            "safetyConfig": {
+                "schemaVersion": 1,
+                "hardenedLocalMode": true,
+                "maxConcurrentRequests": 1,
+                "minRequestIntervalSeconds": 20,
+                "maxQueueWaitSeconds": 21,
+                "requestTimeoutSeconds": 5,
+                "maxRequestBodyMb": 64,
+                "maxRetries": 1,
+                "maxRetryAccounts": 2,
+                "fallbackMode": "disabled",
+                "logging": {
+                    "redactSensitiveValues": true,
+                    "includeRequestId": true,
+                    "includeAccountHash": true,
+                    "includeRoute": true,
+                    "includeModel": true,
+                    "includeLatency": true,
+                    "includePromptResponse": false,
+                    "includeRawUpstreamBody": false
+                }
+            },
+            "routingStrategy": "auto",
+            "restrictFreeAccounts": false,
+            "followCurrentAccount": false,
+            "accountIds": ["api-chat"],
+            "createdAt": now,
+            "updatedAt": now
+        }))
+        .expect("collection fixture should deserialize");
+        save_collection_to_disk(&collection).expect("save local access collection");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+            runtime.loaded = true;
+            runtime.collection = Some(collection);
+            runtime.running = true;
+            runtime.actual_port = Some(addr.port());
+        }
+
+        let account = CodexAccount::new_api_key(
+            "api-chat".to_string(),
+            "api-chat@example.com".to_string(),
+            "sk-local-test".to_string(),
+            CodexApiProviderMode::Custom,
+            Some(format!("http://127.0.0.1:{}/v1", upstream_addr.port())),
+            None,
+            None,
+        );
+        crate::modules::codex_account::save_account(&account)
+            .expect("chat test account should be persisted");
+        cache_prepared_account(&account).await;
+
+        let server = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("server should accept");
+            handle_connection(stream, peer).await
+        });
+        let mut client = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let body = br#"{"model":"gpt-5.5","stream":false,"messages":[{"role":"user","content":"Reply with exactly OK."}]}"#;
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer test-local-key\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            String::from_utf8_lossy(body)
+        );
+        client
+            .write_all(request.as_bytes())
+            .await
+            .expect("request should be written");
+
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+            .await
+            .expect("gateway should respond instead of silently closing the connection")
+            .expect("response read should succeed");
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("HTTP/1.1 502 Bad Gateway"),
+            "expected structured 502 response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("application/json"),
+            "expected JSON error response, got: {}",
+            response_text
+        );
+        assert!(
+            response_text.contains("\"error\""),
+            "expected JSON error body instead of empty disconnect, got: {}",
+            response_text
+        );
+
+        let audit = fs::read_to_string(env.root.join(super::CODEX_LOCAL_ACCESS_AUDIT_FILE))
+            .expect("audit should be written to isolated root");
+        assert!(audit.contains("\"phase\":\"final_response\""));
+        assert!(audit.contains("\"status\":502"));
+        assert!(
+            audit.contains("\"errorType\":\"stream_incomplete\""),
+            "expected stream_incomplete audit classification, got audit: {}",
+            audit
+        );
+
+        let server_result = server.await.expect("server task should join");
+        assert!(server_result.is_ok(), "server failed: {:?}", server_result);
+        upstream_server
+            .await
+            .expect("fake upstream task should join");
+        {
+            let mut runtime = gateway_runtime().lock().await;
+            *runtime = super::GatewayRuntime::default();
+        }
+        reset_local_api_backpressure_for_tests();
+        reset_active_stream_leases_for_tests();
     }
 
     #[tokio::test(flavor = "current_thread")]
