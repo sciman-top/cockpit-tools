@@ -158,6 +158,7 @@ AI 推荐默认策略：`sticky_process + fill_first + capped fallback`。
 
 - 普通 HTTP 客户端可以收到本地 `503/pool_unavailable` JSON error 和可解释 `Retry-After`。
 - Codex hard-affinity 只认 `x-codex-turn-state`；`x-codex-turn-metadata` 只用于 audit lineage，不得把 metadata-only continuation/compact/resume 请求钉在旧账号上。
+- `Session_id` / `session_id` / `x-session-id` 可以作为低风险 soft session affinity 来源；`X-Client-Request-Id` 只作 thread-scoped observability 与可选软来源，不得被提升为 hard turn affinity。
 - Codex-facing `/v1/responses` 不能直接暴露 transport `503/pool_unavailable`，也不能把 upstream 429 包装成 retry-limit 终止；新 admission 全池不可用时不得返回 `response.failed` 或静默断开。等待只能发生在本次请求预算内；超预算必须返回 `200` completed Responses SSE/JSON，streaming 序列必须完整闭合到 `response.completed` + `[DONE]`，并带可见 assistant text 与本地闭合 metadata，避免空白 completed 被误判为正常完成。同任务 hard-affinity block 后出现该本地闭合不算成功，只能作为提前结束风险进入 monitor fail。
 - Stream 请求遇到全池不可用时，`pool_wait` 必须可观测且最终闭合：请求预算内等待后恢复、或 `final_response` / `streamState=completed` / `outcome=in_band_local_completion` / `errorType=pool_unavailable` 显式闭合。parked pool_wait、SSE idle、heartbeat-only open wait、`response.failed` 和旧 `outcome=in_band_synthetic` 都是连续性回归。
 - Bounded backoff 只约束普通 HTTP 和内联账号重试；Codex-facing 的本地全池不可用只能在请求预算内等待 health/cooldown 恢复并转发真实上游，超预算必须用本地 completed Responses 闭合本轮。

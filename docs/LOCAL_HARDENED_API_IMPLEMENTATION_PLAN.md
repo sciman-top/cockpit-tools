@@ -292,7 +292,7 @@ flowchart TD
 
 描述：在 API service 内部加入被动监察层，记录风控相关关键节点的脱敏事件；不新增独立常驻探测进程，不通过额外请求判断额度，不设计规避官方识别的策略。
 
-状态：2026-05-18 已完成首个运行路径切片：新增本地 JSONL audit trail、结构化脱敏事件、大小轮转，并接入真实请求的 listener、selector、classifier、health update、stream write/final response 边界。2026-05-19 补齐当前 Rust runtime path 的 `auth_projection` 与 `upstream_forward` 细分事件，并新增按事件日轮转、audit 写入/解析失败 degraded 状态、健康摘要/UI 降级提示。
+状态：2026-05-18 已完成首个运行路径切片：新增本地 JSONL audit trail、结构化脱敏事件、大小轮转，并接入真实请求的 listener、selector、classifier、health update、stream write/final response 边界。2026-05-19 补齐当前 Rust runtime path 的 `auth_projection` 与 `upstream_forward` 细分事件，并新增按事件日轮转、audit 写入/解析失败 degraded 状态、健康摘要/UI 降级提示。2026-06-07 已把 recent audit 脱敏事件链补到 modal 与首页 inline card，默认视图保持聚合状态 + 最近事件，不展开账号级 health 细节。
 
 事件来源：
 
@@ -311,7 +311,7 @@ flowchart TD
 - [x] 监察逻辑不发起额外上游请求，不批量刷新 500+ 账号，不通过高频探测等待恢复。
 - [x] 每个 request_id 可串起当前 runtime path：listener -> auth projection -> selector -> upstream -> classifier/health update -> stream write/final response。已覆盖 listener、auth projection、selector、upstream forward、classifier、health update、stream write/final response；health update 仅在真实 429/401/403/cooldown 等触发更新时出现。
 - [x] audit 文件采用大小/天数轮转；写入或解析轮转状态失败时不影响 API service 请求路径，健康摘要和 UI 明确提示 audit degraded。
-- [ ] UI 只展示聚合状态和最近脱敏事件，默认不展开账号级细节。
+- [x] UI 只展示聚合状态和最近脱敏事件，默认不展开账号级细节；证据 `reports/local-hardened-api-smoke/recent-audit-ui-contract-20260607.md`。
 
 验证：
 
@@ -391,7 +391,7 @@ flowchart TD
 
 描述：把当前 round-robin cursor 改成 hardened 默认的 sticky/fill-first selector。
 
-状态：2026-05-18 已完成核心选择器切片：hardened mode 下请求起点固定为 0，不再随每个请求推进 round-robin cursor；候选池保留完整账号列表，实际上游尝试仍受 `maxRetryAccounts` / `fallbackMode` cap 控制；默认 fill-first 按 health/quota/reset/连续性证据排序，不读取配置成员顺序，也不触发账号快照扫号；process sticky binding 写入 health registry，健康时置顶，cooldown/auth/manual/过期/失效时清理或绕过；`previous_response_id` affinity 仍在最后置顶。`Session_id` / `X-Client-Request-Id` 作为后续任务级扩展保留。
+状态：2026-05-18 已完成核心选择器切片：hardened mode 下请求起点固定为 0，不再随每个请求推进 round-robin cursor；候选池保留完整账号列表，实际上游尝试仍受 `maxRetryAccounts` / `fallbackMode` cap 控制；默认 fill-first 按 health/quota/reset/连续性证据排序，不读取配置成员顺序，也不触发账号快照扫号；process sticky binding 写入 health registry，健康时置顶，cooldown/auth/manual/过期/失效时清理或绕过；`previous_response_id` affinity 仍在最后置顶。2026-06-07 已明确：`Session_id` 进入 soft session affinity / explainability，`X-Client-Request-Id` 仅作 thread-scoped observability 与可选软来源，不升级成 hard turn affinity。
 
 策略：
 
@@ -403,7 +403,7 @@ flowchart TD
 验收：
 
 - [x] `previous_response_id` affinity 优先。
-- [ ] `Session_id` / `X-Client-Request-Id` 可作为后续扩展来源。
+- [x] `Session_id` / `X-Client-Request-Id` 已作为 explainability / soft-affinity 来源收口；`Session_id` 可进入 soft session affinity，`X-Client-Request-Id` 仅作 thread-scoped observability，不成为 hard turn affinity。证据 `reports/local-hardened-api-smoke/session-affinity-observability-contract-20260607.md`。
 - [x] 当前账号 healthy 时不会请求级轮换。
 - [x] cooldown/auth/manual 状态会清理或绕过粘性绑定。
 
@@ -569,8 +569,7 @@ flowchart TD
 
 ## 推荐执行顺序
 
-AI 推荐：HLA-11、当前 runtime path 的 `request_id` audit chain、audit day rotation 与 degraded 可见性已完成后，下一步做 Codex CLI direct smoke 的低风险窗口验证，或继续补 audit UI 最近脱敏事件列表。理由：核心 API service 链路已经有 Rust focused tests 与 ephemeral gateway 实跑，剩余最大未知是 CLI 入口真实接入和 UI 可读性增强。
-2026-05-19 补充：Codex CLI direct smoke 已完成。下一步 AI 推荐补 audit UI 最近脱敏事件列表，理由：CLI 入口已被真实 `codex exec` 证明，剩余高收益点是让用户在 UI 中直接看到最近 request_id 链路摘要。
+AI 推荐：recent audit 脱敏事件列表已经补到 modal 与首页 inline card 后，下一步继续把这条解释链纳入 browser-preview / release 报告，并补高风险 live UI smoke 的 app-safe 证据。理由：核心 API service 链路、CLI 直连、selector/block explainability 和 recent audit 摘要都已在代码与 focused tests 中落地，当前更高收益的缺口是把这些 UI 证据继续同步进发布验收与 live 场景。
 
 ## 完成态证据
 

@@ -88,7 +88,12 @@ import { isCodexLocalAccessQuotaHealthIssue } from '../utils/codexLocalAccessHea
 import {
   buildCodexLocalAccessSkippedReasonSummary,
   getCodexLocalAccessBlockedRecoverActionLabel,
+  getCodexLocalAccessRecentAuditHeadline,
+  getCodexLocalAccessRecentAuditPhaseLabel,
+  getCodexLocalAccessRequestIdSourceLabel,
+  getCodexLocalAccessSessionAffinitySourceLabel,
   getCodexLocalAccessSelectorReasonLabel,
+  formatCodexLocalAccessRequestIdShort,
 } from '../utils/codexLocalAccessInsights';
 import { useEscClose } from '../hooks/useEscClose';
 import './GroupAccountPickerModal.css';
@@ -565,6 +570,7 @@ export function CodexLocalAccessModal({
       t,
     );
   }, [blockedInsight?.recoverAction, t]);
+  const recentAuditEvents = health?.recentAuditEvents ?? [];
   const concurrencyMetricItems = useMemo(() => {
     if (!concurrencyDiagnostics) return [];
     const auditWindowMinutes = Math.max(
@@ -2968,6 +2974,113 @@ export function CodexLocalAccessModal({
                                 {formatLatencyMs(blockedInsight.retryAfterMs)}
                               </span>
                             )}
+                          </div>
+                        </div>
+                      )}
+                      {recentAuditEvents.length > 0 && (
+                        <div className="codex-local-access-health-insight-card">
+                          <span className="codex-local-access-health-insight-label">
+                            {t('codex.localAccess.health.recentAuditTitle', '最近审计')}
+                          </span>
+                          <div className="codex-local-access-health-audit-list">
+                            {recentAuditEvents.map((event, index) => {
+                              const eventRecoverActionLabel =
+                                getCodexLocalAccessBlockedRecoverActionLabel(
+                                  event.recoverAction,
+                                  t,
+                                );
+                              const requestIdSourceLabel =
+                                getCodexLocalAccessRequestIdSourceLabel(
+                                  event.requestIdSource,
+                                  t,
+                                );
+                              const sessionAffinitySourceLabel =
+                                getCodexLocalAccessSessionAffinitySourceLabel(
+                                  event.sessionAffinitySource,
+                                  t,
+                                );
+                              return (
+                                <div
+                                  key={`${event.timestamp}-${event.requestId}-${event.phase}-${index}`}
+                                  className="codex-local-access-health-audit-item"
+                                >
+                                  <div className="codex-local-access-health-audit-head">
+                                    <strong>
+                                      {getCodexLocalAccessRecentAuditHeadline(event, t)}
+                                    </strong>
+                                    <span className="codex-local-access-health-audit-time">
+                                      {formatTimestampMs(event.timestamp)}
+                                    </span>
+                                  </div>
+                                  <div className="codex-local-access-health-audit-meta">
+                                    <span>
+                                      {getCodexLocalAccessRecentAuditPhaseLabel(
+                                        event.phase,
+                                        t,
+                                      )}
+                                    </span>
+                                    <span>
+                                      {t('codex.localAccess.logs.requestIdShort', {
+                                        id: formatCodexLocalAccessRequestIdShort(
+                                          event.requestId,
+                                        ),
+                                        defaultValue: '请求 ID {{id}}',
+                                      })}
+                                    </span>
+                                    {requestIdSourceLabel && (
+                                      <span>
+                                        {t('codex.localAccess.health.requestIdSource', '请求来源')}:{' '}
+                                        <code>{requestIdSourceLabel}</code>
+                                      </span>
+                                    )}
+                                    {event.status != null && (
+                                      <span>
+                                        <code>HTTP {event.status}</code>
+                                      </span>
+                                    )}
+                                    {event.modelKey && (
+                                      <span>
+                                        {t('codex.localAccess.health.selectorModel', '模型')}:{' '}
+                                        <code>{event.modelKey}</code>
+                                      </span>
+                                    )}
+                                    {event.streamState && (
+                                      <span>
+                                        {t('codex.localAccess.health.streamState', '流状态')}:{' '}
+                                        <code>{event.streamState}</code>
+                                      </span>
+                                    )}
+                                    {event.errorType && (
+                                      <span>
+                                        {t('codex.localAccess.health.blockedType', '分类')}:{' '}
+                                        <code>{event.errorType}</code>
+                                      </span>
+                                    )}
+                                    {sessionAffinitySourceLabel && (
+                                      <span>
+                                        {t(
+                                          'codex.localAccess.health.sessionAffinitySource',
+                                          '亲和来源',
+                                        )}
+                                        : <code>{sessionAffinitySourceLabel}</code>
+                                      </span>
+                                    )}
+                                    {eventRecoverActionLabel && (
+                                      <span>
+                                        {t('codex.localAccess.health.recoverAction', '恢复动作')}:{' '}
+                                        {eventRecoverActionLabel}
+                                      </span>
+                                    )}
+                                    {event.retryAfterMs != null && (
+                                      <span>
+                                        {t('codex.localAccess.health.retryAfter', '建议等待')}:{' '}
+                                        {formatLatencyMs(event.retryAfterMs)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       )}

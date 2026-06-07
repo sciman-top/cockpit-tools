@@ -888,6 +888,8 @@ pub struct CodexLocalAccessHealthSummary {
     pub selector_insight: Option<CodexLocalAccessSelectorInsight>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_insight: Option<CodexLocalAccessBlockedInsight>,
+    #[serde(default)]
+    pub recent_audit_events: Vec<CodexLocalAccessRecentAuditEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -914,6 +916,25 @@ pub struct CodexLocalAccessBlockedInsight {
     pub reason: Option<String>,
     pub recover_action: Option<String>,
     pub retry_after_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessRecentAuditEvent {
+    pub timestamp: i64,
+    pub request_id: String,
+    pub phase: String,
+    pub request_id_source: Option<String>,
+    pub status: Option<u16>,
+    pub error_type: Option<String>,
+    pub stream_state: Option<String>,
+    pub outcome: Option<String>,
+    pub model_key: Option<String>,
+    pub selected_reason: Option<String>,
+    pub session_affinity_source: Option<String>,
+    pub recover_action: Option<String>,
+    pub retry_after_ms: Option<u64>,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

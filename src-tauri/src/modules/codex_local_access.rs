@@ -13,8 +13,9 @@ use crate::models::codex_local_access::{
     CodexLocalAccessModelAlias, CodexLocalAccessModelCooldown, CodexLocalAccessModelPricing,
     CodexLocalAccessModelStats, CodexLocalAccessPortCleanupResult,
     CodexLocalAccessProfileAttachment, CodexLocalAccessRequestKind,
-    CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessState,
-    CodexLocalAccessSelectorInsight, CodexLocalAccessBlockedInsight,
+    CodexLocalAccessRecentAuditEvent, CodexLocalAccessRoutingStrategy,
+    CodexLocalAccessScope, CodexLocalAccessState, CodexLocalAccessSelectorInsight,
+    CodexLocalAccessBlockedInsight,
     CodexLocalAccessStats, CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding,
     CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessTimeoutPreset,
     CodexLocalAccessTimeouts, CodexLocalAccessUsageEvent, CodexLocalAccessUsageEventPage,
@@ -118,6 +119,7 @@ const UPSTREAM_STREAM_TOTAL_TIMEOUT: Duration = DEFAULT_UPSTREAM_STREAM_TOTAL_TI
 const STATS_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_RETRY_CREDENTIALS_PER_REQUEST: usize = 24;
 const MAX_USAGE_LIMIT_RESCUE_CREDENTIALS_PER_REQUEST: usize = 4;
+const RECENT_HEALTH_AUDIT_EVENT_LIMIT: usize = 4;
 const SESSION_AFFINITY_TTL_MIN_MS: i64 = 60 * 1000;
 const SESSION_AFFINITY_TTL_MAX_MS: i64 = 24 * 60 * 60 * 1000;
 const DEFAULT_SESSION_AFFINITY_TTL_MS: i64 = 60 * 60 * 1000;
@@ -3285,6 +3287,38 @@ fn extract_session_affinity_key(request: &ParsedRequest) -> Option<String> {
         .map(|value| format!("body={}", value))
 }
 
+fn extract_session_affinity_source(request: &ParsedRequest) -> Option<&'static str> {
+    for (header, source) in [
+        ("session_id", "session_id"),
+        ("x-session-id", "x_session_id"),
+        ("x-client-request-id", "x_client_request_id"),
+        ("x-amp-thread-id", "x_amp_thread_id"),
+    ] {
+        if request
+            .headers
+            .get(header)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .is_some()
+        {
+            return Some(source);
+        }
+    }
+
+    let body = parse_request_body_json(&request.body)?;
+    if extract_body_string_path(&body, &["metadata", "user_id"]).is_some() {
+        return Some("metadata_user_id");
+    }
+    if extract_body_string_path(&body, &["conversation_id"]).is_some() {
+        return Some("conversation_id");
+    }
+    if extract_body_string_path(&body, &["thread_id"]).is_some() {
+        return Some("thread_id");
+    }
+    None
+}
+
 fn proxy_target_path(target: &str) -> &str {
     target.split('?').next().unwrap_or(target).trim()
 }
@@ -6143,10 +6177,11 @@ fn selector_audit_detail(
     summary: &SelectorAuditSummary,
     selected_reason: &str,
     model_key: &str,
+    session_affinity_source: Option<&str>,
 ) -> BTreeMap<String, String> {
     let skipped_counts = serde_json::to_string(&summary.skipped_counts_by_reason)
         .unwrap_or_else(|_| "{}".to_string());
-    BTreeMap::from([
+    let mut detail = BTreeMap::from([
         ("model_key".to_string(), model_key.to_string()),
         (
             "candidate_count".to_string(),
@@ -6164,7 +6199,17 @@ fn selector_audit_detail(
             "sticky_cleared".to_string(),
             summary.sticky_cleared.to_string(),
         ),
-    ])
+    ]);
+    if let Some(source) = session_affinity_source
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        detail.insert(
+            "session_affinity_source".to_string(),
+            source.to_string(),
+        );
+    }
+    detail
 }
 
 fn infer_single_account_continuation_affinity(
@@ -8331,6 +8376,17 @@ fn parse_skipped_counts_by_reason(detail: &BTreeMap<String, String>) -> BTreeMap
         .unwrap_or_default()
 }
 
+fn clone_non_empty_string(value: Option<&String>) -> Option<String> {
+    value.and_then(|item| {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
 fn parse_selector_insight_from_audit_event(
     event: &CodexLocalAccessAuditEvent,
 ) -> Option<CodexLocalAccessSelectorInsight> {
@@ -8377,12 +8433,76 @@ fn parse_blocked_insight_from_audit_event(
     })
 }
 
+fn parse_recent_health_audit_event_from_audit_event(
+    event: &CodexLocalAccessAuditEvent,
+) -> Option<CodexLocalAccessRecentAuditEvent> {
+    if !event.route.starts_with("/v1/") {
+        return None;
+    }
+
+    let should_surface = matches!(
+        event.phase.as_str(),
+        "selector"
+            | "pool_wait"
+            | "upstream_admitted"
+            | "lease_granted"
+            | "stream_completed"
+            | "stream_terminal"
+            | "stream_error"
+            | "client_aborted"
+            | "manual_pause"
+            | "manual_recovery"
+            | "final_response"
+    ) || event.error_type.is_some()
+        || event.detail.contains_key("selected_reason")
+        || event.detail.contains_key("recover_action")
+        || event.detail.contains_key("message")
+        || event.detail.contains_key("reason");
+    if !should_surface {
+        return None;
+    }
+
+    let model_key = clone_non_empty_string(event.detail.get("model_key")).or_else(|| {
+        let trimmed = event.model.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    Some(CodexLocalAccessRecentAuditEvent {
+        timestamp: event.timestamp,
+        request_id: event.request_id.clone(),
+        phase: event.phase.clone(),
+        request_id_source: clone_non_empty_string(event.detail.get("request_id_source")),
+        status: event.status,
+        error_type: event.error_type.clone(),
+        stream_state: event.stream_state.clone(),
+        outcome: event.outcome.clone(),
+        model_key,
+        selected_reason: clone_non_empty_string(event.detail.get("selected_reason")),
+        session_affinity_source: clone_non_empty_string(
+            event.detail.get("session_affinity_source"),
+        ),
+        recover_action: clone_non_empty_string(event.detail.get("recover_action")),
+        retry_after_ms: parse_detail_u64(&event.detail, "retry_after_ms"),
+        message: clone_non_empty_string(event.detail.get("message"))
+            .or_else(|| clone_non_empty_string(event.detail.get("reason"))),
+    })
+}
+
 fn read_recent_health_audit_insights_from_path(
     path: &Path,
     selector_insight: &mut Option<CodexLocalAccessSelectorInsight>,
     blocked_insight: &mut Option<CodexLocalAccessBlockedInsight>,
+    recent_events: &mut Vec<CodexLocalAccessRecentAuditEvent>,
+    event_limit: usize,
 ) {
-    if selector_insight.is_some() && blocked_insight.is_some() {
+    if selector_insight.is_some()
+        && blocked_insight.is_some()
+        && recent_events.len() >= event_limit
+    {
         return;
     }
     let Ok(content) = std::fs::read_to_string(path) else {
@@ -8390,7 +8510,10 @@ fn read_recent_health_audit_insights_from_path(
     };
 
     for line in content.lines().rev() {
-        if selector_insight.is_some() && blocked_insight.is_some() {
+        if selector_insight.is_some()
+            && blocked_insight.is_some()
+            && recent_events.len() >= event_limit
+        {
             break;
         }
         let line = line.trim();
@@ -8400,8 +8523,10 @@ fn read_recent_health_audit_insights_from_path(
         let Ok(event) = serde_json::from_str::<CodexLocalAccessAuditEvent>(line) else {
             continue;
         };
-        if !event.route.starts_with("/v1/") {
-            continue;
+        if recent_events.len() < event_limit {
+            if let Some(recent_event) = parse_recent_health_audit_event_from_audit_event(&event) {
+                recent_events.push(recent_event);
+            }
         }
         if selector_insight.is_none() {
             *selector_insight = parse_selector_insight_from_audit_event(&event);
@@ -8412,31 +8537,58 @@ fn read_recent_health_audit_insights_from_path(
     }
 }
 
+#[cfg(test)]
+fn read_recent_health_audit_events_from_path(
+    path: &Path,
+    event_limit: usize,
+    recent_events: &mut Vec<CodexLocalAccessRecentAuditEvent>,
+) {
+    let mut selector_insight = None;
+    let mut blocked_insight = None;
+    read_recent_health_audit_insights_from_path(
+        path,
+        &mut selector_insight,
+        &mut blocked_insight,
+        recent_events,
+        event_limit,
+    );
+}
+
 fn load_recent_health_audit_insights(
     _now: i64,
     allow_blocked_only: bool,
 ) -> (
     Option<CodexLocalAccessSelectorInsight>,
     Option<CodexLocalAccessBlockedInsight>,
+    Vec<CodexLocalAccessRecentAuditEvent>,
 ) {
     let Ok(path) = local_access_audit_file_path() else {
-        return (None, None);
+        return (None, None, Vec::new());
     };
     let rotated_path = audit_rotated_path(&path);
     let mut selector_insight = None;
     let mut blocked_insight = None;
+    let mut recent_events = Vec::with_capacity(RECENT_HEALTH_AUDIT_EVENT_LIMIT);
 
-    read_recent_health_audit_insights_from_path(&path, &mut selector_insight, &mut blocked_insight);
+    read_recent_health_audit_insights_from_path(
+        &path,
+        &mut selector_insight,
+        &mut blocked_insight,
+        &mut recent_events,
+        RECENT_HEALTH_AUDIT_EVENT_LIMIT,
+    );
     read_recent_health_audit_insights_from_path(
         &rotated_path,
         &mut selector_insight,
         &mut blocked_insight,
+        &mut recent_events,
+        RECENT_HEALTH_AUDIT_EVENT_LIMIT,
     );
 
     if allow_blocked_only {
-        (None, blocked_insight)
+        (None, blocked_insight, recent_events)
     } else {
-        (selector_insight, blocked_insight)
+        (selector_insight, blocked_insight, recent_events)
     }
 }
 
@@ -8568,10 +8720,11 @@ fn build_health_summary_from_disk_for_accounts(
         }
         Err(err) => build_unavailable_health_summary(now, &err),
     };
-    let (selector_insight, blocked_insight) =
+    let (selector_insight, blocked_insight, recent_audit_events) =
         load_recent_health_audit_insights(now, summary.unavailable);
     summary.selector_insight = selector_insight;
     summary.blocked_insight = blocked_insight;
+    summary.recent_audit_events = recent_audit_events;
     if summary.blocked_insight.is_none() {
         if let Ok(registry) = load_health_registry_from_disk() {
             summary.blocked_insight = derive_blocked_insight_from_registry(
@@ -21722,6 +21875,11 @@ async fn proxy_request_with_account_pool(
                         &selector_audit_summary,
                         selected_reason,
                         &routing_hint.model_key,
+                        if collection.session_affinity {
+                            extract_session_affinity_source(request)
+                        } else {
+                            None
+                        },
                     );
                     selector_detail.insert(
                         "hard_affinity_bound".to_string(),
@@ -34697,7 +34855,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         );
         let selected_reason =
             selector_selected_reason("acc-sticky", None, None, None, Some("acc-sticky"));
-        let detail = selector_audit_detail(&summary, selected_reason, "gpt-5.5");
+        let detail = selector_audit_detail(&summary, selected_reason, "gpt-5.5", None);
 
         assert_eq!(detail.get("candidate_count").map(String::as_str), Some("4"));
         assert_eq!(detail.get("eligible_count").map(String::as_str), Some("2"));
@@ -34727,6 +34885,32 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
     }
 
     #[test]
+    fn selector_audit_detail_keeps_session_affinity_source_without_raw_value() {
+        let summary = super::SelectorAuditSummary {
+            candidate_count: 2,
+            eligible_count: 1,
+            skipped_counts_by_reason: BTreeMap::new(),
+            cap_applied: false,
+            cap_limit: 2,
+            sticky_cleared: false,
+        };
+
+        let detail = selector_audit_detail(
+            &summary,
+            "fill_first_selected",
+            "gpt-5.5",
+            Some("session_id"),
+        );
+        let serialized = serde_json::to_string(&detail).expect("detail should serialize");
+
+        assert_eq!(
+            detail.get("session_affinity_source").map(String::as_str),
+            Some("session_id")
+        );
+        assert!(!serialized.contains("session_id=secret-thread"));
+    }
+
+    #[test]
     fn selector_audit_reason_distinguishes_previous_response_and_sticky_clear() {
         let now = 1_700_000_000_000;
         let registry = empty_health_registry(now);
@@ -34742,7 +34926,7 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         );
         let selected_reason =
             selector_selected_reason("acc-prev", None, Some("acc-prev"), None, None);
-        let detail = selector_audit_detail(&summary, selected_reason, "gpt-5.5");
+        let detail = selector_audit_detail(&summary, selected_reason, "gpt-5.5", None);
 
         assert_eq!(
             detail.get("selected_reason").map(String::as_str),
@@ -35956,6 +36140,164 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             Some("retry_after_cooldown_or_start_new_task")
         );
         assert_eq!(blocked.retry_after_ms, Some(3000));
+    }
+
+    #[test]
+    fn parse_recent_health_audit_event_extracts_redacted_chain_fields() {
+        let selector_event = super::CodexLocalAccessAuditEvent {
+            schema_version: super::CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+            timestamp: 1_700_000_000_100,
+            request_id: "req-selector".to_string(),
+            phase: "selector".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:selector".to_string(),
+            status: Some(200),
+            error_type: None,
+            stream_state: None,
+            outcome: Some("selected".to_string()),
+            detail: BTreeMap::from([
+                ("model_key".to_string(), "gpt-5.5".to_string()),
+                ("selected_reason".to_string(), "sticky_selected".to_string()),
+                ("candidate_count".to_string(), "4".to_string()),
+                ("request_id_source".to_string(), "client_request_id".to_string()),
+                ("session_affinity_source".to_string(), "session_id".to_string()),
+            ]),
+        };
+        let blocked_event = super::CodexLocalAccessAuditEvent {
+            schema_version: super::CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+            timestamp: 1_700_000_000_200,
+            request_id: "req-blocked".to_string(),
+            phase: "final_response".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:blocked".to_string(),
+            status: Some(503),
+            error_type: Some("pool_unavailable".to_string()),
+            stream_state: Some("json_completed".to_string()),
+            outcome: Some("error".to_string()),
+            detail: BTreeMap::from([
+                (
+                    "message".to_string(),
+                    "API 服务号池暂无可调度账号（冷却中 2 个）".to_string(),
+                ),
+                (
+                    "recover_action".to_string(),
+                    "retry_after_cooldown_or_start_new_task".to_string(),
+                ),
+                ("retry_after_ms".to_string(), "3000".to_string()),
+            ]),
+        };
+
+        let selector = super::parse_recent_health_audit_event_from_audit_event(&selector_event)
+            .expect("selector event should surface");
+        let blocked = super::parse_recent_health_audit_event_from_audit_event(&blocked_event)
+            .expect("blocked event should surface");
+
+        assert_eq!(selector.phase, "selector");
+        assert_eq!(selector.request_id, "req-selector");
+        assert_eq!(selector.request_id_source.as_deref(), Some("client_request_id"));
+        assert_eq!(
+            selector.session_affinity_source.as_deref(),
+            Some("session_id")
+        );
+        assert_eq!(selector.model_key.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selector.selected_reason.as_deref(), Some("sticky_selected"));
+        assert_eq!(selector.message, None);
+
+        assert_eq!(blocked.phase, "final_response");
+        assert_eq!(blocked.request_id, "req-blocked");
+        assert_eq!(blocked.error_type.as_deref(), Some("pool_unavailable"));
+        assert_eq!(
+            blocked.recover_action.as_deref(),
+            Some("retry_after_cooldown_or_start_new_task")
+        );
+        assert_eq!(blocked.retry_after_ms, Some(3000));
+        assert_eq!(
+            blocked.message.as_deref(),
+            Some("API 服务号池暂无可调度账号（冷却中 2 个）")
+        );
+    }
+
+    #[test]
+    fn load_recent_health_audit_events_prefers_latest_api_events_without_sensitive_fields() {
+        let path = temp_audit_path("recent-health-events");
+        let older = super::CodexLocalAccessAuditEvent {
+            schema_version: super::CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+            timestamp: 1_700_000_000_100,
+            request_id: "req-old".to_string(),
+            phase: "selector".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:old".to_string(),
+            status: Some(200),
+            error_type: None,
+            stream_state: None,
+            outcome: Some("selected".to_string()),
+            detail: BTreeMap::from([
+                ("model_key".to_string(), "gpt-5.5".to_string()),
+                ("selected_reason".to_string(), "fill_first_selected".to_string()),
+            ]),
+        };
+        let non_api = super::CodexLocalAccessAuditEvent {
+            schema_version: super::CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+            timestamp: 1_700_000_000_150,
+            request_id: "req-runtime".to_string(),
+            phase: "runtime_mode_transition".to_string(),
+            route: "runtime".to_string(),
+            model: "".to_string(),
+            account_hash: "sha256:runtime".to_string(),
+            status: None,
+            error_type: None,
+            stream_state: None,
+            outcome: Some("updated".to_string()),
+            detail: BTreeMap::from([(
+                "account_email".to_string(),
+                "secret-user@example.com".to_string(),
+            )]),
+        };
+        let latest = super::CodexLocalAccessAuditEvent {
+            schema_version: super::CODEX_LOCAL_ACCESS_AUDIT_SCHEMA_VERSION,
+            timestamp: 1_700_000_000_200,
+            request_id: "req-latest".to_string(),
+            phase: "final_response".to_string(),
+            route: "/v1/responses".to_string(),
+            model: "gpt-5.5".to_string(),
+            account_hash: "sha256:latest".to_string(),
+            status: Some(503),
+            error_type: Some("pool_unavailable".to_string()),
+            stream_state: Some("json_completed".to_string()),
+            outcome: Some("error".to_string()),
+            detail: BTreeMap::from([
+                (
+                    "message".to_string(),
+                    "API 服务号池暂无可调度账号（冷却中 2 个）".to_string(),
+                ),
+                (
+                    "recover_action".to_string(),
+                    "retry_after_cooldown_or_start_new_task".to_string(),
+                ),
+            ]),
+        };
+
+        let content = [older, non_api, latest]
+            .into_iter()
+            .map(|event| serde_json::to_string(&event).expect("event should serialize"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, content).expect("test audit log should be written");
+
+        let mut events = Vec::new();
+        super::read_recent_health_audit_events_from_path(&path, 3, &mut events);
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].request_id, "req-latest");
+        assert_eq!(events[1].request_id, "req-old");
+
+        let serialized = serde_json::to_string(&events).expect("events should serialize");
+        assert!(!serialized.contains("secret-user@example.com"));
+        assert!(!serialized.contains("sha256:latest"));
+        assert!(!serialized.contains("sha256:old"));
     }
 
     #[tokio::test(flavor = "current_thread")]

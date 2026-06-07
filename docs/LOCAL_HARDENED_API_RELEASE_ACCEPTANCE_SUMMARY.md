@@ -79,6 +79,9 @@ git diff --check
 - `reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md`
   - 已覆盖 API service key/client key DOM 脱敏
   - 已覆盖 health panel、modal 与首页 inline card explainability
+- `reports/local-hardened-api-smoke/recent-audit-ui-contract-20260607.md`
+  - 已覆盖 recent audit 脱敏事件摘要合同
+  - 已确认默认视图保持聚合状态 + 最近事件，不展开账号级 health 细节
 - `reports/local-hardened-api-smoke/browser-preview-wakeup-ui-smoke-20260607.md`
   - 已覆盖 wakeup/reset 默认 UI、startup delay 预览和邮箱/title 脱敏
 

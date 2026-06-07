@@ -981,6 +981,10 @@
   background: color-mix(in srgb, var(--bg-tertiary) 84%, transparent);
 }
 
+.codex-local-access-inline-insight.is-full {
+  flex-basis: 100%;
+}
+
 .codex-local-access-inline-insight.is-warning {
   border-color: color-mix(in srgb, var(--warning) 22%, var(--border));
   background: color-mix(in srgb, var(--warning) 8%, var(--bg-tertiary));
@@ -1013,6 +1017,56 @@
   padding: 1px 5px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg-surface) 84%, transparent);
+}
+
+.codex-local-access-inline-audit-list {
+  display: grid;
+  gap: 8px;
+}
+
+.codex-local-access-inline-audit-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.codex-local-access-inline-audit-item + .codex-local-access-inline-audit-item {
+  padding-top: 8px;
+  border-top: 1px dashed color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.codex-local-access-inline-audit-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.codex-local-access-inline-audit-head strong {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.codex-local-access-inline-audit-time {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.codex-local-access-inline-audit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.codex-local-access-inline-audit-meta code {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-surface) 84%, transparent);
+  word-break: break-all;
 }
 
 .codex-local-access-error-action {

@@ -584,4 +584,4 @@ git diff --check
 
 ## 下一步建议
 
-下一步按账号池调度专项计划先补 smoke/report 调度摘要、selector audit 候选原因，以及账号卡片/分组/API 服务推荐排序合同，再补 audit UI 最近脱敏事件列表；剩余未收敛问题统一记录在 `docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md`。AI 推荐这样做的理由：核心 API service 请求链路、HLA-11 lease、request_id audit chain、audit degraded 可见性和 Codex CLI direct smoke 都已完成 focused tests + ephemeral gateway/CLI 实跑，剩余高收益点是把“为什么选这个账号/为什么不切号/为什么老号重置后优先/为什么号池不可用”直接暴露给用户排障。
+下一步继续把 recent audit 脱敏事件链纳入 browser-preview / release 报告，并补高风险 live UI smoke 的 app-safe 证据；剩余未收敛问题统一记录在 `docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md`。AI 推荐这样做的理由：核心 API service 请求链路、HLA-11 lease、request_id audit chain、audit degraded 可见性、Codex CLI direct smoke，以及 modal / inline card 的 recent audit explainability 都已落地，当前更高收益的缺口是把这些解释链证据补齐到发布验收和 live 场景，而不是重复实现同一批 UI 能力。

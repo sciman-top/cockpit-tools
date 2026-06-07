@@ -354,6 +354,7 @@ export interface CodexLocalAccessHealthSummary {
   auditDegradedAtMs: number | null;
   selectorInsight?: CodexLocalAccessSelectorInsight | null;
   blockedInsight?: CodexLocalAccessBlockedInsight | null;
+  recentAuditEvents: CodexLocalAccessRecentAuditEvent[];
 }
 
 export interface CodexLocalAccessSelectorInsight {
@@ -375,6 +376,23 @@ export interface CodexLocalAccessBlockedInsight {
   reason: string | null;
   recoverAction: string | null;
   retryAfterMs: number | null;
+}
+
+export interface CodexLocalAccessRecentAuditEvent {
+  timestamp: number;
+  requestId: string;
+  phase: string;
+  requestIdSource: string | null;
+  status: number | null;
+  errorType: string | null;
+  streamState: string | null;
+  outcome: string | null;
+  modelKey: string | null;
+  selectedReason: string | null;
+  sessionAffinitySource: string | null;
+  recoverAction: string | null;
+  retryAfterMs: number | null;
+  message: string | null;
 }
 
 export interface CodexLocalAccessConcurrencyDiagnostics {
