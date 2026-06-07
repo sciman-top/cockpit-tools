@@ -121,8 +121,9 @@ git diff --check
 - `scripts/measure-local-hardened-api-performance.ps1`
 - `reports/local-hardened-api-performance/perf-baseline-20260607-202512.md`
 - `reports/local-hardened-api-performance/perf-baseline-20260607-202512.json`
+- `reports/local-hardened-api-performance/browser-preview-modal-baseline-20260607.md`
 
-当前已形成 `U10 / NPB-03` 的首份 isolated synthetic `M/L` 基线；剩余缺口是 live tray / 系统通知 / runtime switch / modal 首次打开等 app-safe 真实交互证据。
+当前已形成 `U10 / NPB-03` 的首份 isolated synthetic `M/L` 基线，并补了 browser-preview app-safe modal 首开样本；剩余缺口是 live Tauri modal 首开、tray / 系统通知、runtime switch 等更接近真实桌面运行态的交互证据。
 
 ## 6. 阻断规则
 
@@ -151,6 +152,6 @@ git diff --check
 
 - U3 / U9 / wakeup-reset 默认 UI 已有 browser-preview + AI 审查证据。
 - U5 的 Windows-first / 自用版发布语义已可以通过本文件、`docs/SELF_USE_DELTA.md` 和 preflight/hotspot review 统一判定。
-- U10 已补首份 isolated synthetic baseline/report，当前指标在 `M/L` 档均低于阈值。
-- live Tauri tray / 系统通知 / live continuity 仍属高风险场景，不能被 browser-preview 假装覆盖，只能继续走 app-safe probe 或显式 live acceptance。
-- U10 剩余缺口已从“完全缺 baseline”收敛为“仍缺 live / app-safe 真实交互基线”，这仍需要后续补证据，但不再是零起点。
+- U10 已补首份 isolated synthetic baseline/report，当前指标在 `M/L` 档均低于阈值；另有 browser-preview app-safe modal 首开样本可证明默认前端路径无明显卡顿。
+- live Tauri tray / 系统通知 / runtime switch / live continuity 仍属高风险场景，不能被 browser-preview 假装覆盖，只能继续走 app-safe probe 或显式 live acceptance。
+- U10 剩余缺口已从“完全缺 baseline”收敛为“仍缺更接近真实桌面运行态的交互基线”，这仍需要后续补证据，但不再是零起点。

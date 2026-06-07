@@ -4,7 +4,7 @@
 **目标归宿**: 降低 Codex API service 启动/停用、Direct API/OAuth 切换、配额刷新和账户页轮询的等待与卡顿。
 **当前落点**: 先做低风险、可回滚的观测与轻量刷新切片；不改变 live upstream quota probe 策略，不自动重启运行中的 Cockpit/Codex。
 
-产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；文档总控入口见 `docs/HARDENED_API_MASTER_PLAN.md`。本计划补充了首版性能阈值、样本规模和设备口径；截至 2026-06-07，`state_light` / `state_full` / `selector_sort` 已有首份 isolated synthetic `M/L` 基线报告，后续仍需用 app-safe / live 真实交互基线继续校准。
+产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；文档总控入口见 `docs/HARDENED_API_MASTER_PLAN.md`。本计划补充了首版性能阈值、样本规模和设备口径；截至 2026-06-07，`state_light` / `state_full` / `selector_sort` 已有首份 isolated synthetic `M/L` 基线报告，`Codex API 服务`卡片 -> 本地接入 modal 首开也已有 browser-preview app-safe 基线，后续仍需用更接近 live Tauri 的真实交互基线继续校准。
 
 ## 性能原则
 
@@ -96,8 +96,10 @@
   `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/measure-local-hardened-api-performance.ps1`
 - 当前已覆盖：
   `state_light`、`state_full`、`selector_sort`
+- 当前已补 app-safe 交互样本：
+  `reports/local-hardened-api-performance/browser-preview-modal-baseline-20260607.md`
 - 当前未覆盖：
-  live tray / 系统通知 / runtime switch / modal 首次打开 的 app-safe 真实交互基线
+  live Tauri modal 首次打开、tray / 系统通知、runtime switch 的 app-safe / live 真实交互基线
 
 ## 验收口径
 
@@ -107,6 +109,6 @@
 
 ## 下一步高价值动作
 
-1. 在已有 isolated synthetic baseline 之上，继续补齐 mode switch、modal 首次打开、tray / 系统通知等 app-safe 真实交互基线。
+1. 在已有 isolated synthetic baseline 与 browser-preview modal 首开基线之上，继续补齐 live Tauri modal 首次打开、mode switch、tray / 系统通知等 app-safe / live 真实交互基线。
 2. 持续把阈值摘要和基线报告同步到 `docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md`，避免专项计划与 release 读表脱节。
 3. 若 `L` 档排序仍有卡顿，再评估更激进的缓存或虚拟列表，而不是先扩大刷新频率。
