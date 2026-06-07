@@ -112,6 +112,9 @@ git diff --check
   - 已确认 `请求来源 / 亲和来源 / 恢复动作 / 建议等待` 可直接在 preview UI 复核
 - `reports/local-hardened-api-smoke/browser-preview-wakeup-ui-smoke-20260607.md`
   - 已覆盖 wakeup/reset 默认 UI、startup delay 预览和邮箱/title 脱敏
+- `reports/local-hardened-api-smoke/live-ui-smoke-readonly-baseline-20260607.md`
+  - 已补 live UI 的只读现场基线：进程稳定、CLI 配置未改、tray/notification 代码入口明确
+  - 已确认当前 live API service 未启用，真实 tray/系统通知/continuity 交互验收仍未完成
 
 ### 5.2 协议与连续性入口
 
@@ -180,3 +183,4 @@ git diff --check
 - live Tauri tray / 系统通知 / runtime switch / live continuity 仍属高风险场景，不能被 browser-preview 假装覆盖，只能继续走 app-safe probe 或显式 live acceptance。
 - U10 剩余缺口已从“完全缺 baseline”收敛为“仍缺更接近真实桌面运行态的交互基线”，这仍需要后续补证据，但不再是零起点。
 - `NPB-06` 已补 smoke 分层地图；后续真正进入 tray / 系统通知 / live continuity 验收前，应先按该地图判断是否需要用户确认。
+- 当前已补 live UI 只读现场基线；它证明现场可观测性和风险边界已清楚，但不等于真实 tray/系统通知 smoke 已完成。
