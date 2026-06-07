@@ -26,7 +26,7 @@
 | NPB-04 | Release acceptance summary | `docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md` 已补齐总表，并新增关键证据映射；剩余工作是随新报告持续同步 U10/高风险 live evidence | 继续把 release 读表保持成“当前证据总入口”，而不是一次性文档 |
 | NPB-05 | Windows-first / cross-platform 发布语义 | release summary 已明确 Windows 一级体验、macOS/Linux 兼容级口径；剩余工作只在未来非 Windows 也要承担同权 release 时展开 | 若未来要发布 macOS/Linux 一级体验，再补独立 acceptance 与打包语义 |
 | NPB-06 | UI smoke 自动化 | preview/default 与 wakeup/reset UI 已由 browser-preview 覆盖，仍缺 live Tauri/tray 等高风险交互自动化 | 聚焦高风险 live UI smoke：tray、系统通知、live continuity 提示 |
-| NPB-07 | 推荐排序与解释性 | modal 与首页 inline card 已能直出 selector / blocked / recover 摘要，并新增 recent audit 脱敏事件列表；剩余缺口主要是把 UI、报告和未来 live smoke 继续对齐成统一解释链 | 继续减少“还得去翻审计文件”的场景，并把 recent audit 事件证据纳入 release/preview 报告 |
+| NPB-07 | 推荐排序与解释性 | modal 与首页 inline card 已能直出 selector / blocked / recover 摘要，并新增 recent audit 脱敏事件列表；2026-06-07 已补 browser-preview explainability 汇总证据 | 剩余主要是把这条解释链继续扩到高风险 live UI smoke，而不是再拆散成更多零碎合同 |
 
 ## 4. 高级 LAN 模式草案边界
 
