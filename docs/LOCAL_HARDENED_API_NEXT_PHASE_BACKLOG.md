@@ -22,10 +22,10 @@
 | --- | --- | --- | --- |
 | NPB-01 | `fallbackMode` 语义彻底收敛 | 产品、路线图、实现、UI 容易把 `fallbackMode`、same-request rescue、next-request reselection 混为一谈 | 2026-06-07 已补统一术语、配置命名草案、release summary 对照表与策略预设提示；剩余仅在未来真正拆字段时做兼容迁移 |
 | NPB-02 | 高级显式 LAN 模式合同 | 已确认“可以有，但不能是默认”，仍缺正式 release 级边界 | 2026-06-07 已补独立合同与总控入口同步；剩余只在未来真实启用/发布 LAN 时补 live acceptance 证据 |
-| NPB-03 | 性能基线报告 | 已补首份 isolated synthetic `M/L` 基线与 browser-preview modal 首开 app-safe 样本；2026-06-07 已补剩余 live blocker 报告，2026-06-08 已证明隔离 listener 可拉起，但当前 `accountIds=[]` 下仍无法继续 continuity / fallback acceptance 或更接近真实桌面运行态的交互补采 | `reports/` 下的启动、轮询、切换、刷新、大号池排序基线与复测报告 |
+| NPB-03 | 性能基线报告 | 已补首份 isolated synthetic `M/L` 基线与 browser-preview modal 首开 app-safe 样本；2026-06-08 已证明隔离 listener 可拉起，且用户补入 1 个号池成员后 `single` 隔离合同已通过；剩余仍缺需要真实上游或桌面观察的 continuity / fallback / tray / 通知交互补采 | `reports/` 下的启动、轮询、切换、刷新、大号池排序基线与复测报告 |
 | NPB-04 | Release acceptance summary | `docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md` 已补齐总表，并新增关键证据映射；剩余工作是随新报告持续同步 U10/高风险 live evidence | 继续把 release 读表保持成“当前证据总入口”，而不是一次性文档 |
 | NPB-05 | Windows-first / cross-platform 发布语义 | release summary 已明确 Windows 一级体验、macOS/Linux 兼容级口径；剩余工作只在未来非 Windows 也要承担同权 release 时展开 | 若未来要发布 macOS/Linux 一级体验，再补独立 acceptance 与打包语义 |
-| NPB-06 | UI smoke 自动化 | preview/default 与 wakeup/reset UI 已由 browser-preview 覆盖；2026-06-07 已补 live UI smoke 分层地图、只读现场基线与剩余 live blocker 报告；2026-06-08 已证明隔离 listener 可拉起 | 剩余仍是高风险 live Tauri/tray/系统通知/continuity 提示自动化，需要先满足 API 服务号池成员与桌面观察能力前置条件，再在合适的 live 运行场景下继续取证 |
+| NPB-06 | UI smoke 自动化 | preview/default 与 wakeup/reset UI 已由 browser-preview 覆盖；2026-06-07 已补 live UI smoke 分层地图、只读现场基线与剩余 live blocker 报告；2026-06-08 已证明隔离 listener 可拉起，且用户补入 1 个号池成员后 `single` 隔离合同已通过 | 剩余仍是高风险 live Tauri/tray/系统通知/continuity 提示自动化，需要显式 live upstream 风险确认与桌面观察能力，才能在合适的 live 运行场景下继续取证 |
 | NPB-07 | 推荐排序与解释性 | modal 与首页 inline card 已能直出 selector / blocked / recover 摘要，并新增 recent audit 脱敏事件列表；2026-06-07 已补 browser-preview explainability 汇总证据 | 剩余主要是把这条解释链继续扩到高风险 live UI smoke，而不是再拆散成更多零碎合同 |
 
 ## 4. 高级 LAN 模式草案边界
