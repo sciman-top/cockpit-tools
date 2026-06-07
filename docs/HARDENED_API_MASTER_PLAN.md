@@ -31,6 +31,7 @@
 | `LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md` | Codex-facing 协议附录 | 判断 `pool_unavailable`、local completed Responses、hard-affinity 是否符合合同 |
 | `LOCAL_HARDENED_API_ACCEPTANCE_MATRIX.md` | 用户旅程验收矩阵 | 判断当前改动是否真正通过产品级验收 |
 | `LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md` | release 收口读表 | 判断本轮 release 到底该看哪些 gate、证据和 blocker |
+| `LOCAL_HARDENED_API_ADVANCED_LAN_MODE_CONTRACT.md` | 高级 LAN 合同 | 判断 `accessScope = lan` 的开启条件、风险提示、回滚和验收边界 |
 | `LOCAL_HARDENED_API.md` | 运行手册 | 手工验证、日常操作、smoke 执行 |
 | `reference-sources.md` | 参考源码索引 | 查本地参考仓库路径和 revision |
 | `reference-gateway-best-practices.md` | 结构化审查与参考依据 | 对照官方/社区网关证据时使用 |
@@ -125,6 +126,7 @@
 - hardened 默认和当前运行手册只覆盖 `127.0.0.1` loopback。
 - `lan_base_url` 只是兼容字段，不构成默认推荐入口。
 - 如未来支持 LAN 监听，也只能作为高级显式 opt-in，必须带风险提示、hotspot review、回滚入口和独立 release acceptance；公网开放不在范围内。
+- `accessScope = lan` 的正式边界由 `docs/LOCAL_HARDENED_API_ADVANCED_LAN_MODE_CONTRACT.md` 承接。
 
 ## 4. 当前执行状态
 

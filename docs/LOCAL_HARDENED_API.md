@@ -1,7 +1,7 @@
 # Cockpit Local Hardened API
 
 本页是自用版 Cockpit API service 的执行说明。它只描述本机低风险用法；代码、运行事实和 `docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md` 优先级更高。
-本页当前只覆盖默认 loopback 的低风险 runbook；如未来支持高级显式 LAN 模式，应单独补 release 合同、UI 风险提示和验收脚本，而不是把它混入 hardened 默认说明。
+本页当前只覆盖默认 loopback 的低风险 runbook；高级显式 LAN 模式的单独合同见 `docs/LOCAL_HARDENED_API_ADVANCED_LAN_MODE_CONTRACT.md`，不要把它混入 hardened 默认说明。
 
 产品级合同见 `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`；关键语义合同和文档总控入口见 `docs/HARDENED_API_MASTER_PLAN.md`。
 

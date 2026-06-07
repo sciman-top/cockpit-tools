@@ -21,7 +21,7 @@
 | ID | 主题 | 当前问题 | 期望产出 |
 | --- | --- | --- | --- |
 | NPB-01 | `fallbackMode` 语义彻底收敛 | 产品、路线图、实现、UI 容易把 `fallbackMode`、same-request rescue、next-request reselection 混为一谈 | 2026-06-07 已补统一术语、配置命名草案、release summary 对照表与策略预设提示；剩余仅在未来真正拆字段时做兼容迁移 |
-| NPB-02 | 高级显式 LAN 模式合同 | 已确认“可以有，但不能是默认”，仍缺正式 release 级边界 | 独立合同：开启条件、风险提示、可绑定范围、回滚、验收和 hotspot review |
+| NPB-02 | 高级显式 LAN 模式合同 | 已确认“可以有，但不能是默认”，仍缺正式 release 级边界 | 2026-06-07 已补独立合同与总控入口同步；剩余只在未来真实启用/发布 LAN 时补 live acceptance 证据 |
 | NPB-03 | 性能基线报告 | 已补首份 isolated synthetic `M/L` 基线；仍缺 app-safe/live 真实交互样本和阶段性复测 | `reports/` 下的启动、轮询、切换、刷新、大号池排序基线与复测报告 |
 | NPB-04 | Release acceptance summary | `docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md` 已补齐总表；剩余工作是随新报告持续同步 U10/高风险 live evidence | 把 release 读表保持成“当前证据总入口”，而不是一次性文档 |
 | NPB-05 | Windows-first / cross-platform 发布语义 | release summary 已明确 Windows 一级体验、macOS/Linux 兼容级口径；剩余工作只在未来非 Windows 也要承担同权 release 时展开 | 若未来要发布 macOS/Linux 一级体验，再补独立 acceptance 与打包语义 |

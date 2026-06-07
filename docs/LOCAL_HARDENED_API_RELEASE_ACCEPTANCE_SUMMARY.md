@@ -19,6 +19,7 @@
 
 - 当前 release 姿态是：`Windows-first` 自用桌面控制面 + 默认只监听 `127.0.0.1` 的本地 Hardened API Runtime。
 - hardened 默认路径只覆盖 loopback；LAN 监听只能是高级显式 opt-in，不能被 release notes 写成默认推荐入口。
+- 若本轮显式启用 `accessScope = lan`，必须同时满足 `docs/LOCAL_HARDENED_API_ADVANCED_LAN_MODE_CONTRACT.md` 中的开启条件、风险提示、回滚与 hotspot review。
 - Codex-facing 语义以本仓运行事实、OpenAI 官方文档、`openai-codex` 源码和本地 focused tests 为最高锚点。
 
 ### 2.2 平台分级

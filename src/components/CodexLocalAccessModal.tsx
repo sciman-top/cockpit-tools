@@ -3326,6 +3326,17 @@ export function CodexLocalAccessModal({
                       <code className="codex-local-access-code" title={accessScopeAddress}>
                         {accessScopeAddress}
                       </code>
+                      <div className="codex-local-access-config-note">
+                        {accessScope === 'lan'
+                          ? t(
+                              'codex.localAccess.accessScopeLanNote',
+                              '局域网模式是高级显式 opt-in：会把监听地址扩到 0.0.0.0，仅适用于可信网段；启用后应保留一键回退到仅本机，并按 LAN 合同做热点复核。',
+                            )
+                          : t(
+                              'codex.localAccess.accessScopeLocalhostNote',
+                              '默认 hardened 发布路径仅本机 loopback；若需要局域网访问，应按高级 LAN 合同单独评估，而不是把它当作默认推荐路径。',
+                            )}
+                      </div>
                     </div>
 
                   </div>
