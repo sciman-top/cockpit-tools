@@ -96,5 +96,5 @@
 ## 下一步高价值动作
 
 1. 为 lightweight state、full state、mode switch 和 group refresh 产出首批 `M/L` 基线报告。
-2. 把阈值摘要接入 release acceptance summary，避免只在计划文档中存在。
+2. 持续把阈值摘要和基线报告同步到 `docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md`，避免专项计划与 release 读表脱节。
 3. 若 `L` 档排序仍有卡顿，再评估更激进的缓存或虚拟列表，而不是先扩大刷新频率。

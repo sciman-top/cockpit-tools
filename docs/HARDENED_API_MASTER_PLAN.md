@@ -30,6 +30,7 @@
 | `LOCAL_HARDENED_API_PERFORMANCE_PLAN.md` | 性能专项 | 启动、轮询、切换、刷新等性能问题 |
 | `LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md` | Codex-facing 协议附录 | 判断 `pool_unavailable`、local completed Responses、hard-affinity 是否符合合同 |
 | `LOCAL_HARDENED_API_ACCEPTANCE_MATRIX.md` | 用户旅程验收矩阵 | 判断当前改动是否真正通过产品级验收 |
+| `LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md` | release 收口读表 | 判断本轮 release 到底该看哪些 gate、证据和 blocker |
 | `LOCAL_HARDENED_API.md` | 运行手册 | 手工验证、日常操作、smoke 执行 |
 | `reference-sources.md` | 参考源码索引 | 查本地参考仓库路径和 revision |
 | `reference-gateway-best-practices.md` | 结构化审查与参考依据 | 对照官方/社区网关证据时使用 |
@@ -113,15 +114,15 @@
 - 整体终态：项目级目标架构蓝图已明确“桌面控制面 + 本地 Hardened Runtime + 可选兼容桥接”的收敛方向
 - 方向：Cockpit 作为控制面、官方 `openai-codex` 为最高语义锚点、低并发低刷新优先
 - 结构：路线图、实施计划、调度专项、刷新专项、协议附录、验收矩阵、运行手册已成体系
+- release 收口：`LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md` 已把 U1-U10、release gate、Windows-first 发布语义和 blocker 统一收口
 - 证据：本地参考源码目录、focused tests、smoke/report 入口已经存在
 
 ### 仍然需要增强的部分
 
 1. `fallbackMode` / same-request rescue / next-request reselection / loopback default 语义仍需持续同步回局部文档和 UI。
 2. 性能计划仍需要真实基线样本和阶段性复测报告。
-3. Windows-first 与跨平台支持边界还需要从架构建议落成发布级语义。
-4. 部分 UI/人工恢复场景的自动化验收仍偏弱。
-5. 高级显式 LAN 模式是否进入正式 release 合同，仍需单独决策。
+3. 部分 live Tauri/tray/系统通知场景的自动化验收仍偏弱。
+4. 高级显式 LAN 模式是否进入正式 release 合同，仍需单独决策。
 
 ## 5. 推荐下一优先级
 
@@ -133,8 +134,8 @@
 
 ### Priority B
 
-- 把用户旅程矩阵映射到 release acceptance summary
-- 补 Windows-first / cross-platform 发布语义
+- 用真实基线报告补齐 release acceptance summary 中的 U10 证据
+- 若未来要提升非 Windows 交付等级，再把 macOS/Linux 从“兼容级”升级为独立 release 合同
 
 ### Priority C
 
@@ -160,6 +161,5 @@
 ## 7. 当前开放问题
 
 1. `Codex-facing local completed Responses` 是否长期保留为正式合同。
-2. Windows-first 与跨平台同权支持的边界如何写入发布语义。
-3. 新性能阈值是否需要按 50 账号 / 200 账号两档分别固化到 release report。
-4. 高级显式 LAN 模式是否需要成为正式 release 合同，以及它与 hardened 默认之间的边界如何落文档和验收。
+2. 新性能阈值是否需要按 50 账号 / 200 账号两档分别固化到 release report。
+3. 高级显式 LAN 模式是否需要成为正式 release 合同，以及它与 hardened 默认之间的边界如何落文档和验收。

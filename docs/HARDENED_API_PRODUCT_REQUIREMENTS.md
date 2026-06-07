@@ -165,5 +165,6 @@
 - 性能专项：[LOCAL_HARDENED_API_PERFORMANCE_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_PERFORMANCE_PLAN.md)
 - Codex 协议附录：[LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md)
 - 用户旅程验收矩阵：[LOCAL_HARDENED_API_ACCEPTANCE_MATRIX.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_ACCEPTANCE_MATRIX.md)
+- Release 收口读表：[LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md)
 - 运行手册：[LOCAL_HARDENED_API.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API.md)
 - 参考源码：[reference-sources.md](/D:/CODE/external/Cockpit-Tools-Local/docs/reference-sources.md)
