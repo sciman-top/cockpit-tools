@@ -125,6 +125,12 @@ git diff --check
 - `reports/local-hardened-api-smoke/smoke-20260608-001821.json`
   - 已证明用户补入 1 个号池成员后，`single` 隔离合同可以 pass
   - 已把当前阻塞进一步收敛为“尚未显式确认 live upstream 风险”，而不是 listener 或号池合同本身失败
+- `reports/local-hardened-api-smoke/smoke-20260608-002746.json`
+  - 已证明 `fallback_probe` 在 1 个号池成员下可推进到显式 `RunUpstreamSmoke / RunCodexExecSmoke` 门槛
+- `reports/local-hardened-api-smoke/smoke-20260608-002810.json`
+  - 已证明 `small_pool` 仍要求 `accountIds` 为 2 到 3 个；当前 1 个成员不足以验证“新请求切到健康账号”
+- `reports/local-hardened-api-smoke/smoke-20260608-003000.json`
+  - 已证明当前单账号 `RunUpstreamSmoke` 结果是请求异常，尚未形成可用 audit 事件链
 
 ### 5.2 协议与连续性入口
 
@@ -199,3 +205,4 @@ git diff --check
 - `NPB-06` / `NPB-03` 剩余 live blocker 现已有单独报告；当前阻塞来自 `enabled=false`、listener 缺失和“当前 Codex App 不断线”护栏，而不是文档入口缺失。
 - 2026-06-08 新增隔离 smoke 证据后，可进一步区分：`enabled=false` 不是绝对无解；当前 continuity / fallback acceptance 的直接脚本阻塞已收敛为 `accountIds=[]`。
 - 2026-06-08 在用户补入 1 个号池成员后，`single` 隔离合同已通过；当前 continuity / fallback acceptance 的剩余自动化门槛已进一步收敛为显式 live upstream 风险确认，以及 tray / notification 的桌面观察能力。
+- 2026-06-08 后续预检又进一步显示：`fallback_probe` 已推进到显式上游门槛，但 `small_pool` 仍缺第 2 个成员；在只有 1 个成员时，单账号 live upstream smoke 也尚未形成可用 audit 证据链。
