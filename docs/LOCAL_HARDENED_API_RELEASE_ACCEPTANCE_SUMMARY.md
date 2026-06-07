@@ -72,6 +72,15 @@ git diff --check
 | U9 | 可解释的账号选择 | browser-preview explainability smoke + selector tests | `reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md` | UI 只剩结果没有理由；日志或 UI 暴露完整邮箱、key、账号 ID |
 | U10 | 性能不拖慢主流程 | 性能专项计划中的 baseline/report；当前至少要有 isolated `M` 档基线，并持续补 app-safe/live 基线 | `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/measure-local-hardened-api-performance.ps1` + `docs/LOCAL_HARDENED_API_PERFORMANCE_PLAN.md` + `reports/local-hardened-api-performance/` | lightweight polling、启动、切换或刷新在 `M` 档明显超阈值，导致主路径卡顿 |
 
+### 4.1 `fallbackMode` / rescue / reselection 对照
+
+| 概念 | release 应怎么读 | 不应该怎么读 | 当前证据入口 |
+| --- | --- | --- | --- |
+| `fallbackMode` | 历史字段名；当前只表示“后续独立请求是否重新选号” | 误读成“当前请求可自由切号” | `docs/HARDENED_API_MASTER_PLAN.md`、`docs/LOCAL_HARDENED_API.md` |
+| `same-request rescue` | 仅限未写出前、failover-safe、预算内的有限补救 | 误读成 hard-affinity continuation 可跨账号续接 | `docs/HARDENED_API_PRODUCT_REQUIREMENTS.md`、focused tests、`fallback_probe` 报告 |
+| `next-request reselection` | 新独立请求可避开 cooldown/exhausted 账号重新选号 | 误读成对当前任务的静默重放 | selector focused tests、small-pool / fallback reports |
+| `hard affinity` | 同任务 continuation 不跨账号，必要时阻断或本地闭合 | 用 `x-client-request-id` 或 metadata-only 字段升级成 hard-affinity | hard-affinity focused tests、continuity / monitor 脚本 |
+
 ## 5. 当前可复用证据入口
 
 ### 5.1 低风险默认 UI / 浏览器证据

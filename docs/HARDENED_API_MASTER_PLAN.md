@@ -1,7 +1,7 @@
 # Hardened API Master Plan
 
 状态：active
-更新时间：2026-06-06
+更新时间：2026-06-07
 
 ## 1. 作用
 
@@ -77,6 +77,25 @@
 - 它本身也不等于 same-request rescue；same-request rescue 由 classifier、stream guard、`maxRetryAccounts` 和请求预算共同决定。
 
 这是当前实现与文档最容易混淆的地方。后续若重构配置命名，应优先拆成更清晰的三段式配置。
+
+### 3.5.1 统一术语对照
+
+| 术语 | 作用对象 | 当前是否正式语义 | 约束入口 |
+| --- | --- | --- | --- |
+| `hard affinity` | 同一 Codex turn / continuation | 是 | `previous_response_id`、`x-codex-turn-state`；禁止静默跨账号 |
+| `same-request rescue` | 当前尚未写出的同一次请求 | 是 | classifier + stream guard + `maxRetryAccounts` + 请求预算 |
+| `next-request reselection` | 当前请求结束后的新独立请求 | 是 | selector / health registry / cooldown / `fallbackMode` |
+| `fallbackMode` | 只影响“下一请求是否重新选号”的策略开关 | 是，但字段名偏历史 | 不单独授权 hard-affinity，也不等于 same-request rescue |
+
+### 3.5.2 配置命名草案
+
+当前实现继续保留 `fallbackMode` 字段以维持兼容；若后续需要真正拆名，推荐语义草案是：
+
+- `sameRequestRescuePolicy`：明确描述“当前请求在 failover-safe 条件下是否允许有限补救”。
+- `nextRequestReselectionPolicy`：明确描述“当前请求结束后，新独立请求如何重新选择账号”。
+- `hardAffinityPolicy`：继续显式表达 continuation 不跨账号的硬边界。
+
+在真正迁移前，所有 UI、文档、release summary 都应把 `fallbackMode` 解释成 `next-request reselection` 的历史字段，而不是“当前请求切号策略”。
 
 ### 3.6 `pool_unavailable`
 

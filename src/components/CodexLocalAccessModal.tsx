@@ -3297,6 +3297,12 @@ export function CodexLocalAccessModal({
                           </button>
                         ))}
                       </div>
+                      <div className="codex-local-access-config-note">
+                        {t(
+                          'codex.localAccess.safetyPreset.note',
+                          '这里的 fallbackMode 只影响后续独立请求是否重新选号；当前请求内的补救仍受 stream guard、failover-safe 判定和 maxRetryAccounts 共同约束。',
+                        )}
+                      </div>
                     </div>
 
                     <div className="codex-local-access-config-card codex-local-access-config-card-scope">

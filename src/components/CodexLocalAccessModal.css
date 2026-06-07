@@ -1956,6 +1956,12 @@
   flex-shrink: 0;
 }
 
+.codex-local-access-config-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
 .codex-local-access-config-card {
   display: flex;
   min-width: 0;
