@@ -929,6 +929,13 @@ pub async fn save_codex_model_providers(data: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn codex_probe_model_provider_websocket_support(
+    input: codex_account::CodexProviderWebsocketProbeInput,
+) -> Result<codex_account::CodexProviderWebsocketProbeResult, String> {
+    codex_account::probe_model_provider_websocket_support(input).await
+}
+
+#[tauri::command]
 pub async fn codex_local_access_get_state() -> Result<CodexLocalAccessState, String> {
     codex_local_access::get_local_access_state().await
 }

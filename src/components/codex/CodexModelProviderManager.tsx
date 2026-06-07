@@ -23,9 +23,11 @@ import {
   deleteCodexModelProvider,
   listCodexModelProviders,
   normalizeCodexModelProviderBaseUrl,
+  probeCodexModelProviderWebsocketSupport,
   removeApiKeyFromCodexModelProvider,
   type CodexModelProvider,
   type CodexModelProviderApiKey,
+  type CodexModelProviderWebsocketProbe,
   updateCodexModelProvider,
 } from "../../services/codexModelProviderService";
 import {
@@ -99,6 +101,7 @@ export function CodexModelProviderManager({
   const [showModal, setShowModal] = useState(false);
   const [showQuickConfigModal, setShowQuickConfigModal] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [probingProviderId, setProbingProviderId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [form, setForm] = useState<ProviderFormState>(EMPTY_FORM);
   const [previewPaths, setPreviewPaths] = useState<ProviderPreviewPaths>(
@@ -291,7 +294,93 @@ export function CodexModelProviderManager({
           "供应商不存在",
         );
       }
+      if (raw.includes("PROVIDER_API_KEY_REQUIRED")) {
+        return t(
+          "codex.modelProviders.validation.providerApiKeyRequired",
+          "请先为该供应商配置至少一个 API Key，再检测 WebSocket 支持",
+        );
+      }
+      if (raw.includes("PROVIDER_WEBSOCKET_PROBE_INVALID")) {
+        return t(
+          "codex.modelProviders.validation.providerWebsocketProbeInvalid",
+          "检测返回的数据格式无效，请稍后重试",
+        );
+      }
       return raw.replace(/^Error:\s*/, "");
+    },
+    [t],
+  );
+
+  const resolveProbePresentation = useCallback(
+    (probe?: CodexModelProviderWebsocketProbe) => {
+      if (!probe) {
+        return {
+          tone: "muted" as const,
+          label: t(
+            "codex.modelProviders.websocketProbe.notChecked",
+            "尚未检测 WebSocket",
+          ),
+        };
+      }
+
+      switch (probe.status) {
+        case "supported":
+          return {
+            tone: "success" as const,
+            label: t(
+              "codex.modelProviders.websocketProbe.supported",
+              "已检测：支持 WS",
+            ),
+          };
+        case "unsupported":
+          return {
+            tone: "warning" as const,
+            label: t(
+              "codex.modelProviders.websocketProbe.unsupported",
+              "已检测：不支持 WS",
+            ),
+          };
+        case "authentication_failed":
+          return {
+            tone: "error" as const,
+            label: t(
+              "codex.modelProviders.websocketProbe.authFailed",
+              "检测失败：鉴权未通过",
+            ),
+          };
+        case "timed_out":
+          return {
+            tone: "warning" as const,
+            label: t(
+              "codex.modelProviders.websocketProbe.timedOut",
+              "检测超时",
+            ),
+          };
+        case "network_error":
+          return {
+            tone: "warning" as const,
+            label: t(
+              "codex.modelProviders.websocketProbe.networkError",
+              "检测失败：网络或代理",
+            ),
+          };
+        case "cli_unavailable":
+          return {
+            tone: "error" as const,
+            label: t(
+              "codex.modelProviders.websocketProbe.cliUnavailable",
+              "检测失败：本机 Codex CLI 不可用",
+            ),
+          };
+        default:
+          return {
+            tone: "error" as const,
+            label: t(
+              "codex.modelProviders.websocketProbe.failed",
+              "检测失败",
+            ),
+          };
+      }
     },
     [t],
   );
@@ -452,6 +541,39 @@ export function CodexModelProviderManager({
     [parseServiceError, reloadProviders, t],
   );
 
+  const handleProbeProvider = useCallback(
+    async (provider: CodexModelProvider) => {
+      if (probingProviderId) return;
+      setNotice(null);
+      setProbingProviderId(provider.id);
+      try {
+        const { provider: updatedProvider, probe } =
+          await probeCodexModelProviderWebsocketSupport(provider.id);
+        await reloadProviders();
+        if (form.providerId === provider.id) {
+          mutateForm({
+            supportsWebsockets: updatedProvider.supportsWebsockets,
+          });
+        }
+        setNotice({
+          tone: probe.status === "supported" ? "success" : "error",
+          text: `${provider.name}：${probe.message}`,
+        });
+      } catch (err) {
+        setNotice({
+          tone: "error",
+          text: t("codex.modelProviders.websocketProbe.failedNotice", {
+            defaultValue: "检测 WebSocket 支持失败：{{error}}",
+            error: parseServiceError(err),
+          }),
+        });
+      } finally {
+        setProbingProviderId(null);
+      }
+    },
+    [form.providerId, mutateForm, parseServiceError, probingProviderId, reloadProviders, t],
+  );
+
   return (
     <div className="codex-provider-manager-page">
       {notice && (
@@ -536,6 +658,10 @@ export function CodexModelProviderManager({
         <div className="codex-provider-grid">
           {filteredProviders.map((provider) => {
             const referenceCount = providerReferenceMap.get(provider.id) ?? 0;
+            const probePresentation = resolveProbePresentation(
+              provider.websocketProbe,
+            );
+            const isProbing = probingProviderId === provider.id;
             return (
               <div className="codex-provider-card" key={provider.id}>
                 <div className="codex-provider-card-header">
@@ -616,6 +742,66 @@ export function CodexModelProviderManager({
                     })}
                   </span>
                 </div>
+                <div className="codex-provider-probe-row">
+                  <span
+                    className={`codex-provider-probe-status ${probePresentation.tone}`}
+                    title={
+                      provider.websocketProbe
+                        ? new Date(
+                            provider.websocketProbe.checkedAt,
+                          ).toLocaleString()
+                        : undefined
+                    }
+                  >
+                    {probePresentation.label}
+                  </span>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    type="button"
+                    onClick={() => void handleProbeProvider(provider)}
+                    disabled={isProbing || provider.apiKeys.length === 0}
+                    title={
+                      provider.apiKeys.length === 0
+                        ? t(
+                            "codex.modelProviders.websocketProbe.missingApiKey",
+                            "请先配置至少一个 API Key",
+                          )
+                        : provider.websocketProbe
+                          ? t(
+                              "codex.modelProviders.websocketProbe.recheckAction",
+                              "重新检测 WS",
+                            )
+                          : t(
+                              "codex.modelProviders.websocketProbe.checkAction",
+                              "检测 WS",
+                            )
+                    }
+                  >
+                    <Search size={13} />
+                    {isProbing
+                      ? t(
+                          "codex.modelProviders.websocketProbe.checking",
+                          "检测中...",
+                        )
+                      : provider.websocketProbe
+                        ? t(
+                            "codex.modelProviders.websocketProbe.recheckAction",
+                            "重新检测 WS",
+                          )
+                        : t(
+                            "codex.modelProviders.websocketProbe.checkAction",
+                            "检测 WS",
+                          )}
+                  </button>
+                </div>
+                {provider.websocketProbe?.message && (
+                  <p
+                    className="codex-provider-probe-hint"
+                    title={provider.websocketProbe.message}
+                  >
+                    {provider.websocketProbe.message}
+                  </p>
+                )}
                 {provider.apiKeys.length > 0 && (
                   <div className="codex-provider-key-list">
                     {provider.apiKeys.map((item) => (

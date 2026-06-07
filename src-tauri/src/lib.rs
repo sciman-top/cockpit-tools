@@ -616,6 +616,7 @@ pub fn run() {
             commands::codex::save_codex_account_groups,
             commands::codex::load_codex_model_providers,
             commands::codex::save_codex_model_providers,
+            commands::codex::codex_probe_model_provider_websocket_support,
             commands::codex::codex_local_access_get_state,
             commands::codex::codex_local_access_get_light_state,
             commands::codex::codex_local_access_save_accounts,

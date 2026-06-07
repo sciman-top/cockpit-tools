@@ -96,6 +96,7 @@ import {
   getCodexAccountSubscriptionPresentation,
   getCodexPlanFilterKey,
   getCodexQuotaIssueInfo,
+  classifyCodexUpstreamIssue,
   hasCodexAccountName,
   isCodexApiKeyAccount,
   isCodexAccountErrorState,
@@ -4524,6 +4525,7 @@ export function CodexAccountsPage() {
           isRefreshRequestFailure: false,
           isQuotaLimitError: false,
           isQuotaCooldownError: false,
+          upstreamIssueCategory: "none" as const,
         };
       }
       const rawMessage = issueInfo.rawMessage || issueInfo.displayCode;
@@ -4540,11 +4542,37 @@ export function CodexAccountsPage() {
       const errorCode = issueInfo.errorCode;
       const isQuotaLimitError = issueInfo.isQuotaLimitError;
       const isQuotaCooldownError = issueInfo.isQuotaCooldownError;
+      const upstreamIssueCategory = classifyCodexUpstreamIssue(issueInfo);
       const authFailureText =
         formatCodexAuthFailureMessage(normalizedRawMessage);
       let displayText = "";
       if (authFailureText !== normalizedRawMessage) {
         displayText = authFailureText;
+      } else if (upstreamIssueCategory === "channel_unavailable") {
+        displayText = t(
+          "codex.quotaError.channelUnavailableDetail",
+          "503 通道不可用：上游 distributor 当前没有可用模型通道，通常是供应商分发或节点容量问题，可换模型、换节点或稍后重试。",
+        );
+      } else if (upstreamIssueCategory === "network_or_proxy") {
+        displayText = t(
+          "codex.quotaError.networkOrProxyDetail",
+          "连接在流式过程中断开：更像网络、代理或 SSE 长连接空闲超时。请检查代理配置、上游节点稳定性，或改用支持 WebSocket 的 relay。",
+        );
+      } else if (upstreamIssueCategory === "node_or_gateway_timeout") {
+        displayText = t(
+          "codex.quotaError.gatewayTimeoutDetail",
+          "上游网关或节点超时：更像 relay/gateway 超时，建议稍后重试或切换节点。",
+        );
+      } else if (upstreamIssueCategory === "upstream_service_unavailable") {
+        displayText = t(
+          "codex.quotaError.serviceUnavailableDetail",
+          "503 服务暂不可用：更像上游节点维护或临时不可用，建议稍后重试。",
+        );
+      } else if (upstreamIssueCategory === "upstream_5xx") {
+        displayText = t(
+          "codex.quotaError.upstream5xxDetail",
+          "上游 5xx 异常：服务端暂时失败，可稍后重试或切换节点。",
+        );
       } else if (isQuotaLimitError) {
         displayText = t("codex.quotaError.limitDetail", {
           code: issueInfo.displayCode || "usage_limit_reached",
@@ -4572,6 +4600,7 @@ export function CodexAccountsPage() {
         isRefreshRequestFailure,
         isQuotaLimitError,
         isQuotaCooldownError,
+        upstreamIssueCategory,
       };
     },
     [formatCodexAuthFailureMessage, t],
@@ -7422,16 +7451,17 @@ export function CodexAccountsPage() {
       const accountIssueMeta = reauthErrorMeta.rawMessage
         ? reauthErrorMeta
         : shouldShowQuotaIssueNotice
-          ? quotaErrorMeta
-          : {
-              statusCode: "",
-              errorCode: "",
-              displayText: "",
-              rawMessage: "",
-              isRefreshRequestFailure: false,
-              isQuotaLimitError: false,
-              isQuotaCooldownError: false,
-            };
+            ? quotaErrorMeta
+            : {
+                statusCode: "",
+                errorCode: "",
+                displayText: "",
+                rawMessage: "",
+                isRefreshRequestFailure: false,
+                isQuotaLimitError: false,
+                isQuotaCooldownError: false,
+                upstreamIssueCategory: "none" as const,
+              };
       const hasQuotaError = Boolean(accountIssueMeta.rawMessage);
       const isQuotaRefreshNotice =
         !reauthErrorMeta.rawMessage &&
@@ -8952,6 +8982,7 @@ export function CodexAccountsPage() {
               isRefreshRequestFailure: false,
               isQuotaLimitError: false,
               isQuotaCooldownError: false,
+              upstreamIssueCategory: "none" as const,
             };
       const hasQuotaError = Boolean(accountIssueMeta.rawMessage);
       const isQuotaRefreshNotice =

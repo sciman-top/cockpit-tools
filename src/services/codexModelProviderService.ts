@@ -9,6 +9,24 @@ export interface CodexModelProviderApiKey {
   updatedAt: number;
 }
 
+export type CodexModelProviderWebsocketProbeStatus =
+  | 'supported'
+  | 'unsupported'
+  | 'authentication_failed'
+  | 'timed_out'
+  | 'network_error'
+  | 'cli_unavailable'
+  | 'failed';
+
+export interface CodexModelProviderWebsocketProbe {
+  status: CodexModelProviderWebsocketProbeStatus;
+  detectedSupportsWebsockets?: boolean | null;
+  checkedAt: number;
+  message: string;
+  latencyMs?: number;
+  commandSource?: string;
+}
+
 export interface CodexModelProvider {
   id: string;
   name: string;
@@ -16,6 +34,7 @@ export interface CodexModelProvider {
   website?: string;
   apiKeyUrl?: string;
   supportsWebsockets: boolean;
+  websocketProbe?: CodexModelProviderWebsocketProbe;
   apiKeys: CodexModelProviderApiKey[];
   createdAt: number;
   updatedAt: number;
@@ -32,6 +51,16 @@ interface UpsertFromCredentialInput {
 let providerIdCounter = 0;
 let keyIdCounter = 0;
 let cachedProviders: CodexModelProvider[] | null = null;
+
+const WEBSOCKET_PROBE_STATUSES = new Set<CodexModelProviderWebsocketProbeStatus>([
+  'supported',
+  'unsupported',
+  'authentication_failed',
+  'timed_out',
+  'network_error',
+  'cli_unavailable',
+  'failed',
+]);
 
 function createProviderId(): string {
   return `cmp_${Date.now()}_${++providerIdCounter}`;
@@ -85,8 +114,50 @@ function deriveProviderNameFromBaseUrl(baseUrl: string): string {
 function cloneProviders(providers: CodexModelProvider[]): CodexModelProvider[] {
   return providers.map((provider) => ({
     ...provider,
+    websocketProbe: provider.websocketProbe
+      ? { ...provider.websocketProbe }
+      : undefined,
     apiKeys: provider.apiKeys.map((apiKey) => ({ ...apiKey })),
   }));
+}
+
+function toValidProviderWebsocketProbe(
+  value: unknown,
+): CodexModelProviderWebsocketProbe | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const status = String((value as { status?: unknown }).status ?? '').trim().toLowerCase();
+  if (!WEBSOCKET_PROBE_STATUSES.has(status as CodexModelProviderWebsocketProbeStatus)) {
+    return undefined;
+  }
+  const checkedAt = Number((value as { checkedAt?: unknown; checked_at?: unknown }).checkedAt ??
+    (value as { checked_at?: unknown }).checked_at);
+  const message = String((value as { message?: unknown }).message ?? '').trim();
+  if (!Number.isFinite(checkedAt) || checkedAt <= 0 || !message) {
+    return undefined;
+  }
+  const rawDetected =
+    (value as {
+      detectedSupportsWebsockets?: unknown;
+      detected_supports_websockets?: unknown;
+    }).detectedSupportsWebsockets ??
+    (value as { detected_supports_websockets?: unknown }).detected_supports_websockets;
+  const detectedSupportsWebsockets =
+    typeof rawDetected === 'boolean' ? rawDetected : undefined;
+  const latencyMs = Number((value as { latencyMs?: unknown; latency_ms?: unknown }).latencyMs ??
+    (value as { latency_ms?: unknown }).latency_ms);
+  const commandSource = String(
+    (value as { commandSource?: unknown; command_source?: unknown }).commandSource ??
+      (value as { command_source?: unknown }).command_source ??
+      '',
+  ).trim();
+  return {
+    status: status as CodexModelProviderWebsocketProbeStatus,
+    detectedSupportsWebsockets,
+    checkedAt,
+    message,
+    latencyMs: Number.isFinite(latencyMs) && latencyMs >= 0 ? latencyMs : undefined,
+    commandSource: commandSource || undefined,
+  };
 }
 
 function toValidApiKeys(value: unknown, now: number): CodexModelProviderApiKey[] {
@@ -130,6 +201,11 @@ function toValidProviderList(raw: unknown): CodexModelProvider[] {
         (item as { supportsWebsockets?: unknown; supports_websockets?: unknown }).supportsWebsockets ??
           (item as { supports_websockets?: unknown }).supports_websockets,
       ),
+      websocketProbe:
+        toValidProviderWebsocketProbe(
+          (item as { websocketProbe?: unknown; websocket_probe?: unknown }).websocketProbe ??
+            (item as { websocket_probe?: unknown }).websocket_probe,
+        ) ?? undefined,
       apiKeys: toValidApiKeys((item as { apiKeys?: unknown }).apiKeys, now),
       createdAt: Number((item as { createdAt?: unknown }).createdAt ?? now),
       updatedAt: Number((item as { updatedAt?: unknown }).updatedAt ?? now),
@@ -273,6 +349,7 @@ export async function updateCodexModelProvider(
     website?: string;
     apiKeyUrl?: string;
     supportsWebsockets?: boolean;
+    websocketProbe?: CodexModelProviderWebsocketProbe | null;
   },
 ): Promise<CodexModelProvider> {
   const providers = await ensureProvidersLoaded();
@@ -306,6 +383,9 @@ export async function updateCodexModelProvider(
   if (patch.supportsWebsockets !== undefined) {
     provider.supportsWebsockets = Boolean(patch.supportsWebsockets);
   }
+  if (patch.websocketProbe !== undefined) {
+    provider.websocketProbe = patch.websocketProbe ?? undefined;
+  }
   provider.updatedAt = Date.now();
   await writeProviders(providers);
   return { ...provider, apiKeys: provider.apiKeys.map((apiKey) => ({ ...apiKey })) };
@@ -323,6 +403,53 @@ export async function addApiKeyToCodexModelProvider(
   provider.updatedAt = Date.now();
   await writeProviders(providers);
   return { ...provider, apiKeys: provider.apiKeys.map((item) => ({ ...item })) };
+}
+
+export async function probeCodexModelProviderWebsocketSupport(
+  providerId: string,
+  apiKeyId?: string,
+): Promise<{
+  provider: CodexModelProvider;
+  probe: CodexModelProviderWebsocketProbe;
+}> {
+  const providers = await ensureProvidersLoaded();
+  const provider = providers.find((item) => item.id === providerId);
+  if (!provider) throw new Error('PROVIDER_NOT_FOUND');
+
+  const apiKey =
+    (apiKeyId
+      ? provider.apiKeys.find((item) => item.id === apiKeyId)
+      : provider.apiKeys[0]) ?? null;
+  if (!apiKey?.apiKey.trim()) {
+    throw new Error('PROVIDER_API_KEY_REQUIRED');
+  }
+
+  const rawProbe = await invoke<CodexModelProviderWebsocketProbe>(
+    'codex_probe_model_provider_websocket_support',
+    {
+      input: {
+        baseUrl: provider.baseUrl,
+        apiKey: apiKey.apiKey,
+        providerName: provider.name,
+      },
+    },
+  );
+  const probe = toValidProviderWebsocketProbe(rawProbe);
+  if (!probe) {
+    throw new Error('PROVIDER_WEBSOCKET_PROBE_INVALID');
+  }
+
+  provider.websocketProbe = probe;
+  if (typeof probe.detectedSupportsWebsockets === 'boolean') {
+    provider.supportsWebsockets = probe.detectedSupportsWebsockets;
+  }
+  provider.updatedAt = Date.now();
+  await writeProviders(providers);
+
+  return {
+    provider: cloneProviders([provider])[0],
+    probe,
+  };
 }
 
 export async function removeApiKeyFromCodexModelProvider(

@@ -177,6 +177,41 @@ struct StoredLocalAccessConfig {
     port: Option<u16>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexProviderWebsocketProbeInput {
+    pub base_url: String,
+    pub api_key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexProviderWebsocketProbeStatus {
+    Supported,
+    Unsupported,
+    AuthenticationFailed,
+    TimedOut,
+    NetworkError,
+    CliUnavailable,
+    Failed,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexProviderWebsocketProbeResult {
+    pub status: CodexProviderWebsocketProbeStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_supports_websockets: Option<bool>,
+    pub checked_at: i64,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_source: Option<String>,
+}
+
 fn is_default_openai_base_url(raw: &str) -> bool {
     raw.trim()
         .eq_ignore_ascii_case(CODEX_DEFAULT_OPENAI_BASE_URL)
@@ -1316,6 +1351,436 @@ fn write_api_key_provider_to_config_toml(
         crate::modules::codex_config_format::normalize_config_toml_spacing(&doc.to_string());
     write_string_atomic_if_changed(&config_path, &content)
         .map_err(|e| format!("写入 config.toml 失败: {}", e))
+}
+
+struct TempCodexHomeGuard {
+    path: PathBuf,
+}
+
+impl TempCodexHomeGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempCodexHomeGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn create_temp_codex_home(prefix: &str) -> Result<TempCodexHomeGuard, String> {
+    let unique = format!(
+        "{}-{}-{}",
+        prefix,
+        std::process::id(),
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_micros() * 1000)
+    );
+    let path = std::env::temp_dir().join(unique);
+    fs::create_dir_all(&path).map_err(|e| format!("创建临时 CODEX_HOME 失败: {}", e))?;
+    Ok(TempCodexHomeGuard::new(path))
+}
+
+fn apply_managed_proxy_env_to_tokio_command(command: &mut tokio::process::Command) {
+    let config = crate::modules::config::get_user_config();
+    let proxy_url = config.global_proxy_url.trim().to_string();
+    if config.global_proxy_enabled && !proxy_url.is_empty() {
+        for key in [
+            "http_proxy",
+            "https_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ] {
+            command.env(key, &proxy_url);
+        }
+    }
+
+    if config.global_proxy_enabled {
+        let no_proxy_seed = [
+            std::env::var("no_proxy").unwrap_or_default(),
+            std::env::var("NO_PROXY").unwrap_or_default(),
+            config.global_proxy_no_proxy,
+        ]
+        .join(",");
+        let no_proxy = crate::modules::codex_protocol::merge_local_no_proxy(&no_proxy_seed);
+        if !no_proxy.is_empty() {
+            command.env("no_proxy", &no_proxy);
+            command.env("NO_PROXY", no_proxy);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_hidden_window_flags_to_tokio_command(command: &mut tokio::process::Command) {
+    command.creation_flags(0x0800_0000);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn apply_hidden_window_flags_to_tokio_command(_command: &mut tokio::process::Command) {}
+
+fn build_provider_websocket_probe_result(
+    status: CodexProviderWebsocketProbeStatus,
+    detected_supports_websockets: Option<bool>,
+    checked_at: i64,
+    message: impl Into<String>,
+    latency_ms: Option<u64>,
+    command_source: Option<String>,
+) -> CodexProviderWebsocketProbeResult {
+    CodexProviderWebsocketProbeResult {
+        status,
+        detected_supports_websockets,
+        checked_at,
+        message: message.into(),
+        latency_ms,
+        command_source,
+    }
+}
+
+fn truncate_probe_message(raw: &str, max_chars: usize) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut result = String::new();
+    let mut count = 0usize;
+    for ch in trimmed.chars() {
+        if count >= max_chars {
+            result.push_str("...");
+            break;
+        }
+        result.push(ch);
+        count += 1;
+    }
+    result
+}
+
+fn collect_doctor_json_texts(value: &serde_json::Value) -> Vec<String> {
+    if let Some(raw) = value.as_str() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            Vec::new()
+        } else {
+            vec![trimmed.to_string()]
+        }
+    } else if let Some(items) = value.as_array() {
+        items
+            .iter()
+            .filter_map(|item| item.as_str())
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+            .map(ToOwned::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+fn summarize_doctor_check_text(check: &serde_json::Value) -> String {
+    let mut texts = Vec::new();
+    if let Some(summary) = check.get("summary").and_then(|value| value.as_str()) {
+        let summary = summary.trim();
+        if !summary.is_empty() {
+            texts.push(summary.to_string());
+        }
+    }
+
+    if let Some(details) = check.get("details").and_then(|value| value.as_object()) {
+        for value in details.values() {
+            texts.extend(collect_doctor_json_texts(value));
+        }
+    }
+
+    if let Some(notes) = check.get("notes").and_then(|value| value.as_array()) {
+        for note in notes {
+            if let Some(raw) = note.as_str() {
+                let raw = raw.trim();
+                if !raw.is_empty() {
+                    texts.push(raw.to_string());
+                }
+            }
+        }
+    }
+
+    truncate_probe_message(&texts.join(" | "), 240)
+}
+
+fn classify_provider_websocket_probe_from_doctor_report(
+    report: &serde_json::Value,
+    checked_at: i64,
+    latency_ms: u64,
+    command_source: Option<String>,
+) -> Result<CodexProviderWebsocketProbeResult, String> {
+    let check = report
+        .get("checks")
+        .and_then(|value| value.get("network.websocket_reachability"))
+        .ok_or_else(|| "doctor --json 缺少 network.websocket_reachability 检查".to_string())?;
+    let status = check
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let summary = summarize_doctor_check_text(check);
+    let lower_summary = summary.to_ascii_lowercase();
+
+    let result = if status == "ok" && lower_summary.contains("handshake succeeded") {
+        build_provider_websocket_probe_result(
+            CodexProviderWebsocketProbeStatus::Supported,
+            Some(true),
+            checked_at,
+            if summary.is_empty() {
+                "支持 Responses WebSocket，握手已成功。".to_string()
+            } else {
+                format!("支持 Responses WebSocket：{}", summary)
+            },
+            Some(latency_ms),
+            command_source,
+        )
+    } else if lower_summary.contains("timed out") {
+        build_provider_websocket_probe_result(
+            CodexProviderWebsocketProbeStatus::TimedOut,
+            None,
+            checked_at,
+            if summary.is_empty() {
+                "WebSocket 检测超时，更像网络、代理或上游节点响应慢。".to_string()
+            } else {
+                format!("WebSocket 检测超时：{}", summary)
+            },
+            Some(latency_ms),
+            command_source,
+        )
+    } else if lower_summary.contains(" 401 ")
+        || lower_summary.contains("http 401")
+        || lower_summary.contains("403")
+        || lower_summary.contains("unauthorized")
+        || lower_summary.contains("forbidden")
+    {
+        build_provider_websocket_probe_result(
+            CodexProviderWebsocketProbeStatus::AuthenticationFailed,
+            None,
+            checked_at,
+            if summary.is_empty() {
+                "WebSocket 检测未通过：API Key 无效或无权建立握手。".to_string()
+            } else {
+                format!("WebSocket 检测未通过：{}", summary)
+            },
+            Some(latency_ms),
+            command_source,
+        )
+    } else if lower_summary.contains("closed immediately after handshake")
+        || lower_summary.contains("http 400")
+        || lower_summary.contains("http 404")
+        || lower_summary.contains("http 405")
+        || lower_summary.contains("http 426")
+        || lower_summary.contains("not implemented")
+        || lower_summary.contains("websocket policy support")
+    {
+        build_provider_websocket_probe_result(
+            CodexProviderWebsocketProbeStatus::Unsupported,
+            Some(false),
+            checked_at,
+            if summary.is_empty() {
+                "当前 relay 看起来不支持 Responses WebSocket，建议保持关闭。".to_string()
+            } else {
+                format!("当前 relay 看起来不支持 Responses WebSocket：{}", summary)
+            },
+            Some(latency_ms),
+            command_source,
+        )
+    } else if lower_summary.contains("transport error")
+        || lower_summary.contains("stream error")
+        || lower_summary.contains("connection reset")
+        || lower_summary.contains("unexpected eof")
+        || lower_summary.contains("dns")
+        || lower_summary.contains("tls")
+        || lower_summary.contains("proxy")
+        || lower_summary.contains("firewall")
+        || lower_summary.contains("vpn")
+    {
+        build_provider_websocket_probe_result(
+            CodexProviderWebsocketProbeStatus::NetworkError,
+            None,
+            checked_at,
+            if summary.is_empty() {
+                "WebSocket 检测失败，更像网络、代理、TLS 或策略问题。".to_string()
+            } else {
+                format!("WebSocket 检测失败，更像网络或代理问题：{}", summary)
+            },
+            Some(latency_ms),
+            command_source,
+        )
+    } else {
+        build_provider_websocket_probe_result(
+            CodexProviderWebsocketProbeStatus::Failed,
+            None,
+            checked_at,
+            if summary.is_empty() {
+                "WebSocket 检测失败，请稍后重试。".to_string()
+            } else {
+                format!("WebSocket 检测失败：{}", summary)
+            },
+            Some(latency_ms),
+            command_source,
+        )
+    };
+
+    Ok(result)
+}
+
+async fn read_async_process_stream<R>(mut stream: R) -> Result<Vec<u8>, String>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut buffer = Vec::new();
+    tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut buffer)
+        .await
+        .map_err(|e| format!("读取诊断进程输出失败: {}", e))?;
+    Ok(buffer)
+}
+
+async fn collect_async_process_stream(
+    task: Option<tokio::task::JoinHandle<Result<Vec<u8>, String>>>,
+) -> Result<Vec<u8>, String> {
+    let Some(task) = task else {
+        return Ok(Vec::new());
+    };
+    task.await
+        .map_err(|e| format!("等待诊断进程输出任务失败: {}", e))?
+}
+
+pub async fn probe_model_provider_websocket_support(
+    input: CodexProviderWebsocketProbeInput,
+) -> Result<CodexProviderWebsocketProbeResult, String> {
+    let checked_at = chrono::Utc::now().timestamp_millis();
+    let normalized_api_key = normalize_api_key(&input.api_key)
+        .ok_or_else(|| "检测 WebSocket 支持失败：缺少 API Key".to_string())?;
+    let provider_name = normalize_api_provider_name(input.provider_name.as_deref());
+    let mut provider_config = resolve_api_provider_config(
+        Some(input.base_url.as_str()),
+        Some(CodexApiProviderMode::Custom),
+        None,
+        provider_name.as_deref(),
+    )?;
+    provider_config.supports_websockets = true;
+
+    let runtime = match crate::modules::codex_wakeup::resolve_cli_runtime() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            return Ok(build_provider_websocket_probe_result(
+                CodexProviderWebsocketProbeStatus::CliUnavailable,
+                None,
+                checked_at,
+                format!("无法执行本地 WebSocket 检测：{}", error),
+                None,
+                None,
+            ));
+        }
+    };
+
+    let temp_codex_home = create_temp_codex_home("cockpit-codex-provider-ws-probe")?;
+    write_api_key_provider_to_config_toml(
+        temp_codex_home.path(),
+        &provider_config,
+        &normalized_api_key,
+    )?;
+
+    let mut command = if let Some(node_path) = runtime.node_path.as_deref() {
+        let mut command = tokio::process::Command::new(node_path);
+        command.arg(&runtime.binary_path);
+        command
+    } else {
+        tokio::process::Command::new(&runtime.binary_path)
+    };
+    command
+        .arg("doctor")
+        .arg("--json")
+        .env("CODEX_HOME", temp_codex_home.path())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    apply_managed_proxy_env_to_tokio_command(&mut command);
+    apply_hidden_window_flags_to_tokio_command(&mut command);
+
+    let started_at = std::time::Instant::now();
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("启动 codex doctor --json 失败: {}", e))?;
+    let stdout_task = child
+        .stdout
+        .take()
+        .map(|stdout| tokio::spawn(read_async_process_stream(stdout)));
+    let stderr_task = child
+        .stderr
+        .take()
+        .map(|stderr| tokio::spawn(read_async_process_stream(stderr)));
+
+    let wait_result =
+        tokio::time::timeout(std::time::Duration::from_secs(12), child.wait()).await;
+    let latency_ms = started_at.elapsed().as_millis().try_into().ok();
+    let command_source = Some(runtime.source.clone());
+
+    let status = match wait_result {
+        Ok(status_result) => {
+            status_result.map_err(|e| format!("等待 codex doctor --json 结束失败: {}", e))?
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Ok(build_provider_websocket_probe_result(
+                CodexProviderWebsocketProbeStatus::TimedOut,
+                None,
+                checked_at,
+                "WebSocket 检测超时：`codex doctor --json` 超过 12 秒未完成。".to_string(),
+                latency_ms,
+                command_source,
+            ));
+        }
+    };
+
+    let stdout_bytes = collect_async_process_stream(stdout_task).await?;
+    let stderr_bytes = collect_async_process_stream(stderr_task).await?;
+    let stdout = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
+    let stderr = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
+    let output_text = if stdout.is_empty() { &stderr } else { &stdout };
+
+    if output_text.is_empty() {
+        return Ok(build_provider_websocket_probe_result(
+            CodexProviderWebsocketProbeStatus::Failed,
+            None,
+            checked_at,
+            format!(
+                "WebSocket 检测失败：doctor 未返回可解析输出（exit_status={}）。",
+                status
+            ),
+            latency_ms,
+            command_source,
+        ));
+    }
+
+    let report = serde_json::from_str::<serde_json::Value>(output_text).map_err(|e| {
+        format!(
+            "解析 codex doctor --json 输出失败: {}；stdout={}；stderr={}",
+            e,
+            truncate_probe_message(&stdout, 240),
+            truncate_probe_message(&stderr, 240)
+        )
+    })?;
+    classify_provider_websocket_probe_from_doctor_report(
+        &report,
+        checked_at,
+        latency_ms.unwrap_or_default(),
+        command_source,
+    )
 }
 
 /// 旧版数据目录（~/Library/Application Support/com.antigravity.cockpit-tools/）
@@ -6563,11 +7028,13 @@ mod tests {
         write_api_key_provider_to_config_toml, write_api_provider_to_config_toml,
         write_auth_file_to_dir, write_managed_projection_to_dir, write_quick_config_to_config_toml,
         ApiProviderConfig, CodexAccountIndex, CodexAccountSummary, CodexAuthFile, CodexAuthTokens,
-        CodexJsonImportCandidate, LocalCodexOAuthSnapshot, CODEX_AUTH_PROJECTION_FILE_NAME,
+        CodexJsonImportCandidate, CodexProviderWebsocketProbeStatus,
+        LocalCodexOAuthSnapshot, CODEX_AUTH_PROJECTION_FILE_NAME,
         CODEX_AUTO_COMPACT_DEFAULT_LIMIT, CODEX_CONTEXT_WINDOW_1M_VALUE,
         CODEX_LOCAL_ACCESS_FILE_NAME, CODEX_LOCAL_ACCESS_HEALTH_FILE,
         CODEX_MODEL_PROVIDERS_FILE_NAME, CODEX_PROFILE_SHARED_COCKPIT_API,
         CODEX_RUNTIME_MODEL_PROVIDER_ID, CODEX_WEEK_WINDOW_MINUTES,
+        classify_provider_websocket_probe_from_doctor_report,
         WEEKLY_WINDOW_MINUTES_THRESHOLD,
     };
     use crate::models::codex::{
@@ -10653,6 +11120,116 @@ supports_websockets = false
         assert!(content.contains("model_provider = \"codex_local_access\""));
         assert!(content.contains("base_url = \"https://relay.example.com/v1\""));
         assert!(content.contains("supports_websockets = true"));
+    }
+
+    #[test]
+    fn provider_websocket_probe_parser_marks_supported_result() {
+        let report = serde_json::json!({
+            "checks": {
+                "network.websocket_reachability": {
+                    "status": "ok",
+                    "summary": "Responses WebSocket handshake succeeded",
+                    "details": {
+                        "handshake result": "HTTP 101"
+                    },
+                    "notes": []
+                }
+            }
+        });
+
+        let result = classify_provider_websocket_probe_from_doctor_report(
+            &report,
+            1_700_000_000_000,
+            321,
+            Some("PATH".to_string()),
+        )
+        .expect("probe result");
+        assert_eq!(result.status, CodexProviderWebsocketProbeStatus::Supported);
+        assert_eq!(result.detected_supports_websockets, Some(true));
+        assert_eq!(result.latency_ms, Some(321));
+        assert!(result.message.contains("支持 Responses WebSocket"));
+    }
+
+    #[test]
+    fn provider_websocket_probe_parser_marks_timeout_result() {
+        let report = serde_json::json!({
+            "checks": {
+                "network.websocket_reachability": {
+                    "status": "warning",
+                    "summary": "Responses WebSocket timed out; HTTPS fallback may still work",
+                    "details": {},
+                    "notes": ["handshake timed out"]
+                }
+            }
+        });
+
+        let result = classify_provider_websocket_probe_from_doctor_report(
+            &report,
+            1_700_000_000_000,
+            12_000,
+            Some("PATH".to_string()),
+        )
+        .expect("probe result");
+        assert_eq!(result.status, CodexProviderWebsocketProbeStatus::TimedOut);
+        assert_eq!(result.detected_supports_websockets, None);
+        assert!(result.message.contains("超时"));
+    }
+
+    #[test]
+    fn provider_websocket_probe_parser_marks_auth_failure_result() {
+        let report = serde_json::json!({
+            "checks": {
+                "network.websocket_reachability": {
+                    "status": "warning",
+                    "summary": "Responses WebSocket failed; HTTPS fallback may still work",
+                    "details": {
+                        "handshake API error": "401 Unauthorized"
+                    },
+                    "notes": []
+                }
+            }
+        });
+
+        let result = classify_provider_websocket_probe_from_doctor_report(
+            &report,
+            1_700_000_000_000,
+            512,
+            Some("PATH".to_string()),
+        )
+        .expect("probe result");
+        assert_eq!(
+            result.status,
+            CodexProviderWebsocketProbeStatus::AuthenticationFailed
+        );
+        assert_eq!(result.detected_supports_websockets, None);
+        assert!(result.message.contains("检测未通过"));
+    }
+
+    #[test]
+    fn provider_websocket_probe_parser_marks_unsupported_result() {
+        let report = serde_json::json!({
+            "checks": {
+                "network.websocket_reachability": {
+                    "status": "warning",
+                    "summary": "Responses WebSocket closed immediately after handshake",
+                    "details": {
+                        "immediate close code": "1008",
+                        "immediate close reason": "policy"
+                    },
+                    "notes": []
+                }
+            }
+        });
+
+        let result = classify_provider_websocket_probe_from_doctor_report(
+            &report,
+            1_700_000_000_000,
+            640,
+            Some("PATH".to_string()),
+        )
+        .expect("probe result");
+        assert_eq!(result.status, CodexProviderWebsocketProbeStatus::Unsupported);
+        assert_eq!(result.detected_supports_websockets, Some(false));
     }
 
     #[test]

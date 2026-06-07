@@ -270,6 +270,82 @@ export function getCodexQuotaIssueInfo(
   };
 }
 
+export type CodexUpstreamIssueCategory =
+  | "none"
+  | "channel_unavailable"
+  | "network_or_proxy"
+  | "node_or_gateway_timeout"
+  | "upstream_service_unavailable"
+  | "upstream_5xx";
+
+function includesAnyCodexErrorHint(
+  lowerMessage: string,
+  fragments: string[],
+): boolean {
+  return fragments.some((fragment) => lowerMessage.includes(fragment));
+}
+
+export function classifyCodexUpstreamIssue(
+  issueInfo: CodexQuotaIssueInfo,
+): CodexUpstreamIssueCategory {
+  const statusCode = issueInfo.statusCode.trim();
+  const lowerMessage = issueInfo.rawMessage.trim().toLowerCase();
+  if (!statusCode && !lowerMessage) return "none";
+
+  if (
+    statusCode === "503" &&
+    includesAnyCodexErrorHint(lowerMessage, [
+      "no available channel",
+      "under group",
+      "default (distributor)",
+      "distributor",
+    ])
+  ) {
+    return "channel_unavailable";
+  }
+
+  if (
+    statusCode === "502" ||
+    statusCode === "504" ||
+    includesAnyCodexErrorHint(lowerMessage, [
+      "gateway timeout",
+      "upstream timeout",
+      "timed out waiting for response headers",
+      "bad gateway",
+    ])
+  ) {
+    return "node_or_gateway_timeout";
+  }
+
+  if (
+    includesAnyCodexErrorHint(lowerMessage, [
+      "stream disconnected before completion",
+      "idle timeout waiting for sse",
+      "error sending request",
+      "connection reset",
+      "unexpected eof",
+      "dns error",
+      "proxy",
+      "tls",
+      "connection refused",
+      "network is unreachable",
+      "timed out",
+    ])
+  ) {
+    return "network_or_proxy";
+  }
+
+  if (statusCode === "503") {
+    return "upstream_service_unavailable";
+  }
+
+  if (statusCode.startsWith("5")) {
+    return "upstream_5xx";
+  }
+
+  return "none";
+}
+
 export function shouldShowCodexQuotaIssueNotice(
   error?: CodexQuotaErrorInfo | null,
 ): boolean {
