@@ -505,7 +505,7 @@ flowchart TD
 - [x] `.\scripts\smoke-local-hardened-api.ps1 -Stage small_pool -WriteReport`
 - [x] `.\scripts\smoke-local-hardened-api.ps1 -Stage fallback_probe -AcknowledgeLiveUpstreamRisk -RunUpstreamSmoke -WriteReport`
 - [x] 手动 smoke：Codex CLI 使用当前 API service 端口 `http://127.0.0.1:45335/v1`，一次性 provider `cockpit_direct_smoke`，`codex exec --ephemeral` 返回 `OK`。
-- [ ] 2026-05-18 前置探针：`Test-NetConnection 127.0.0.1:2876` 返回未监听；未修改 live Codex provider/API key。
+- [x] 2026-05-18 前置探针：`Test-NetConnection 127.0.0.1:2876` 返回未监听；2026-06-07T22:00:47.3133810+08:00 复核 `Test-NetConnection 127.0.0.1 -Port 2876` 得到 `TcpTestSucceeded : False`；未修改 live Codex provider/API key。
 
 可能文件：
 
