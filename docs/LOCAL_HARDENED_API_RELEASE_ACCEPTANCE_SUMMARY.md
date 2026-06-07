@@ -95,6 +95,7 @@ git diff --check
 | recent audit explainability 汇总证据 | `reports/local-hardened-api-smoke/browser-preview-recent-audit-explainability-20260607.md` | 证明首页 inline card 与 modal 都能直接看到 `请求来源 / 亲和来源 / 恢复动作 / 建议等待` |
 | `U10 / NPB-03` 性能基线 | `reports/local-hardened-api-performance/perf-baseline-20260607-202512.md`、`reports/local-hardened-api-performance/browser-preview-modal-baseline-20260607.md` | synthetic 与 app-safe browser-preview 两层证据分开看，不能互相冒充 |
 | live UI smoke 分层入口 | `docs/LOCAL_HARDENED_API_LIVE_UI_SMOKE_MAP.md` | 先判断是 browser-preview、app-safe isolated probe，还是必须进入真实 live Tauri / tray / 系统通知 |
+| 剩余 live acceptance blocker | `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md` | 把 `enabled=false`、listener 缺失、桌面观察能力缺口和下一次安全执行顺序收口成正式证据 |
 
 ### 5.1 低风险默认 UI / 浏览器证据
 
@@ -115,6 +116,9 @@ git diff --check
 - `reports/local-hardened-api-smoke/live-ui-smoke-readonly-baseline-20260607.md`
   - 已补 live UI 的只读现场基线：进程稳定、CLI 配置未改、tray/notification 代码入口明确
   - 已确认当前 live API service 未启用，真实 tray/系统通知/continuity 交互验收仍未完成
+- `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md`
+  - 已明确当前 `enabled=false` / listener 缺失下的剩余 `gate_na`
+  - 已明确 tray / notification 桌面断言当前属于 `platform_na`
 
 ### 5.2 协议与连续性入口
 
@@ -145,6 +149,7 @@ git diff --check
 - `reports/local-hardened-api-performance/perf-baseline-20260607-202512.md`
 - `reports/local-hardened-api-performance/perf-baseline-20260607-202512.json`
 - `reports/local-hardened-api-performance/browser-preview-modal-baseline-20260607.md`
+- `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md`
 
 当前已形成 `U10 / NPB-03` 的首份 isolated synthetic `M/L` 基线，并补了 browser-preview app-safe modal 首开样本；剩余缺口是 live Tauri modal 首开、tray / 系统通知、runtime switch 等更接近真实桌面运行态的交互证据。
 
@@ -168,6 +173,7 @@ git diff --check
   - `alternative_verification`
   - `evidence_link`
   - `expires_at`
+- 当前剩余 live blocker 的实例化口径见 `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md`。
 
 ## 8. 当前收口判断
 
@@ -184,3 +190,4 @@ git diff --check
 - U10 剩余缺口已从“完全缺 baseline”收敛为“仍缺更接近真实桌面运行态的交互基线”，这仍需要后续补证据，但不再是零起点。
 - `NPB-06` 已补 smoke 分层地图；后续真正进入 tray / 系统通知 / live continuity 验收前，应先按该地图判断是否需要用户确认。
 - 当前已补 live UI 只读现场基线；它证明现场可观测性和风险边界已清楚，但不等于真实 tray/系统通知 smoke 已完成。
+- `NPB-06` / `NPB-03` 剩余 live blocker 现已有单独报告；当前阻塞来自 `enabled=false`、listener 缺失和“当前 Codex App 不断线”护栏，而不是文档入口缺失。

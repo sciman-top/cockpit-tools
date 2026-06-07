@@ -77,10 +77,17 @@
 
 这些项目目前都没有被 browser-preview 证据真正替代。
 
+当前 blocker 正式证据：
+
+- `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md`
+  - 已把 2026-06-07 当前 live `enabled=false`、listener 缺失和桌面观察能力缺口收口成正式证据。
+  - 已明确哪些剩余项当前属于 `gate_na`，哪些属于 `platform_na`。
+
 ## 4. 建议执行顺序
 
 ### 4.1 先做的
 
+- 先看 `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md`，确认当前还缺的是 runtime precondition 还是桌面观察能力。
 - 继续补 browser-preview / app-safe 可覆盖的前端证据。
 - 用只读脚本验证 live continuity 相关 audit、hash、进程稳定性。
 - 把入口脚本、风险边界、N/A 口径持续同步到 release 读表。
@@ -104,6 +111,7 @@
 | tray 菜单 | live Tauri smoke | 高 | 否 |
 | 系统通知 | live Tauri smoke | 高 | 否 |
 | live continuity 提示 | live monitor + live UI smoke | 高 | 否 |
+| 剩余 live blocker / 前置条件 | `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md` | 中 | 是 |
 
 ## 6. 与 release 读表的关系
 

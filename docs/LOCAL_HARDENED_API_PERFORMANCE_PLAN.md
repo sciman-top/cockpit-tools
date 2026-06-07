@@ -98,8 +98,10 @@
   `state_light`、`state_full`、`selector_sort`
 - 当前已补 app-safe 交互样本：
   `reports/local-hardened-api-performance/browser-preview-modal-baseline-20260607.md`
+- 当前 live blocker / 前置条件：
+  `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md`
 - 当前未覆盖：
-  live Tauri modal 首次打开、tray / 系统通知、runtime switch 的 app-safe / live 真实交互基线
+  live Tauri modal 首次打开、tray / 系统通知、runtime switch 的 app-safe / live 真实交互基线；2026-06-07 当前 live runtime 仍 `enabled=false` 且 listener 缺失，在不打断当前 `Codex App` 会话的护栏下不能自动补采
 
 ## 验收口径
 
@@ -109,6 +111,6 @@
 
 ## 下一步高价值动作
 
-1. 在已有 isolated synthetic baseline 与 browser-preview modal 首开基线之上，继续补齐 live Tauri modal 首次打开、mode switch、tray / 系统通知等 app-safe / live 真实交互基线。
+1. 先满足 `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md` 中的 live runtime 与桌面观察前置条件，再补齐 live Tauri modal 首次打开、mode switch、tray / 系统通知等真实交互基线。
 2. 持续把阈值摘要和基线报告同步到 `docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md`，避免专项计划与 release 读表脱节。
 3. 若 `L` 档排序仍有卡顿，再评估更激进的缓存或虚拟列表，而不是先扩大刷新频率。
