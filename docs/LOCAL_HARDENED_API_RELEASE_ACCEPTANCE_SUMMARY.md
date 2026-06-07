@@ -94,6 +94,7 @@ git diff --check
 | `request_id_source` / `session_affinity_source` 解释链 | `reports/local-hardened-api-smoke/session-affinity-observability-contract-20260607.md` | 证明软亲和/观测来源可见，但不升级成 hard-affinity |
 | recent audit explainability 汇总证据 | `reports/local-hardened-api-smoke/browser-preview-recent-audit-explainability-20260607.md` | 证明首页 inline card 与 modal 都能直接看到 `请求来源 / 亲和来源 / 恢复动作 / 建议等待` |
 | `U10 / NPB-03` 性能基线 | `reports/local-hardened-api-performance/perf-baseline-20260607-202512.md`、`reports/local-hardened-api-performance/browser-preview-modal-baseline-20260607.md` | synthetic 与 app-safe browser-preview 两层证据分开看，不能互相冒充 |
+| live UI smoke 分层入口 | `docs/LOCAL_HARDENED_API_LIVE_UI_SMOKE_MAP.md` | 先判断是 browser-preview、app-safe isolated probe，还是必须进入真实 live Tauri / tray / 系统通知 |
 
 ### 5.1 低风险默认 UI / 浏览器证据
 
@@ -126,6 +127,7 @@ git diff --check
 - `docs/SELF_USE_DELTA.md`
 - `docs/UPSTREAM_SYNC_POLICY.md`
 - `docs/LOCAL_HARDENED_API_ADVANCED_LAN_MODE_CONTRACT.md`
+- `docs/LOCAL_HARDENED_API_LIVE_UI_SMOKE_MAP.md`
 
 ### 5.4 历史 acceptance / smoke 示例
 
@@ -177,3 +179,4 @@ git diff --check
 - U10 已补首份 isolated synthetic baseline/report，当前指标在 `M/L` 档均低于阈值；另有 browser-preview app-safe modal 首开样本可证明默认前端路径无明显卡顿。
 - live Tauri tray / 系统通知 / runtime switch / live continuity 仍属高风险场景，不能被 browser-preview 假装覆盖，只能继续走 app-safe probe 或显式 live acceptance。
 - U10 剩余缺口已从“完全缺 baseline”收敛为“仍缺更接近真实桌面运行态的交互基线”，这仍需要后续补证据，但不再是零起点。
+- `NPB-06` 已补 smoke 分层地图；后续真正进入 tray / 系统通知 / live continuity 验收前，应先按该地图判断是否需要用户确认。
