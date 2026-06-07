@@ -113,6 +113,18 @@ if (!hasFlag('--skip-local-hardened-api-guards')) {
       'scripts/test-local-hardened-api-live-risk-guard.ps1',
     ],
   });
+
+  steps.push({
+    name: 'Local hardened API smoke forensics helper',
+    command: 'pwsh',
+    args: [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      'scripts/test-local-hardened-api-smoke-forensics.ps1',
+    ],
+  });
 }
 
 if (!hasFlag('--skip-refresh-risk-guard')) {

@@ -29,6 +29,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "local-hardened-api-smoke-forensics.ps1")
 
 $liveUpstreamRiskRequests = [ordered]@{
   runUpstreamSmoke = [bool]$RunUpstreamSmoke
@@ -74,6 +75,8 @@ $script:AppSafeProbe = [ordered]@{
   requested = [bool]$AppSafeIsolatedProbe
   status = if ($AppSafeIsolatedProbe) { "pending" } else { "not_requested" }
 }
+$script:EphemeralGatewayStdoutPath = $null
+$script:EphemeralGatewayStderrPath = $null
 
 function New-SmokeResult {
   param([string]$Name)
@@ -1319,7 +1322,11 @@ function Invoke-UpstreamChatSmoke {
   try {
     $response = Invoke-JsonRequest -Method "POST" -Uri $uri -Headers @{ Authorization = "Bearer $ResolvedApiKey" } -Body $body -TimeoutSeconds 120
   } catch {
-    Set-SmokeFail $result "真实上游请求异常" @{ baseUrl = $ResolvedBaseUrl; error = $_.Exception.Message }
+    Set-SmokeFail $result "真实上游请求异常" @{
+      baseUrl = $ResolvedBaseUrl
+      error = $_.Exception.Message
+      failureForensics = (Get-LocalHardenedApiFailureForensics -DataRoot (Get-DataRoot) -StdoutPath $script:EphemeralGatewayStdoutPath -StderrPath $script:EphemeralGatewayStderrPath)
+    }
     return $result
   }
 
@@ -1687,6 +1694,8 @@ function Start-EphemeralGateway {
   } finally {
     [Environment]::SetEnvironmentVariable("COCKPIT_LOCAL_ACCESS_DATA_ROOT", $previousDataRootEnv, "Process")
   }
+  $script:EphemeralGatewayStdoutPath = $stdoutPath
+  $script:EphemeralGatewayStderrPath = $stderrPath
   $ready = Wait-EphemeralGatewayReady -Process $process -StdoutPath $stdoutPath -StderrPath $stderrPath -TimeoutSeconds $EphemeralGatewayReadyTimeoutSeconds
 
   [ordered]@{
