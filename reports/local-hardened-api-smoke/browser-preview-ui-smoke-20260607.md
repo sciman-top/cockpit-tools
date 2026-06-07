@@ -24,6 +24,9 @@
 2. `CodexLocalAccessModal`：
    - 健康面板能展示 `最近调度`、`当前阻断`、`恢复动作`、`建议等待`。
    - selector / blocked explainability 采用脱敏聚合文案，不泄露完整 key。
+3. `Codex API 服务`首页 inline card：
+   - 不打开 modal 也能直接看到 `最近调度`、`当前阻断`、`恢复动作`、`建议等待`。
+   - selector explainability 继续显示聚合候选、可调度、`尝试上限` 和 skip reason，而不是只剩最终结果。
 
 ## 3. 注入场景
 
@@ -33,6 +36,8 @@
 - Service key：`ck-preview••••••••••••`
 - Client key：`sk-preview••••••••••••`
 - `selectorInsight.selectedReason = sticky_selected`
+- `selectorInsight.capApplied = true`
+- `selectorInsight.capLimit = 2`
 - `blockedInsight.errorType = pool_unavailable`
 - `blockedInsight.recoverAction = retry_after_cooldown_or_start_new_task`
 
@@ -65,13 +70,26 @@
   - 健康状态、selector、blocked reason 都是脱敏聚合文案
   - 本次注入场景下未发现完整服务 key / client key 通过 DOM title 泄露
 
+### 4.3 API 服务首页 inline card
+
+- 页面正文包含：
+  - `最近调度`
+  - `当前阻断`
+  - `尝试上限 2`
+  - `恢复动作: 等待冷却结束后重试，或开启新的独立任务`
+  - `建议等待: 120s`
+- DOM / 文本检查结果：
+  - `.codex-local-access-inline-insights` 已直接呈现 selector / blocked explainability，不必先打开 modal
+  - inline card 文案包含 `候选 4`、`可调度 1`、`因健康状态跳过 2`、`因尝试上限截断 1`
+  - 未发现 `title` 属性包含 `pool_unavailable` 或额外解释性泄露
+
 ## 5. 替代边界
 
 这条 smoke 可以替代以下手工检查：
 
 - DOM `title` 是否泄露完整 API key
 - hardened 默认文案是否误导为 LAN
-- health panel / selector / blocked explainability 是否在 UI 可见
+- health panel / selector / blocked explainability 是否在 modal 与首页 inline card 可见
 
 这条 smoke 不能替代以下高风险 live 验证：
 

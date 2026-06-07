@@ -129,6 +129,11 @@ import {
   isCodexLocalAccessRuntimeActive,
 } from "../utils/codexLocalAccessUiState";
 import { filterCodexLocalAccessAccountIds } from "../utils/codexLocalAccessAccounts";
+import {
+  buildCodexLocalAccessSkippedReasonSummary,
+  getCodexLocalAccessBlockedRecoverActionLabel,
+  getCodexLocalAccessSelectorReasonLabel,
+} from "../utils/codexLocalAccessInsights";
 import { runSettledWithConcurrency } from "../utils/asyncConcurrency";
 import { isCodexContinuityProtectionError } from "../utils/codexContinuityProtection";
 
@@ -8061,6 +8066,22 @@ export function CodexAccountsPage() {
       "当前集合暂无账号",
     );
     const localAccessHealth = localAccessState?.health ?? null;
+    const localAccessSelectorInsight = localAccessHealth?.selectorInsight ?? null;
+    const localAccessBlockedInsight = localAccessHealth?.blockedInsight ?? null;
+    const localAccessSelectorReasonLabel = getCodexLocalAccessSelectorReasonLabel(
+      localAccessSelectorInsight?.selectedReason,
+      t,
+    );
+    const localAccessSelectorSkippedSummary =
+      buildCodexLocalAccessSkippedReasonSummary(
+        localAccessSelectorInsight?.skippedCountsByReason,
+        t,
+      );
+    const localAccessBlockedRecoverActionLabel =
+      getCodexLocalAccessBlockedRecoverActionLabel(
+        localAccessBlockedInsight?.recoverAction,
+        t,
+      );
     const localAccessAvailableAccountCount =
       (localAccessHealth?.healthyCount ?? 0) +
       (localAccessHealth?.estimatedAvailableCount ?? 0);
@@ -8656,6 +8677,88 @@ export function CodexAccountsPage() {
                     defaultValue: "异常 {{abnormal}} · 冷却 {{cooldown}}",
                   })}
                 </span>
+              </div>
+            )}
+
+            {(localAccessSelectorInsight || localAccessBlockedInsight) && (
+              <div className="codex-local-access-inline-insights">
+                {localAccessSelectorInsight && (
+                  <div className="codex-local-access-inline-insight">
+                    <span className="codex-local-access-inline-insight-label">
+                      {t("codex.localAccess.health.selectorTitle", "最近调度")}
+                    </span>
+                    <strong>{localAccessSelectorReasonLabel}</strong>
+                    <div className="codex-local-access-inline-insight-meta">
+                      <span>
+                        {t("codex.localAccess.health.selectorCandidates", {
+                          count: localAccessSelectorInsight.candidateCount,
+                          defaultValue: "候选 {{count}}",
+                        })}
+                      </span>
+                      <span>
+                        {t("codex.localAccess.health.selectorEligible", {
+                          count: localAccessSelectorInsight.eligibleCount,
+                          defaultValue: "可调度 {{count}}",
+                        })}
+                      </span>
+                      {localAccessSelectorInsight.capApplied && (
+                        <span>
+                          {t("codex.localAccess.health.selectorCap", {
+                            count: localAccessSelectorInsight.capLimit,
+                            defaultValue: "尝试上限 {{count}}",
+                          })}
+                        </span>
+                      )}
+                      {localAccessSelectorInsight.modelKey && (
+                        <span>
+                          {t("codex.localAccess.health.selectorModel", "模型")}:{" "}
+                          <code>{localAccessSelectorInsight.modelKey}</code>
+                        </span>
+                      )}
+                      {localAccessSelectorSkippedSummary && (
+                        <span>{localAccessSelectorSkippedSummary}</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {localAccessBlockedInsight && (
+                  <div className="codex-local-access-inline-insight is-warning">
+                    <span className="codex-local-access-inline-insight-label">
+                      {t("codex.localAccess.health.blockedTitle", "当前阻断")}
+                    </span>
+                    <strong>{localAccessBlockedInsight.reason ?? "--"}</strong>
+                    <div className="codex-local-access-inline-insight-meta">
+                      {localAccessBlockedInsight.status != null && (
+                        <span>
+                          {t("codex.localAccess.health.blockedStatus", "状态")}:{" "}
+                          <code>HTTP {localAccessBlockedInsight.status}</code>
+                        </span>
+                      )}
+                      {localAccessBlockedInsight.errorType && (
+                        <span>
+                          {t("codex.localAccess.health.blockedType", "分类")}:{" "}
+                          <code>{localAccessBlockedInsight.errorType}</code>
+                        </span>
+                      )}
+                      {localAccessBlockedRecoverActionLabel && (
+                        <span>
+                          {t("codex.localAccess.health.recoverAction", "恢复动作")}:{" "}
+                          {localAccessBlockedRecoverActionLabel}
+                        </span>
+                      )}
+                      {localAccessBlockedInsight.retryAfterMs != null && (
+                        <span>
+                          {t("codex.localAccess.health.retryAfter", "建议等待")}:{" "}
+                          {Math.max(
+                            1,
+                            Math.round(localAccessBlockedInsight.retryAfterMs / 1000),
+                          )}
+                          s
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

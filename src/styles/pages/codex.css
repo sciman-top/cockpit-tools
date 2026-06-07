@@ -963,6 +963,58 @@
   white-space: nowrap;
 }
 
+.codex-local-access-inline-insights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.codex-local-access-inline-insight {
+  flex: 1 1 280px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--primary) 14%, var(--border));
+  background: color-mix(in srgb, var(--bg-tertiary) 84%, transparent);
+}
+
+.codex-local-access-inline-insight.is-warning {
+  border-color: color-mix(in srgb, var(--warning) 22%, var(--border));
+  background: color-mix(in srgb, var(--warning) 8%, var(--bg-tertiary));
+}
+
+.codex-local-access-inline-insight strong {
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--text-primary);
+}
+
+.codex-local-access-inline-insight-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.codex-local-access-inline-insight-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.codex-local-access-inline-insight-meta code {
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-surface) 84%, transparent);
+}
+
 .codex-local-access-error-action {
   flex-shrink: 0;
   margin-left: auto;
@@ -1244,6 +1296,32 @@
 
 [data-theme="dark"] .codex-local-access-health-summary-title {
   color: rgba(226, 232, 240, 0.62);
+}
+
+[data-theme="dark"] .codex-local-access-inline-insight {
+  border-color: rgba(59, 130, 246, 0.22);
+  background: rgba(15, 23, 42, 0.72);
+}
+
+[data-theme="dark"] .codex-local-access-inline-insight.is-warning {
+  border-color: rgba(250, 204, 21, 0.28);
+  background: rgba(120, 53, 15, 0.18);
+}
+
+[data-theme="dark"] .codex-local-access-inline-insight strong {
+  color: rgba(248, 250, 252, 0.96);
+}
+
+[data-theme="dark"] .codex-local-access-inline-insight-label {
+  color: rgba(191, 219, 254, 0.76);
+}
+
+[data-theme="dark"] .codex-local-access-inline-insight-meta {
+  color: rgba(226, 232, 240, 0.76);
+}
+
+[data-theme="dark"] .codex-local-access-inline-insight-meta code {
+  background: rgba(30, 41, 59, 0.92);
 }
 
 [data-theme="dark"] .codex-local-access-stats-empty,

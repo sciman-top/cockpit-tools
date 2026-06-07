@@ -26,7 +26,7 @@
 | NPB-04 | Release acceptance summary | 用户旅程矩阵、专项计划和 release preflight 之间还缺一张总表 | 把 U1-U10 映射到 release gate、报告文件和 fail/block 条件 |
 | NPB-05 | Windows-first / cross-platform 发布语义 | 架构蓝图已说“Windows-first”，但 release 语义仍不够硬 | 明确 Windows 一级体验，macOS/Linux 的兼容级别、阻断条件和回归口径 |
 | NPB-06 | UI smoke 自动化 | preview/default 与 wakeup/reset UI 已由 browser-preview 覆盖，仍缺 live Tauri/tray 等高风险交互自动化 | 聚焦高风险 live UI smoke：tray、系统通知、live continuity 提示 |
-| NPB-07 | 推荐排序与解释性 | “为什么优先老号/为什么跳过新号”仍主要靠审计或口头解释 | UI 和报告里直接展示 selector reason、blocked reason、recover action |
+| NPB-07 | 推荐排序与解释性 | modal 与首页 inline card 已能直出 selector / blocked / recover 摘要，但 recent audit 解释链仍主要靠审计文件和口头说明 | 把 UI、报告与 recent audit 事件继续串成统一解释链，减少“还得去翻审计文件” |
 
 ## 4. 高级 LAN 模式草案边界
 

@@ -440,7 +440,7 @@ flowchart TD
 - [x] current-pool scoped health 单测：`cargo test --package cockpit-tools scoped_health_summary_ignores_accounts_outside_current_pool --quiet`
 - [x] 手动恢复单测：`cargo test --package cockpit-tools manual_recovery --quiet`
 - [x] `npm run typecheck`
-- [x] browser preview + AI 审查：`reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md` 已覆盖 health panel、selector reason、blocked reason、recover action 的默认 UI 可见性与脱敏展示。
+- [x] browser preview + AI 审查：`reports/local-hardened-api-smoke/browser-preview-ui-smoke-20260607.md` 已覆盖 health panel、modal 与首页 inline card 的 selector reason、blocked reason、recover action、cap hint 默认可见性与脱敏展示。
 
 可能文件：
 
