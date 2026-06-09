@@ -27,6 +27,15 @@ dist-ssr
 
 locale-check-report.md
 .playwright-mcp/
+output/playwright/
+/*.png
+
+# Heavy raw local verification evidence kept out of Git after repo size cleanup.
+reports/local-hardened-api-realrun/
+reports/cockpit-dev-watchdog/
+reports/codex-account-card-audit/
+reports/local-hardened-api-reconnect-diagnostics/
+reports/codex-plan-repair/
 
 # Keep curated evidence summaries in reports/, but do not commit huge raw runtime streams.
 reports/**/monitor-checkpoint.json

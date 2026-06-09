@@ -151,7 +151,8 @@ git diff --check
 ### 5.4 历史 acceptance / smoke 示例
 
 - `reports/local-hardened-api-acceptance/20260520-215349/accept.stdout.json`
-- `reports/local-hardened-api-realrun/accept-drain-20260528-211516/accept-meta.json`
+
+更早期的 `reports/local-hardened-api-realrun/...` 原始 realrun 目录已在仓库瘦身时移出版本库，因为它们属于体积很大的临时运行证据。当前仓库保留的目标是“说明证据形态”，不是长期携带全部原始监控转储。
 
 这些历史文件主要用于说明 acceptance/realrun 的证据形态；是否可以直接复用，仍要看本轮改动影响面。
 

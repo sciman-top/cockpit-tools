@@ -1,3 +1,0 @@
-{"event":"watchdog_started","repoRoot":"D:\\CODE\\external\\Cockpit-Tools-Local","pid":23676,"timestamp":"2026-05-31T09:38:35.4797896+08:00","reportDir":"D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-093834-release-fallback-dev-watchdog"}
-{"event":"stop_signal_file","stopSignalFile":"D:\\CODE\\external\\Cockpit-Tools-Local\\reports\\cockpit-dev-watchdog\\20260531-093834-release-fallback-dev-watchdog\\stop.signal","timestamp":"2026-05-31T09:41:34.1511473+08:00"}
-{"event":"watchdog_exited","prebuildCount":0,"launchCount":0,"timestamp":"2026-05-31T09:41:34.1527655+08:00","releaseFallbackCount":0}

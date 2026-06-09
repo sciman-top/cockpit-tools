@@ -70,7 +70,13 @@ node scripts/release/preflight.cjs --skip-typecheck --skip-build --skip-cargo --
 
 ## Evidence From 2026-05-29 Runs
 
-- `reports/local-hardened-api-realrun/manual-api-service-quota-drain-sidecar-20260529-230855/live-monitor-20260529-233014.json`: first account exhaustion; new independent requests avoided the exhausted account.
-- `reports/local-hardened-api-realrun/manual-api-service-second-account-exhaustion-sidecar-20260529-233740/live-monitor-20260529-235644.json`: second account exhaustion; most admitted streams completed, but one hard-affinity request was locally completed and must remain a fail signal.
-- `reports/local-hardened-api-realrun/manual-api-service-second-account-exhaustion-sidecar-20260529-233740/second-account-exhaustion-summary.json`: manual evidence summary; one in-flight stream completed after the second account's first 429, while one older gateway remained unresolved in the primary window.
+Earlier raw `reports/local-hardened-api-realrun/...` artifacts were intentionally removed from the repository during size cleanup because they were bulky runtime captures, not source-of-truth code.
+
+The durable conclusion to retain is:
+
+- first account exhaustion: new independent requests avoided the exhausted account
+- second account exhaustion: most admitted streams completed, but one hard-affinity request was locally completed and must remain a fail signal
+- one in-flight stream completed after the second account's first `429`, while one older gateway remained unresolved in the primary window
+
+For current verification, prefer the focused tests and lighter-weight acceptance/doc entrypoints above instead of depending on archived raw monitor dumps.
 
