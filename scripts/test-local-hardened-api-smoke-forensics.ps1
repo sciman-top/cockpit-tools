@@ -26,6 +26,7 @@ $stderrPath = Join-Path $tempRoot "gateway.stderr.log"
 $sqlitePath = Join-Path $tempRoot "codex_local_access_logs.sqlite"
 $healthPath = Join-Path $tempRoot "codex_local_access_health.json"
 $auditPath = Join-Path $tempRoot "codex_local_access_audit.jsonl"
+$listener = $null
 
 New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
 
@@ -69,7 +70,11 @@ operator: tester@example.com
 
   "upstream transport failed`ntrace=socket reset" | Set-Content -LiteralPath $stderrPath -Encoding UTF8
 
-  $summary = Get-LocalHardenedApiFailureForensics -DataRoot $tempRoot -StdoutPath $stdoutPath -StderrPath $stderrPath
+  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  $listener.Start()
+  $listenerPort = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+
+  $summary = Get-LocalHardenedApiFailureForensics -DataRoot $tempRoot -StdoutPath $stdoutPath -StderrPath $stderrPath -Port $listenerPort
 
   Assert-True ($summary.dataRoot.exists) "data root inventory should exist"
   Assert-True ($summary.dataRoot.fileCount -ge 3) "data root inventory should list probe files"
@@ -85,7 +90,13 @@ operator: tester@example.com
   Assert-True ($summary.gatewayStdout.tailPreview -match "\[redacted-api-key\]") "stdout preview should redact API keys"
   Assert-True ($summary.gatewayStdout.tailPreview -match "\[redacted-email\]") "stdout preview should redact email addresses"
   Assert-True ($summary.gatewayStderr.tailPreview -match "socket reset") "stderr preview should capture tail text"
+  Assert-Equal $summary.listener.exists $true "listener summary should exist"
+  Assert-Equal $summary.listener.localPort $listenerPort "listener summary should capture bound port"
+  Assert-True ([string]::IsNullOrWhiteSpace([string]$summary.listener.processName) -eq $false) "listener summary should capture process name"
 } finally {
+  if ($listener) {
+    $listener.Stop()
+  }
   if (Test-Path -LiteralPath $tempRoot) {
     Remove-Item -LiteralPath $tempRoot -Recurse -Force
   }

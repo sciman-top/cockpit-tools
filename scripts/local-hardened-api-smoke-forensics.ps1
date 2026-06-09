@@ -231,11 +231,53 @@ print(json.dumps(summary))
   $summary
 }
 
+function Get-LocalHardenedApiListenerSummary {
+  param([AllowNull()][int]$Port)
+
+  if ($null -eq $Port -or $Port -le 0) {
+    return [ordered]@{
+      requested = $false
+      port = $Port
+    }
+  }
+
+  $connections = @(
+    Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue |
+      Where-Object { $_.RemotePort -eq 0 }
+  )
+  if (-not $connections.Count) {
+    return [ordered]@{
+      requested = $true
+      port = $Port
+      exists = $false
+    }
+  }
+
+  $listener = $connections | Select-Object -First 1
+  $owningProcess = $null
+  if ($listener.OwningProcess -and [int]$listener.OwningProcess -gt 0) {
+    $owningProcess = Get-CimInstance Win32_Process -Filter ("ProcessId = {0}" -f [int]$listener.OwningProcess) -ErrorAction SilentlyContinue
+  }
+
+  [ordered]@{
+    requested = $true
+    exists = $true
+    localAddress = [string]$listener.LocalAddress
+    localPort = [int]$listener.LocalPort
+    state = [string]$listener.State
+    owningProcess = [int]$listener.OwningProcess
+    processName = if ($owningProcess) { [string]$owningProcess.Name } else { $null }
+    executablePath = if ($owningProcess) { [string]$owningProcess.ExecutablePath } else { $null }
+    commandLine = if ($owningProcess) { (ConvertTo-LocalHardenedApiRedactedText ([string]$owningProcess.CommandLine) 2000) } else { $null }
+  }
+}
+
 function Get-LocalHardenedApiFailureForensics {
   param(
     [AllowNull()][string]$DataRoot,
     [AllowNull()][string]$StdoutPath,
-    [AllowNull()][string]$StderrPath
+    [AllowNull()][string]$StderrPath,
+    [AllowNull()][int]$Port
   )
 
   $sqlitePath = if ($DataRoot) { Join-Path $DataRoot "codex_local_access_logs.sqlite" } else { $null }
@@ -249,5 +291,6 @@ function Get-LocalHardenedApiFailureForensics {
     audit = Get-LocalHardenedApiAuditSummary -Path $auditPath
     gatewayStdout = Get-LocalHardenedApiTextFileSummary -Path $StdoutPath
     gatewayStderr = Get-LocalHardenedApiTextFileSummary -Path $StderrPath
+    listener = Get-LocalHardenedApiListenerSummary -Port $Port
   }
 }

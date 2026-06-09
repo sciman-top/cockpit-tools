@@ -143,6 +143,10 @@ function Get-LiveCodexAccountsIndexPath {
   Join-Path (Get-LiveDataRoot) "codex_accounts.json"
 }
 
+function Get-LiveCodexAccountsDirPath {
+  Join-Path (Get-LiveDataRoot) "codex_accounts"
+}
+
 function Get-LiveCodexAccountDetailPath {
   param([string]$AccountId)
   Join-Path (Join-Path (Get-LiveDataRoot) "codex_accounts") ("{0}.json" -f $AccountId)
@@ -154,6 +158,16 @@ function Get-StableHashPrefix {
   $hash = [System.Security.Cryptography.SHA256]::HashData($bytes)
   $hex = [System.BitConverter]::ToString($hash).Replace("-", "").ToLowerInvariant()
   "sha256:{0}" -f $hex.Substring(0, 12)
+}
+
+function Get-RandomAvailableLocalPort {
+  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+  try {
+    $listener.Start()
+    ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+  } finally {
+    $listener.Stop()
+  }
 }
 
 function Test-TruthyJsonValue {
@@ -326,6 +340,31 @@ function Set-JsonProperty {
   }
 }
 
+function Copy-AppSafeCodexAccountStore {
+  param([string]$ProbeRoot)
+
+  $liveAccountsDir = Get-LiveCodexAccountsDirPath
+  $probeAccountsDir = Join-Path $ProbeRoot "codex_accounts"
+  $copiedAccountDetails = 0
+
+  if (Test-Path -LiteralPath $liveAccountsDir) {
+    New-Item -ItemType Directory -Force -Path $probeAccountsDir | Out-Null
+    $detailFiles = @(
+      Get-ChildItem -LiteralPath $liveAccountsDir -File -ErrorAction SilentlyContinue
+    )
+    foreach ($detailFile in $detailFiles) {
+      Copy-Item -LiteralPath $detailFile.FullName -Destination (Join-Path $probeAccountsDir $detailFile.Name) -Force
+    }
+    $copiedAccountDetails = $detailFiles.Count
+  }
+
+  [ordered]@{
+    copiedAccountDetails = [int]$copiedAccountDetails
+    liveAccountsDir = $liveAccountsDir
+    probeAccountsDir = $probeAccountsDir
+  }
+}
+
 function Initialize-AppSafeIsolatedProbeRoot {
   $sourcePath = Get-LiveLocalAccessConfigPath
   if (-not (Test-Path -LiteralPath $sourcePath)) {
@@ -337,8 +376,10 @@ function Initialize-AppSafeIsolatedProbeRoot {
   $targetPath = Join-Path $root "codex_local_access.json"
   $config = Get-Content -LiteralPath $sourcePath -Raw | ConvertFrom-Json
   Set-JsonProperty $config "enabled" $false
-  Set-JsonProperty $config "port" 0
+  $probePort = Get-RandomAvailableLocalPort
+  Set-JsonProperty $config "port" $probePort
   $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $targetPath -Encoding UTF8
+  $seededCodexAccountStore = Copy-AppSafeCodexAccountStore -ProbeRoot $root
   $script:ProbeDataRoot = $root
 
   [ordered]@{
@@ -349,7 +390,9 @@ function Initialize-AppSafeIsolatedProbeRoot {
     probeDataRoot = $root
     sourceConfigPath = $sourcePath
     probeConfigPath = $targetPath
-    port = 0
+    probeToolsDataRoot = $root
+    seededCodexAccountStore = $seededCodexAccountStore
+    port = $probePort
   }
 }
 
@@ -383,6 +426,7 @@ function Set-TemporaryFallbackProbeConfig {
   }
 
   Set-JsonProperty $config "enabled" $true
+  Set-JsonProperty $config "gatewayMode" "legacy"
   Set-JsonProperty $config "updatedAt" ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
   Set-JsonProperty $safety "schemaVersion" 1
   Set-JsonProperty $safety "hardenedLocalMode" $true
@@ -404,6 +448,7 @@ function Set-TemporaryFallbackProbeConfig {
     accountHashes = @(Get-AccountHashList @($config.accountIds))
     accountPoolSource = "existing_config"
     enabled = $true
+    gatewayMode = "legacy"
     maxRetryAccounts = 2
     fallbackMode = "disabled"
     restoredBy = "Stop-EphemeralGateway"
@@ -713,6 +758,11 @@ function Test-SmokeUsageLimitEvent {
     [string]$Event.detail.provider_code -eq "insufficient_quota"
 }
 
+function Test-SmokeNonEmptyString {
+  param([object]$Value)
+  -not [string]::IsNullOrWhiteSpace([string]$Value)
+}
+
 function New-SmokeRoutingReport {
   param($Config, [object[]]$Results, $AuditSummary)
   $accountIds = if ($Config -and $Config.accountIds) { @($Config.accountIds) } else { @() }
@@ -764,7 +814,7 @@ function Get-QuotaFallbackAuditEvidence {
   }
 
   $events = @()
-  Get-Content -LiteralPath $Path -Tail 120 | ForEach-Object {
+  Get-Content -LiteralPath $Path | ForEach-Object {
     try {
       $events += ($_ | ConvertFrom-Json)
     } catch {
@@ -890,6 +940,46 @@ function Get-QuotaFallbackAuditEvidence {
     }
   }
   $blockedAccountHashes = @($blockedAccountHashes | Sort-Object -Unique)
+  $selectedAccountHashes = @(
+    $events |
+      Where-Object {
+        ($_.phase -eq "routing_decision" -or $_.phase -eq "selector") -and
+        $_.outcome -eq "selected" -and
+        (Test-SmokeValidAccountHash $_.accountHash)
+      } |
+      ForEach-Object { $_.accountHash } |
+      Sort-Object -Unique
+  )
+  $selectedReasons = @(
+    $events |
+      Where-Object {
+        ($_.phase -eq "routing_decision" -or $_.phase -eq "selector") -and
+        $_.outcome -eq "selected" -and
+        (Test-SmokeNonEmptyString $_.detail.selected_reason)
+      } |
+      ForEach-Object { [string]$_.detail.selected_reason } |
+      Sort-Object -Unique
+  )
+  $requestIdSources = @(
+    $events |
+      Where-Object { Test-SmokeNonEmptyString $_.detail.request_id_source } |
+      ForEach-Object { [string]$_.detail.request_id_source } |
+      Sort-Object -Unique
+  )
+  $continuationRequestCount = @(
+    $events |
+      Where-Object {
+        $_.phase -eq "request_trace" -and
+        [string]$_.detail.hard_affinity_continuity -eq "true"
+      }
+  ).Count
+  $stickyContinuationRequestCount = @(
+    $events |
+      Where-Object {
+        $_.phase -eq "request_trace" -and
+        [string]$_.detail.sticky_boundary -in @("previous_response_id", "codex_turn_state")
+      }
+  ).Count
 
   $newRequestGroups = @{}
   for ($i = 0; $i -lt $events.Count; $i++) {
@@ -981,7 +1071,9 @@ function Get-QuotaFallbackAuditEvidence {
   [ordered]@{
     auditPath = $Path
     auditExists = $true
+    scanMode = "full_file"
     tailEventCount = $events.Count
+    totalEventCount = $events.Count
     has429 = $has429
     has200 = $has200
     hasUsageLimitReached = $hasUsageLimit
@@ -1008,6 +1100,12 @@ function Get-QuotaFallbackAuditEvidence {
     distinctHealthyAccountHashesAfterBlock = @($distinctHealthyAccountHashesAfterBlock)
     blockedAccountCount = $blockedAccountHashes.Count
     blockedAccountHashes = @($blockedAccountHashes)
+    selectedAccountCount = $selectedAccountHashes.Count
+    selectedAccountHashes = @($selectedAccountHashes)
+    selectedReasons = @($selectedReasons)
+    requestIdSources = @($requestIdSources)
+    continuationRequestCount = [int]$continuationRequestCount
+    stickyContinuationRequestCount = [int]$stickyContinuationRequestCount
     newRequestAvoidanceCount = $newRequestAvoidance.Count
     newRequestAvoidanceRequestIds = @($newRequestAvoidance | ForEach-Object { $_.requestId } | Sort-Object -Unique)
     newRequestBlockedReuseCount = $newRequestBlockedReuse.Count
@@ -1164,6 +1262,144 @@ function Get-SafeErrorSummary {
   }
 }
 
+function Test-ResponsesContinuationStructuralBlock {
+  param($SafeError)
+  if ($null -eq $SafeError) {
+    return $false
+  }
+
+  $message = [string]$SafeError.message
+  if (-not $message) {
+    return $false
+  }
+
+  $lower = $message.ToLowerInvariant()
+  return (
+    ($lower.Contains("previous_response_id") -and ($lower.Contains("unsupported parameter") -or $lower.Contains("not supported"))) -or
+    ($lower.Contains("store must be set to false"))
+  )
+}
+
+function Get-ResponsesTextOutput {
+  param([string]$Body)
+  if (-not $Body) {
+    return $null
+  }
+
+  $sseEvents = @()
+
+  try {
+    $json = $Body | ConvertFrom-Json
+    if ($json.output_text) {
+      return [string]$json.output_text
+    }
+    if ($json.output -is [System.Collections.IEnumerable]) {
+      $parts = @()
+      foreach ($item in @($json.output)) {
+        if ($item.content -is [System.Collections.IEnumerable]) {
+          foreach ($content in @($item.content)) {
+            if ($content.text) {
+              $parts += [string]$content.text
+            }
+          }
+        }
+      }
+      if ($parts.Count -gt 0) {
+        return ($parts -join "")
+      }
+    }
+  } catch {
+    $sseEvents = @(Get-ResponsesSseEvents $Body)
+  }
+
+  if ($sseEvents.Count -gt 0) {
+    $doneTexts = @(
+      $sseEvents |
+        Where-Object { [string]$_.type -eq "response.output_text.done" -and $_.text } |
+        ForEach-Object { [string]$_.text }
+    )
+    if ($doneTexts.Count -gt 0) {
+      return ($doneTexts -join "")
+    }
+
+    $deltaTexts = @(
+      $sseEvents |
+        Where-Object { [string]$_.type -eq "response.output_text.delta" -and $_.delta } |
+        ForEach-Object { [string]$_.delta }
+    )
+    if ($deltaTexts.Count -gt 0) {
+      return ($deltaTexts -join "")
+    }
+  }
+
+  $null
+}
+
+function Get-ResponsesIdFromBody {
+  param([string]$Body)
+  if (-not $Body) {
+    return $null
+  }
+
+  try {
+    $json = $Body | ConvertFrom-Json
+    if ($json.id) {
+      return [string]$json.id
+    }
+    if ($json.response -and $json.response.id) {
+      return [string]$json.response.id
+    }
+  } catch {
+  }
+
+  $sseEvents = @(Get-ResponsesSseEvents $Body)
+  foreach ($event in $sseEvents) {
+    if ($event.response -and $event.response.id) {
+      return [string]$event.response.id
+    }
+    if ($event.id) {
+      return [string]$event.id
+    }
+  }
+
+  $null
+}
+
+function Get-ResponsesSseEvents {
+  param([string]$Body)
+  if (-not $Body) {
+    return @()
+  }
+
+  $normalized = $Body -replace "`r`n", "`n"
+  $records = [regex]::Split($normalized, "`n`n+")
+  $events = @()
+  foreach ($record in $records) {
+    if ([string]::IsNullOrWhiteSpace($record)) {
+      continue
+    }
+    $dataLines = @()
+    foreach ($line in ($record -split "`n")) {
+      if ($line -like "data:*") {
+        $dataLines += $line.Substring(5).TrimStart()
+      }
+    }
+    if ($dataLines.Count -eq 0) {
+      continue
+    }
+    $payload = ($dataLines -join "`n").Trim()
+    if (-not $payload -or $payload -eq "[DONE]") {
+      continue
+    }
+    try {
+      $events += ($payload | ConvertFrom-Json)
+    } catch {
+    }
+  }
+
+  @($events)
+}
+
 function Test-LocalAccessConfigContract {
   param($Config, [string]$Stage)
   $result = New-SmokeResult "config_${Stage}_contract"
@@ -1175,9 +1411,11 @@ function Test-LocalAccessConfigContract {
   $accountCount = if ($Config.accountIds) { @($Config.accountIds).Count } else { 0 }
   $safety = $Config.safetyConfig
   $effectiveMaxRetryAccounts = [Math]::Max([int]$safety.maxRetryAccounts, 2)
+  $gatewayMode = if ($Config.gatewayMode) { [string]$Config.gatewayMode } else { "legacy" }
   $evidence = @{
     enabled = [bool]$Config.enabled
     port = [int]$Config.port
+    gatewayMode = $gatewayMode
     accountCount = $accountCount
     accountHashes = @(Get-AccountHashList @($Config.accountIds))
     hardenedLocalMode = [bool]$safety.hardenedLocalMode
@@ -1322,10 +1560,12 @@ function Invoke-UpstreamChatSmoke {
   try {
     $response = Invoke-JsonRequest -Method "POST" -Uri $uri -Headers @{ Authorization = "Bearer $ResolvedApiKey" } -Body $body -TimeoutSeconds 120
   } catch {
+    $failureConfig = Get-LocalAccessConfig
+    $failurePort = if ($failureConfig -and $failureConfig.port) { [int]$failureConfig.port } else { $null }
     Set-SmokeFail $result "真实上游请求异常" @{
       baseUrl = $ResolvedBaseUrl
       error = $_.Exception.Message
-      failureForensics = (Get-LocalHardenedApiFailureForensics -DataRoot (Get-DataRoot) -StdoutPath $script:EphemeralGatewayStdoutPath -StderrPath $script:EphemeralGatewayStderrPath)
+      failureForensics = (Get-LocalHardenedApiFailureForensics -DataRoot (Get-DataRoot) -StdoutPath $script:EphemeralGatewayStdoutPath -StderrPath $script:EphemeralGatewayStderrPath -Port $failurePort)
     }
     return $result
   }
@@ -1352,6 +1592,9 @@ function Invoke-UpstreamChatSmoke {
     return $result
   }
 
+  $failureConfig = Get-LocalAccessConfig
+  $failurePort = if ($failureConfig -and $failureConfig.port) { [int]$failureConfig.port } else { $null }
+  $evidence.failureForensics = Get-LocalHardenedApiFailureForensics -DataRoot (Get-DataRoot) -StdoutPath $script:EphemeralGatewayStdoutPath -StderrPath $script:EphemeralGatewayStderrPath -Port $failurePort
   Set-SmokeFail $result "真实上游请求未按预期返回" $evidence
   $result
 }
@@ -1430,6 +1673,129 @@ function Invoke-QuotaDrainUntilFallback {
     requestIntervalSeconds = $AutoDrainRequestIntervalSeconds
     attempts = $attempts
     audit = $finalAuditEvidence
+  }
+  if ($finalAuditEvidence -and $finalAuditEvidence.selectedAccountCount -gt 0) {
+    $selectedHashes = @($finalAuditEvidence.selectedAccountHashes) -join ", "
+    $selectedReasons = @($finalAuditEvidence.selectedReasons) -join ", "
+    $continuationState = if ($finalAuditEvidence.continuationRequestCount -gt 0 -or $finalAuditEvidence.stickyContinuationRequestCount -gt 0) {
+      "当前请求链包含 continuation"
+    } else {
+      "当前请求链未形成 previous_response_id/x-codex-turn-state continuation"
+    }
+    $result.reason = "最大请求数内未观察到 quota fallback；selected_accounts=$selectedHashes; selected_reasons=$selectedReasons; $continuationState"
+  }
+  $result
+}
+
+function Invoke-ResponsesContinuationDrainUntilFallback {
+  param([string]$ResolvedBaseUrl, [string]$ResolvedApiKey, [string]$Model, [string]$AuditPath)
+  $result = New-SmokeResult "responses_continuation_drain_until_hard_affinity_block"
+  if (-not $AutoDrainFirstFreeAccountUntilFallback) {
+    Set-SmokeSkipped $result "未传入 -AutoDrainFirstFreeAccountUntilFallback；不主动消耗 continuation 任务"
+    return $result
+  }
+  if (-not $ResolvedBaseUrl -or -not $ResolvedApiKey) {
+    Set-SmokeBlocked $result "缺少 BaseUrl 或 API key"
+    return $result
+  }
+
+  $uri = "$ResolvedBaseUrl/responses"
+  $attempts = @()
+  $previousResponseId = $null
+  for ($i = 1; $i -le $AutoDrainMaxRequests; $i++) {
+    $body = [ordered]@{
+      model = $Model
+      stream = $true
+      store = $false
+      input = if ($previousResponseId) { "Continue the same task and reply with exactly OK." } else { "Reply with exactly OK." }
+    }
+    if ($previousResponseId) {
+      $body.previous_response_id = $previousResponseId
+    }
+
+    try {
+      $response = Invoke-JsonRequest -Method "POST" -Uri $uri -Headers @{ Authorization = "Bearer $ResolvedApiKey" } -Body $body -TimeoutSeconds 120
+      $safeError = if ($response.statusCode -eq 200) { $null } else { Get-SafeErrorSummary $response.body }
+      $responseId = Get-ResponsesIdFromBody $response.body
+      $outputText = Get-ResponsesTextOutput $response.body
+      $attempt = [ordered]@{
+        attempt = $i
+        statusCode = $response.statusCode
+        retryAfter = $response.retryAfter
+        bodyHasOK = ([string]$outputText -match '\bOK\b')
+        previousResponseIdUsed = [bool](Test-SmokeNonEmptyString $previousResponseId)
+        responseId = $responseId
+      }
+      if ($safeError) {
+        $attempt.error = $safeError
+      }
+      $attempts += $attempt
+      if (
+        $response.statusCode -eq 400 -and
+        [bool](Test-SmokeNonEmptyString $previousResponseId) -and
+        (Test-ResponsesContinuationStructuralBlock $safeError)
+      ) {
+        Set-SmokeBlocked $result "当前 upstream /responses continuation 存在结构性 400；继续 drain 不会触发真实 hard-affinity fallback" @{
+          uri = $uri
+          model = $Model
+          requestCount = $i
+          maxRequests = $AutoDrainMaxRequests
+          requestIntervalSeconds = $AutoDrainRequestIntervalSeconds
+          continuationUnsupported = $true
+          attempts = $attempts
+          audit = Get-QuotaFallbackAuditEvidence $AuditPath
+        }
+        $result.reason = "continuation 结构性 400：$($safeError.message)"
+        return $result
+      }
+      if ($response.statusCode -eq 200 -and $responseId) {
+        $previousResponseId = $responseId
+      }
+    } catch {
+      Set-SmokeFail $result "continuation 上游请求异常" @{
+        uri = $uri
+        attempt = $i
+        maxRequests = $AutoDrainMaxRequests
+        previousResponseIdUsed = [bool](Test-SmokeNonEmptyString $previousResponseId)
+        error = $_.Exception.Message
+        attempts = $attempts
+      }
+      return $result
+    }
+
+    $auditEvidence = Get-QuotaFallbackAuditEvidence $AuditPath
+    if ($auditEvidence.pass) {
+      Set-SmokePass $result @{
+        uri = $uri
+        model = $Model
+        requestCount = $i
+        maxRequests = $AutoDrainMaxRequests
+        requestIntervalSeconds = $AutoDrainRequestIntervalSeconds
+        attempts = $attempts
+        audit = $auditEvidence
+      }
+      return $result
+    }
+
+    if ($i -lt $AutoDrainMaxRequests -and $AutoDrainRequestIntervalSeconds -gt 0) {
+      Start-Sleep -Seconds $AutoDrainRequestIntervalSeconds
+    }
+  }
+
+  $finalAuditEvidence = Get-QuotaFallbackAuditEvidence $AuditPath
+  Set-SmokeBlocked $result "最大请求数内未触发 continuation hard-affinity quota fallback；为避免过度请求已停止" @{
+    uri = $uri
+    model = $Model
+    requestCount = $AutoDrainMaxRequests
+    maxRequests = $AutoDrainMaxRequests
+    requestIntervalSeconds = $AutoDrainRequestIntervalSeconds
+    attempts = $attempts
+    audit = $finalAuditEvidence
+  }
+  if ($finalAuditEvidence) {
+    $selectedHashes = @($finalAuditEvidence.selectedAccountHashes) -join ", "
+    $selectedReasons = @($finalAuditEvidence.selectedReasons) -join ", "
+    $result.reason = "最大请求数内未观察到 continuation quota fallback；selected_accounts=$selectedHashes; selected_reasons=$selectedReasons; continuation_requests=$($finalAuditEvidence.continuationRequestCount)"
   }
   $result
 }
@@ -1688,11 +2054,16 @@ function Start-EphemeralGateway {
   $stdoutPath = Join-Path $tempDir "gateway.stdout.log"
   $stderrPath = Join-Path $tempDir "gateway.stderr.log"
   $previousDataRootEnv = [Environment]::GetEnvironmentVariable("COCKPIT_LOCAL_ACCESS_DATA_ROOT", "Process")
+  $previousToolsDataDirEnv = [Environment]::GetEnvironmentVariable("COCKPIT_TOOLS_DATA_DIR", "Process")
   [Environment]::SetEnvironmentVariable("COCKPIT_LOCAL_ACCESS_DATA_ROOT", (Get-DataRoot), "Process")
+  if ($AppSafeIsolatedProbe) {
+    [Environment]::SetEnvironmentVariable("COCKPIT_TOOLS_DATA_DIR", (Get-DataRoot), "Process")
+  }
   try {
     $process = Start-Process -FilePath $exe -ArgumentList @("--serve") -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
   } finally {
     [Environment]::SetEnvironmentVariable("COCKPIT_LOCAL_ACCESS_DATA_ROOT", $previousDataRootEnv, "Process")
+    [Environment]::SetEnvironmentVariable("COCKPIT_TOOLS_DATA_DIR", $previousToolsDataDirEnv, "Process")
   }
   $script:EphemeralGatewayStdoutPath = $stdoutPath
   $script:EphemeralGatewayStderrPath = $stderrPath
@@ -1717,6 +2088,47 @@ function Start-EphemeralGateway {
   }
 }
 
+function Stop-ProbeSidecarProcesses {
+  param([System.Collections.IDictionary]$Gateway)
+
+  if ($null -eq $Gateway) {
+    return @()
+  }
+
+  $dataRoot = if ($Gateway.dataRoot) { [string]$Gateway.dataRoot } else { $null }
+  $processIdPattern = if ($Gateway.processId) {
+    "--parent-pid\s+$([regex]::Escape([string]$Gateway.processId))(\s|$)"
+  } else {
+    $null
+  }
+  $sidecarConfigRoot = if ($dataRoot) {
+    [regex]::Escape((Join-Path $dataRoot "codex_local_access_sidecar"))
+  } else {
+    $null
+  }
+
+  $matches = @(
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+      Where-Object {
+        $_.Name -like 'cockpit-cliproxy*' -and
+        $_.CommandLine -and
+        (
+          ($sidecarConfigRoot -and $_.CommandLine -match $sidecarConfigRoot) -or
+          ($processIdPattern -and $_.CommandLine -match $processIdPattern)
+        )
+      }
+  )
+
+  foreach ($match in $matches) {
+    try {
+      Stop-Process -Id $match.ProcessId -Force -ErrorAction Stop
+    } catch {
+    }
+  }
+
+  @($matches | ForEach-Object { [int]$_.ProcessId })
+}
+
 function Stop-EphemeralGateway {
   param([System.Collections.IDictionary]$Gateway)
   if ($null -eq $Gateway -or -not $Gateway.requested) {
@@ -1730,6 +2142,8 @@ function Stop-EphemeralGateway {
       $Gateway.stopped = $true
     }
   }
+
+  $Gateway.sidecarProcessIds = @(Stop-ProbeSidecarProcesses -Gateway $Gateway)
 
   $configPath = Get-LocalAccessConfigPath
   if ($Gateway.originalMissing) {
@@ -1810,6 +2224,7 @@ try {
   $results += Test-InvalidKeyAuth $resolvedBaseUrl
   $results += Invoke-UpstreamChatSmoke $resolvedBaseUrl $resolvedApiKey $Model
   $results += Invoke-QuotaDrainUntilFallback $resolvedBaseUrl $resolvedApiKey $Model $auditPath
+  $results += Invoke-ResponsesContinuationDrainUntilFallback $resolvedBaseUrl $resolvedApiKey $Model $auditPath
   $results += Invoke-CodexExecSmoke $resolvedBaseUrl $resolvedApiKey $Model
 
   $healthRegistrySummary = Get-JsonFileSummary $healthPath
@@ -1889,7 +2304,7 @@ $report = [ordered]@{
     "use -RequireQuotaFallback when the acceptance target is real quota-exhaustion continuity; the report blocks unless audit shows 429, model cooldown, hard-affinity fallback_blocked, and real upstream terminal completion or structured usage_limit_reached 429 closure; same-task local completed Responses closure is a failure",
     "use -StartEphemeralGateway to exercise the same gateway code path without switching live Codex provider",
     "use -TemporaryFallbackConfig only with -StartEphemeralGateway; the original codex_local_access.json is restored afterward",
-    "use -AppSafeIsolatedProbe to keep probe local access config, health, audit, and port allocation in an isolated temp data root; the probe copies the existing API service account pool and does not auto-populate accounts",
+    "use -AppSafeIsolatedProbe to keep probe local access config, sidecar account store, health, audit, and port allocation in an isolated temp data root; the probe copies the existing API service account pool and does not auto-populate accounts",
     "use -AutoDrainFirstFreeAccountUntilFallback only for explicit quota-drain acceptance; it sends bounded low-rate real requests until audit proves same-task hard-affinity closure or max requests is reached",
     "this script records hashes for ~/.codex/config.toml and ~/.codex/auth.json but does not read or write their contents"
   )

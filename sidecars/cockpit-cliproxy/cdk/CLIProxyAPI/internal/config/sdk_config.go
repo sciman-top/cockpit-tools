@@ -9,6 +9,11 @@ type SDKConfig struct {
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
+	// TransportBypass defines request matchers that should attempt direct transport
+	// before using inherited proxy paths (global proxy-url or environment proxy).
+	// These rules never override an explicit per-auth proxy selection.
+	TransportBypass []TransportBypassRule `yaml:"transport-bypass,omitempty" json:"transport-bypass,omitempty"`
+
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
 	// Supported values:
@@ -51,6 +56,25 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+}
+
+// TransportBypassRule matches outbound requests that should try a direct connect
+// before inherited proxy routing.
+type TransportBypassRule struct {
+	// Host matches the upstream request hostname.
+	Host string `yaml:"host" json:"host"`
+
+	// Path matches an exact request path after normalization.
+	Path string `yaml:"path,omitempty" json:"path,omitempty"`
+
+	// PathPrefix matches requests whose normalized path starts with this prefix.
+	PathPrefix string `yaml:"path-prefix,omitempty" json:"path-prefix,omitempty"`
+
+	// SSEOnly limits the rule to requests that advertise text/event-stream.
+	SSEOnly bool `yaml:"sse-only,omitempty" json:"sse-only,omitempty"`
+
+	// Action controls the transport behavior. Currently only "direct" is supported.
+	Action string `yaml:"action,omitempty" json:"action,omitempty"`
 }
 
 // StreamingConfig holds server streaming behavior configuration.

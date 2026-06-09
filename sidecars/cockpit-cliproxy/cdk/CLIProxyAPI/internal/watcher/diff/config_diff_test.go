@@ -237,6 +237,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		SDKConfig: sdkconfig.SDKConfig{
 			RequestLog:                 false,
 			ProxyURL:                   "http://old-proxy",
+			TransportBypass:            nil,
 			APIKeys:                    []string{"key-1"},
 			ForceModelPrefix:           false,
 			NonStreamKeepAliveInterval: 0,
@@ -276,6 +277,9 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 		SDKConfig: sdkconfig.SDKConfig{
 			RequestLog:                 true,
 			ProxyURL:                   "http://new-proxy",
+			TransportBypass: []config.TransportBypassRule{
+				{Host: "35.213.82.91", PathPrefix: "/v1/responses", SSEOnly: true, Action: "direct"},
+			},
 			APIKeys:                    []string{" key-1 ", "key-2"},
 			ForceModelPrefix:           true,
 			NonStreamKeepAliveInterval: 5,
@@ -294,6 +298,7 @@ func TestBuildConfigChangeDetails_FlagsAndKeys(t *testing.T) {
 	expectContains(t, details, "max-retry-credentials: 1 -> 3")
 	expectContains(t, details, "max-retry-interval: 1 -> 3")
 	expectContains(t, details, "proxy-url: http://old-proxy -> http://new-proxy")
+	expectContains(t, details, "transport-bypass: 0 -> 1 rules")
 	expectContains(t, details, "ws-auth: false -> true")
 	expectContains(t, details, "force-model-prefix: false -> true")
 	expectContains(t, details, "nonstream-keepalive-interval: 0 -> 5")

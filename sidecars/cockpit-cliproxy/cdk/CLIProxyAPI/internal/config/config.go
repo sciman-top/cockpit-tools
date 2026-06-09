@@ -748,6 +748,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
 
+	// Normalize inherited-proxy transport bypass rules.
+	cfg.SanitizeTransportBypass()
+
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
@@ -910,6 +913,36 @@ func (cfg *Config) SanitizeOpenAICompatibility() {
 	cfg.OpenAICompatibility = out
 }
 
+// SanitizeTransportBypass normalizes direct-bypass matchers and drops invalid rules.
+func (cfg *Config) SanitizeTransportBypass() {
+	if cfg == nil || len(cfg.TransportBypass) == 0 {
+		return
+	}
+
+	out := make([]TransportBypassRule, 0, len(cfg.TransportBypass))
+	for i := range cfg.TransportBypass {
+		rule := cfg.TransportBypass[i]
+		rule.Host = strings.ToLower(strings.TrimSpace(rule.Host))
+		rule.Path = normalizeTransportBypassPath(rule.Path)
+		rule.PathPrefix = normalizeTransportBypassPathPrefix(rule.PathPrefix)
+		rule.Action = strings.ToLower(strings.TrimSpace(rule.Action))
+		if rule.Action == "" {
+			rule.Action = "direct"
+		}
+		if rule.Host == "" {
+			continue
+		}
+		if rule.Action != "direct" {
+			continue
+		}
+		if rule.Path == "" && rule.PathPrefix == "" {
+			continue
+		}
+		out = append(out, rule)
+	}
+	cfg.TransportBypass = out
+}
+
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
 // It trims whitespace and preserves order for remaining entries.
 func (cfg *Config) SanitizeCodexKeys() {
@@ -984,6 +1017,24 @@ func normalizeModelPrefix(prefix string) string {
 		return ""
 	}
 	return trimmed
+}
+
+func normalizeTransportBypassPath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return ""
+	}
+	if !strings.HasPrefix(trimmed, "/") {
+		trimmed = "/" + trimmed
+	}
+	if trimmed != "/" {
+		trimmed = strings.TrimRight(trimmed, "/")
+	}
+	return trimmed
+}
+
+func normalizeTransportBypassPathPrefix(path string) string {
+	return normalizeTransportBypassPath(path)
 }
 
 // looksLikeBcrypt returns true if the provided string appears to be a bcrypt hash.

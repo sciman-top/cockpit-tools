@@ -40,6 +40,16 @@ type UpstreamRequestLog struct {
 	AuthValue string
 }
 
+// UpstreamTransportDecision captures transport-layer routing decisions such as
+// proxy bypass attempts and fallback-to-proxy recovery.
+type UpstreamTransportDecision struct {
+	Action      string
+	Host        string
+	Path        string
+	ProxySource string
+	Reason      string
+}
+
 type upstreamAttempt struct {
 	index                int
 	request              string
@@ -148,6 +158,41 @@ func RecordAPIResponseError(ctx context.Context, cfg *config.Config, err error) 
 	}
 	attempt.response.WriteString(fmt.Sprintf("Error: %s\n", err.Error()))
 	attempt.errorWritten = true
+
+	updateAggregatedResponse(ginCtx, attempts)
+}
+
+// RecordAPITransportDecision appends a structured transport decision line to the
+// latest upstream response attempt so proxy/direct routing is visible in request logs.
+func RecordAPITransportDecision(ctx context.Context, cfg *config.Config, info UpstreamTransportDecision) {
+	if cfg == nil || !cfg.RequestLog {
+		return
+	}
+	ginCtx := ginContextFrom(ctx)
+	if ginCtx == nil {
+		return
+	}
+	attempts, attempt := ensureAttempt(ginCtx)
+	ensureResponseIntro(attempt)
+
+	parts := []string{"Transport:"}
+	if trimmed := strings.TrimSpace(info.Action); trimmed != "" {
+		parts = append(parts, fmt.Sprintf("action=%s", trimmed))
+	}
+	if trimmed := strings.TrimSpace(info.Host); trimmed != "" {
+		parts = append(parts, fmt.Sprintf("host=%s", trimmed))
+	}
+	if trimmed := strings.TrimSpace(info.Path); trimmed != "" {
+		parts = append(parts, fmt.Sprintf("path=%s", trimmed))
+	}
+	if trimmed := strings.TrimSpace(info.ProxySource); trimmed != "" {
+		parts = append(parts, fmt.Sprintf("proxy_source=%s", trimmed))
+	}
+	if trimmed := strings.TrimSpace(info.Reason); trimmed != "" {
+		parts = append(parts, fmt.Sprintf("reason=%s", trimmed))
+	}
+	attempt.response.WriteString(strings.Join(parts, " "))
+	attempt.response.WriteString("\n")
 
 	updateAggregatedResponse(ginCtx, attempts)
 }

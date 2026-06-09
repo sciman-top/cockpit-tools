@@ -6455,6 +6455,7 @@ enum CodexLocalAccessErrorType {
     CaptchaOrSuspicious,
     InsufficientQuota,
     ModelCapacity,
+    ContinuationUnsupported,
     NetworkError,
     ServerError,
     Unknown,
@@ -6469,6 +6470,7 @@ impl CodexLocalAccessErrorType {
             Self::CaptchaOrSuspicious => "captcha_or_suspicious",
             Self::InsufficientQuota => "insufficient_quota",
             Self::ModelCapacity => "model_capacity",
+            Self::ContinuationUnsupported => "continuation_unsupported",
             Self::NetworkError => "network_error",
             Self::ServerError => "server_error",
             Self::Unknown => "unknown",
@@ -6949,6 +6951,20 @@ fn classify_codex_upstream_error(
             CodexLocalAccessErrorScope::Model,
             false,
             "上游模型容量暂不可用，请稍后重试".to_string(),
+        )
+    } else if status == StatusCode::BAD_REQUEST
+        && has_marker(&[
+            "previous_response_id",
+            "unsupported parameter: previous_response_id",
+            "store must be set to false",
+        ])
+    {
+        (
+            CodexLocalAccessErrorType::ContinuationUnsupported,
+            CodexLocalAccessErrorSource::Upstream,
+            CodexLocalAccessErrorScope::Request,
+            false,
+            "当前 OAuth HTTP upstream 不支持 previous_response_id continuation，请改用新任务 admission 或 websocket/turn-state 连续性路径".to_string(),
         )
     } else if status == StatusCode::TOO_MANY_REQUESTS {
         (
@@ -27409,6 +27425,38 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             r#"{"error":{"type":"rate_limit_exceeded","message":"raw prompt text"}}"#
         ));
         assert!(!upstream_rate_limit.safe_message.contains("raw prompt text"));
+    }
+
+    #[test]
+    fn classifier_recognizes_previous_response_id_unsupported_parameter() {
+        let classified = classify_codex_upstream_error(
+            StatusCode::BAD_REQUEST,
+            None,
+            r#"{"detail":"Unsupported parameter: previous_response_id"}"#,
+        );
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::ContinuationUnsupported
+        );
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Request);
+        assert!(!classified.safe_for_request_failover());
+    }
+
+    #[test]
+    fn classifier_recognizes_store_must_be_false_continuation_boundary() {
+        let classified = classify_codex_upstream_error(
+            StatusCode::BAD_REQUEST,
+            None,
+            r#"{"detail":"Store must be set to false"}"#,
+        );
+
+        assert_eq!(
+            classified.error_type,
+            CodexLocalAccessErrorType::ContinuationUnsupported
+        );
+        assert_eq!(classified.scope, CodexLocalAccessErrorScope::Request);
+        assert!(!classified.safe_for_request_failover());
     }
 
     #[test]

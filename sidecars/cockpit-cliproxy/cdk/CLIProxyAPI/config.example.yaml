@@ -75,6 +75,19 @@ redis-usage-queue-retention-seconds: 60
 # Per-entry proxy-url also supports "direct" or "none" to bypass both the global proxy-url and environment proxies explicitly.
 proxy-url: ""
 
+# Optional inherited-proxy transport bypass rules.
+# These rules only apply when a request would otherwise use the global proxy-url or environment proxy.
+# They do NOT override an explicit per-auth proxy-url.
+# transport-bypass:
+#   - host: "ai.input.im"
+#     path: "/responses"
+#     sse-only: true
+#     action: "direct"
+#   - host: "35.213.82.91"
+#     path-prefix: "/v1/responses"
+#     sse-only: true
+#     action: "direct"
+
 # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
 force-model-prefix: false
 

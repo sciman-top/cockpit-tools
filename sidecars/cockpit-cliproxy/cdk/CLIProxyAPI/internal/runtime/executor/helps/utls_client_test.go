@@ -89,3 +89,34 @@ func TestNewUtlsHTTPClientUsesEnvironmentProxyForProtectedHost(t *testing.T) {
 		t.Fatalf("expected protected-host uTLS transport to use HTTPS_PROXY instead of direct dialing, got %T", utlsRT.dialer)
 	}
 }
+
+func TestNewUtlsHTTPClientWrapsInheritedProxyFallbackWithBypassRoundTripper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Setenv("HTTPS_PROXY", "")
+		t.Setenv("HTTP_PROXY", "")
+		t.Setenv("ALL_PROXY", "")
+		t.Setenv("NO_PROXY", "")
+		t.Setenv("https_proxy", "http://proxy.example.com:8080")
+		t.Setenv("http_proxy", "")
+		t.Setenv("all_proxy", "")
+		t.Setenv("no_proxy", "")
+	} else {
+		t.Setenv("HTTPS_PROXY", "http://proxy.example.com:8080")
+		t.Setenv("HTTP_PROXY", "")
+		t.Setenv("ALL_PROXY", "")
+		t.Setenv("NO_PROXY", "")
+		t.Setenv("https_proxy", "")
+		t.Setenv("http_proxy", "")
+		t.Setenv("all_proxy", "")
+		t.Setenv("no_proxy", "")
+	}
+
+	client := NewUtlsHTTPClient(context.Background(), nil, nil, 0)
+	fallback, ok := client.Transport.(*fallbackRoundTripper)
+	if !ok {
+		t.Fatalf("transport type = %T, want *fallbackRoundTripper", client.Transport)
+	}
+	if _, ok := fallback.fallback.(*proxyBypassRoundTripper); !ok {
+		t.Fatalf("fallback transport type = %T, want *proxyBypassRoundTripper", fallback.fallback)
+	}
+}
