@@ -1,5 +1,7 @@
 import * as codexInstanceService from '../services/codexInstanceService';
 import type {
+  CodexSessionVisibilityActiveWorkspaceRepairSummary,
+  CodexSessionVisibilityDiagnosticSummary,
   CodexSessionVisibilityRepairSummary,
   CodexInstanceThreadSyncSummary,
   CodexInstanceTargetThreadSyncSummary,
@@ -17,7 +19,9 @@ type CodexInstanceStoreState = InstanceStoreState & {
     sessionIds: string[],
     targetInstanceId: string,
   ) => Promise<CodexInstanceTargetThreadSyncSummary>;
+  diagnoseSessionVisibilityAcrossInstances: () => Promise<CodexSessionVisibilityDiagnosticSummary>;
   repairSessionVisibilityAcrossInstances: () => Promise<CodexSessionVisibilityRepairSummary>;
+  repairSessionVisibilityActiveWorkspaceRootsAcrossInstances: () => Promise<CodexSessionVisibilityActiveWorkspaceRepairSummary>;
   listSessionsAcrossInstances: () => Promise<CodexSessionRecord[]>;
   getSessionTokenStatsAcrossInstances: (sessionIds: string[]) => Promise<CodexSessionTokenStats[]>;
   moveSessionsToTrashAcrossInstances: (sessionIds: string[]) => Promise<CodexSessionTrashSummary>;
@@ -56,6 +60,17 @@ const repairSessionVisibilityAcrossInstances = async (): Promise<CodexSessionVis
   return summary;
 };
 
+const diagnoseSessionVisibilityAcrossInstances = async (): Promise<CodexSessionVisibilityDiagnosticSummary> => {
+  return await codexInstanceService.diagnoseSessionVisibilityAcrossInstances();
+};
+
+const repairSessionVisibilityActiveWorkspaceRootsAcrossInstances =
+  async (): Promise<CodexSessionVisibilityActiveWorkspaceRepairSummary> => {
+    const summary = await codexInstanceService.repairSessionVisibilityActiveWorkspaceRootsAcrossInstances();
+    await typedBaseStore.getState().fetchInstances();
+    return summary;
+  };
+
 const listSessionsAcrossInstances = async (): Promise<CodexSessionRecord[]> => {
   return await codexInstanceService.listSessionsAcrossInstances();
 };
@@ -89,7 +104,9 @@ const restoreSessionsFromTrashAcrossInstances = async (
 typedBaseStore.setState({
   syncThreadsAcrossInstances,
   syncSessionsToInstance,
+  diagnoseSessionVisibilityAcrossInstances,
   repairSessionVisibilityAcrossInstances,
+  repairSessionVisibilityActiveWorkspaceRootsAcrossInstances,
   listSessionsAcrossInstances,
   getSessionTokenStatsAcrossInstances,
   moveSessionsToTrashAcrossInstances,

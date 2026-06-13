@@ -6,7 +6,11 @@ import { ModalErrorMessage, useModalErrorState } from '../ModalErrorMessage';
 import { useEscClose } from '../../hooks/useEscClose';
 import type { CodexSessionRecord, CodexSessionTokenStats, CodexTrashedSessionRecord } from '../../types/codex';
 import { useCodexInstanceStore } from '../../stores/useCodexInstanceStore';
-import { formatCodexSessionVisibilityRepairMessage } from '../../utils/codexSessionVisibility';
+import {
+  formatCodexSessionVisibilityDiagnosticMessage,
+  formatCodexSessionVisibilityRepairMessage,
+  getCodexSessionVisibilityDiagnosticRepairableCount,
+} from '../../utils/codexSessionVisibility';
 
 type MessageState = { text: string; tone?: 'error' };
 type SessionTokenStatsMap = Record<string, CodexSessionTokenStats>;
@@ -104,6 +108,12 @@ export function CodexSessionManager() {
   const syncSessionsToInstance = useCodexInstanceStore((state) => state.syncSessionsToInstance);
   const repairSessionVisibilityAcrossInstances = useCodexInstanceStore(
     (state) => state.repairSessionVisibilityAcrossInstances,
+  );
+  const repairSessionVisibilityActiveWorkspaceRootsAcrossInstances = useCodexInstanceStore(
+    (state) => state.repairSessionVisibilityActiveWorkspaceRootsAcrossInstances,
+  );
+  const diagnoseSessionVisibilityAcrossInstances = useCodexInstanceStore(
+    (state) => state.diagnoseSessionVisibilityAcrossInstances,
   );
   const listSessionsAcrossInstances = useCodexInstanceStore((state) => state.listSessionsAcrossInstances);
   const getSessionTokenStatsAcrossInstances = useCodexInstanceStore(
@@ -459,7 +469,7 @@ export function CodexSessionManager() {
     const confirmed = await confirmDialog(
       t(
         'codex.sessionManager.confirm.repairVisibilityMessage',
-        '会按各实例 config.toml 根级 model_provider（缺失时按 openai）修复 rollout 文件与 state_5.sqlite 中的 provider 元数据，写入前会先备份将要修改的文件。运行中的实例可能需要重启后显示。确认继续？',
+        '会先诊断 provider/SQLite 元数据、项目索引和线程工作区提示，只自动修复可安全写入的差异，写入前会先备份将要修改的文件。不会自动修改当前 active workspace roots，也不会重启正在运行的实例；若只剩当前项目视图过滤，会提示原因。确认继续？',
       ),
       {
         title: t('codex.sessionManager.actions.repairVisibility', '修复可见性'),
@@ -471,8 +481,80 @@ export function CodexSessionManager() {
 
     setRepairingVisibility(true);
     try {
+      const diagnosticSummary = await diagnoseSessionVisibilityAcrossInstances();
+      const repairActiveWorkspaceRootsIfConfirmed = async (baseMessage?: string): Promise<boolean> => {
+        if (
+          diagnosticSummary.workspaceFilteredThreadCount <= 0 ||
+          diagnosticSummary.activeWorkspaceRepairRootCount <= 0
+        ) {
+          return false;
+        }
+
+        const confirmedActiveRoots = await confirmDialog(
+          t(
+            'codex.sessionManager.confirm.repairActiveWorkspaceRootsMessage',
+            '普通修复后仍有 {{threadCount}} 条会话可能受当前 active workspace roots 过滤。强力修复会把 {{rootCount}} 个历史工作区加入当前 Codex App 项目视图，写入前备份 .codex-global-state.json，不会重启正在运行的实例。AI 推荐：如果你希望当前项目视图也稳定显示旧项目历史，请继续；如果只想保持当前项目隔离，请取消。确认执行强力修复？',
+            {
+              threadCount: diagnosticSummary.workspaceFilteredThreadCount,
+              rootCount: diagnosticSummary.activeWorkspaceRepairRootCount,
+            },
+          ),
+          {
+            title: t('codex.sessionManager.actions.repairActiveWorkspaceRoots', '强力修复当前项目视图'),
+            okLabel: t('codex.sessionManager.actions.expandActiveWorkspaceRoots', '扩展项目视图'),
+            cancelLabel: t('common.cancel', '取消'),
+            kind: 'warning',
+          },
+        );
+        if (!confirmedActiveRoots) {
+          return false;
+        }
+
+        const activeSummary = await repairSessionVisibilityActiveWorkspaceRootsAcrossInstances();
+        setMessage({
+          text: baseMessage
+            ? t(
+                'codex.sessionManager.messages.repairVisibilityWithActiveWorkspaceRoots',
+                '{{baseMessage}}；{{activeMessage}}',
+                {
+                  baseMessage,
+                  activeMessage: activeSummary.message,
+                },
+              )
+            : activeSummary.message,
+        });
+        await loadSessions();
+        return true;
+      };
+
+      if (getCodexSessionVisibilityDiagnosticRepairableCount(diagnosticSummary) === 0) {
+        if (await repairActiveWorkspaceRootsIfConfirmed()) {
+          return;
+        }
+        setMessage({
+          text: formatCodexSessionVisibilityDiagnosticMessage(diagnosticSummary, t),
+        });
+        return;
+      }
+
       const summary = await repairSessionVisibilityAcrossInstances();
-      setMessage({ text: formatCodexSessionVisibilityRepairMessage(summary, t) });
+      const repairMessage = formatCodexSessionVisibilityRepairMessage(summary, t);
+      if (await repairActiveWorkspaceRootsIfConfirmed(repairMessage)) {
+        return;
+      }
+      setMessage({
+        text:
+          diagnosticSummary.workspaceFilteredThreadCount > 0
+            ? t(
+                'codex.apiSwitchNotice.repairWithWorkspaceFilter',
+                '{{message}}；另有 {{count}} 条会话可能仍受当前 active workspace roots 过滤。',
+                {
+                  message: repairMessage,
+                  count: diagnosticSummary.workspaceFilteredThreadCount,
+                },
+              )
+            : repairMessage,
+      });
       await loadSessions();
     } catch (error) {
       setMessage({ text: String(error), tone: 'error' });

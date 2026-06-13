@@ -30,7 +30,11 @@ import {
 } from "../utils/codexProviderPresets";
 import { useEscClose } from "../hooks/useEscClose";
 import { ModalErrorMessage, useModalErrorState } from "../components/ModalErrorMessage";
-import { formatCodexSessionVisibilityRepairMessage } from "../utils/codexSessionVisibility";
+import {
+  formatCodexSessionVisibilityDiagnosticMessage,
+  formatCodexSessionVisibilityRepairMessage,
+  getCodexSessionVisibilityDiagnosticRepairableCount,
+} from "../utils/codexSessionVisibility";
 
 /**
  * Codex 多开实例内容组件（不包含 header）
@@ -259,20 +263,42 @@ export function CodexInstancesContent({
     setVisibilityRepairResult(null);
     setVisibilityRepairing(true);
     try {
+      const diagnosticSummary = await instanceStore.diagnoseSessionVisibilityAcrossInstances();
+      if (visibilityRepairSeqRef.current !== repairSeq) return;
+      if (getCodexSessionVisibilityDiagnosticRepairableCount(diagnosticSummary) === 0) {
+        setVisibilityRepairResult(
+          formatCodexSessionVisibilityDiagnosticMessage(diagnosticSummary, t),
+        );
+        return;
+      }
+
       const summary = await instanceStore.repairSessionVisibilityAcrossInstances();
       if (visibilityRepairSeqRef.current !== repairSeq) return;
+      const repairMessage = formatCodexSessionVisibilityRepairMessage(summary, t);
+      const needsWorkspaceAttention = diagnosticSummary.workspaceFilteredThreadCount > 0;
       setVisibilityRepairResult(
-        formatCodexSessionVisibilityRepairMessage(summary, t),
+        needsWorkspaceAttention
+          ? t(
+              "codex.apiSwitchNotice.repairWithWorkspaceFilter",
+              "{{message}}；另有 {{count}} 条会话可能仍受当前 active workspace roots 过滤。",
+              {
+                message: repairMessage,
+                count: diagnosticSummary.workspaceFilteredThreadCount,
+              },
+            )
+          : repairMessage,
       );
-      visibilityRepairAutoCloseTimerRef.current = window.setTimeout(() => {
-        if (visibilityRepairSeqRef.current !== repairSeq) return;
-        visibilityRepairSeqRef.current += 1;
-        visibilityRepairAutoCloseTimerRef.current = null;
-        setVisibilityNoticeChange(null);
-        setVisibilityRepairing(false);
-        setVisibilityRepairResult(null);
-        clearVisibilityRepairError();
-      }, 1200);
+      if (!needsWorkspaceAttention) {
+        visibilityRepairAutoCloseTimerRef.current = window.setTimeout(() => {
+          if (visibilityRepairSeqRef.current !== repairSeq) return;
+          visibilityRepairSeqRef.current += 1;
+          visibilityRepairAutoCloseTimerRef.current = null;
+          setVisibilityNoticeChange(null);
+          setVisibilityRepairing(false);
+          setVisibilityRepairResult(null);
+          clearVisibilityRepairError();
+        }, 1200);
+      }
     } catch {
       if (visibilityRepairSeqRef.current === repairSeq) {
         reportVisibilityRepairError(
@@ -689,7 +715,7 @@ export function CodexInstancesContent({
               <p className="codex-local-access-hide-confirm-desc">
                 {t(
                   "codex.apiSwitchNotice.message",
-                  "检测到 Codex 已从 {{from}} 切换到 {{to}}。由于官方机制，API 与账号直接切换后，原有会话可能不会自动显示。正在自动修复会话可见性，后续也可以通过「会话管理」里的「修复可见性」功能修复。",
+                  "检测到 Codex 已从 {{from}} 切换到 {{to}}。由于官方机制，API 与账号直接切换后，原有会话可能不会自动显示。正在诊断并修复可安全自动处理的会话可见性差异；若只剩当前项目视图过滤，会直接提示原因。",
                   {
                     from: formatCredentialTypeLabel(visibilityNoticeChange.from),
                     to: formatCredentialTypeLabel(visibilityNoticeChange.to),
@@ -702,7 +728,7 @@ export function CodexInstancesContent({
                   <span>
                     {t(
                       "codex.apiSwitchNotice.repairing",
-                      "正在修复 Codex 会话可见性...",
+                      "正在诊断并修复 Codex 会话可见性...",
                     )}
                   </span>
                 </div>

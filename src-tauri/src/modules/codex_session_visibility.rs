@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -18,10 +18,11 @@ const DEFAULT_PROVIDER_ID: &str = "openai";
 const SESSION_INDEX_FILE: &str = "session_index.jsonl";
 const STATE_DB_FILE: &str = "state_5.sqlite";
 const CONFIG_FILE_NAME: &str = "config.toml";
+const GLOBAL_STATE_FILE: &str = ".codex-global-state.json";
 const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX: &str = "backup-";
 const SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX: &str = "-session-visibility-repair";
-const MAX_SESSION_VISIBILITY_REPAIR_BACKUPS: usize = 1;
+const MAX_SESSION_VISIBILITY_REPAIR_BACKUPS: usize = 2;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,7 +31,10 @@ pub struct CodexSessionVisibilityRepairItem {
     pub instance_name: String,
     pub target_provider: String,
     pub changed_rollout_file_count: usize,
+    pub provider_changed_rollout_file_count: usize,
     pub updated_sqlite_row_count: usize,
+    pub updated_workspace_root_count: usize,
+    pub updated_thread_workspace_hint_count: usize,
     pub skipped_sqlite_file: bool,
     pub backup_dir: Option<String>,
     pub running: bool,
@@ -42,10 +46,77 @@ pub struct CodexSessionVisibilityRepairSummary {
     pub instance_count: usize,
     pub mutated_instance_count: usize,
     pub changed_rollout_file_count: usize,
+    pub provider_changed_rollout_file_count: usize,
     pub updated_sqlite_row_count: usize,
+    pub updated_workspace_root_count: usize,
+    pub updated_thread_workspace_hint_count: usize,
+    pub repairable_metadata_count: usize,
+    pub workspace_repair_count: usize,
     pub skipped_sqlite_file_count: usize,
     pub items: Vec<CodexSessionVisibilityRepairItem>,
     pub backup_dirs: Vec<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSessionVisibilityActiveWorkspaceRepairItem {
+    pub instance_id: String,
+    pub instance_name: String,
+    pub workspace_filtered_thread_count: usize,
+    pub updated_active_workspace_root_count: usize,
+    pub backup_dir: Option<String>,
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSessionVisibilityActiveWorkspaceRepairSummary {
+    pub instance_count: usize,
+    pub mutated_instance_count: usize,
+    pub workspace_filtered_thread_count: usize,
+    pub updated_active_workspace_root_count: usize,
+    pub items: Vec<CodexSessionVisibilityActiveWorkspaceRepairItem>,
+    pub backup_dirs: Vec<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSessionVisibilityDiagnosticItem {
+    pub instance_id: String,
+    pub instance_name: String,
+    pub target_provider: String,
+    pub rollout_thread_count: usize,
+    pub provider_mismatch_thread_count: usize,
+    pub sqlite_rows_to_update: usize,
+    pub repairable_metadata_count: usize,
+    pub workspace_filtered_thread_count: usize,
+    pub workspace_root_count: usize,
+    pub missing_workspace_root_count: usize,
+    pub missing_thread_workspace_hint_count: usize,
+    pub workspace_repair_count: usize,
+    pub active_workspace_repair_root_count: usize,
+    pub active_workspace_roots: Vec<String>,
+    pub skipped_sqlite_file: bool,
+    pub running: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexSessionVisibilityDiagnosticSummary {
+    pub instance_count: usize,
+    pub rollout_thread_count: usize,
+    pub provider_mismatch_thread_count: usize,
+    pub sqlite_rows_to_update: usize,
+    pub repairable_metadata_count: usize,
+    pub workspace_filtered_thread_count: usize,
+    pub missing_workspace_root_count: usize,
+    pub missing_thread_workspace_hint_count: usize,
+    pub workspace_repair_count: usize,
+    pub active_workspace_repair_root_count: usize,
+    pub skipped_sqlite_file_count: usize,
+    pub items: Vec<CodexSessionVisibilityDiagnosticItem>,
     pub message: String,
 }
 
@@ -79,6 +150,217 @@ struct ThreadsTableColumns {
     thread_source: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+struct RolloutVisibilityScan {
+    thread_count: usize,
+    provider_mismatch_thread_count: usize,
+    workspace_filtered_thread_count: usize,
+    workspace_root_count: usize,
+    missing_workspace_root_count: usize,
+    missing_thread_workspace_hint_count: usize,
+    active_workspace_roots: Vec<String>,
+    active_workspace_roots_to_add: Vec<String>,
+    workspace_plan: GlobalStateWorkspaceRepairPlan,
+}
+
+#[derive(Debug, Clone, Default)]
+struct GlobalStateWorkspaceRepairPlan {
+    workspace_roots: Vec<String>,
+    thread_workspace_hints: Vec<ThreadWorkspaceHint>,
+    missing_workspace_root_count: usize,
+    missing_thread_workspace_hint_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ThreadWorkspaceHint {
+    thread_id: String,
+    workspace_root: String,
+}
+
+pub fn diagnose_session_visibility_across_instances(
+) -> Result<CodexSessionVisibilityDiagnosticSummary, String> {
+    let instances = collect_instances()?;
+    let process_entries = modules::process::collect_codex_process_entries();
+    let mut items = Vec::with_capacity(instances.len());
+    let mut rollout_thread_count = 0usize;
+    let mut provider_mismatch_thread_count = 0usize;
+    let mut sqlite_rows_to_update = 0usize;
+    let mut repairable_metadata_count = 0usize;
+    let mut workspace_filtered_thread_count = 0usize;
+    let mut missing_workspace_root_count = 0usize;
+    let mut missing_thread_workspace_hint_count = 0usize;
+    let mut workspace_repair_count = 0usize;
+    let mut active_workspace_repair_root_count = 0usize;
+    let mut skipped_sqlite_file_count = 0usize;
+
+    for instance in &instances {
+        let running = is_instance_running(instance, &process_entries);
+        let target_provider = read_target_provider(&instance.data_dir)?;
+        let rollout_scan = scan_rollout_visibility(&instance.data_dir, &target_provider)?;
+        let sqlite_scan = count_sqlite_rows_to_update(&instance.data_dir, &target_provider)?;
+        if sqlite_scan.skipped_unusable_database {
+            skipped_sqlite_file_count += 1;
+        }
+
+        let item_repairable_metadata_count =
+            rollout_scan.provider_mismatch_thread_count + sqlite_scan.rows_to_update;
+        rollout_thread_count += rollout_scan.thread_count;
+        provider_mismatch_thread_count += rollout_scan.provider_mismatch_thread_count;
+        sqlite_rows_to_update += sqlite_scan.rows_to_update;
+        repairable_metadata_count += item_repairable_metadata_count;
+        workspace_filtered_thread_count += rollout_scan.workspace_filtered_thread_count;
+        missing_workspace_root_count += rollout_scan.missing_workspace_root_count;
+        missing_thread_workspace_hint_count += rollout_scan.missing_thread_workspace_hint_count;
+        let item_workspace_repair_count = rollout_scan.missing_workspace_root_count
+            + rollout_scan.missing_thread_workspace_hint_count;
+        workspace_repair_count += item_workspace_repair_count;
+        active_workspace_repair_root_count += rollout_scan.active_workspace_roots_to_add.len();
+
+        items.push(CodexSessionVisibilityDiagnosticItem {
+            instance_id: instance.id.clone(),
+            instance_name: instance.name.clone(),
+            target_provider,
+            rollout_thread_count: rollout_scan.thread_count,
+            provider_mismatch_thread_count: rollout_scan.provider_mismatch_thread_count,
+            sqlite_rows_to_update: sqlite_scan.rows_to_update,
+            repairable_metadata_count: item_repairable_metadata_count,
+            workspace_filtered_thread_count: rollout_scan.workspace_filtered_thread_count,
+            workspace_root_count: rollout_scan.workspace_root_count,
+            missing_workspace_root_count: rollout_scan.missing_workspace_root_count,
+            missing_thread_workspace_hint_count: rollout_scan.missing_thread_workspace_hint_count,
+            workspace_repair_count: item_workspace_repair_count,
+            active_workspace_repair_root_count: rollout_scan.active_workspace_roots_to_add.len(),
+            active_workspace_roots: rollout_scan.active_workspace_roots,
+            skipped_sqlite_file: sqlite_scan.skipped_unusable_database,
+            running,
+        });
+    }
+
+    let message = build_diagnostic_summary_message(
+        repairable_metadata_count,
+        workspace_filtered_thread_count,
+        missing_workspace_root_count,
+        missing_thread_workspace_hint_count,
+        skipped_sqlite_file_count,
+    );
+
+    Ok(CodexSessionVisibilityDiagnosticSummary {
+        instance_count: instances.len(),
+        rollout_thread_count,
+        provider_mismatch_thread_count,
+        sqlite_rows_to_update,
+        repairable_metadata_count,
+        workspace_filtered_thread_count,
+        missing_workspace_root_count,
+        missing_thread_workspace_hint_count,
+        workspace_repair_count,
+        active_workspace_repair_root_count,
+        skipped_sqlite_file_count,
+        items,
+        message,
+    })
+}
+
+pub fn repair_session_visibility_active_workspace_roots_across_instances(
+) -> Result<CodexSessionVisibilityActiveWorkspaceRepairSummary, String> {
+    let instances = collect_instances()?;
+    let process_entries = modules::process::collect_codex_process_entries();
+    let mut items = Vec::with_capacity(instances.len());
+    let mut backup_dirs = Vec::new();
+    let mut mutated_instance_count = 0usize;
+    let mut workspace_filtered_thread_count = 0usize;
+    let mut updated_active_workspace_root_count = 0usize;
+    let mut mutated_running_instance_count = 0usize;
+
+    for instance in &instances {
+        let running = is_instance_running(instance, &process_entries);
+        let target_provider = read_target_provider(&instance.data_dir)?;
+        let rollout_scan = scan_rollout_visibility(&instance.data_dir, &target_provider)?;
+        workspace_filtered_thread_count += rollout_scan.workspace_filtered_thread_count;
+        let roots_to_add = rollout_scan.active_workspace_roots_to_add;
+
+        if roots_to_add.is_empty() {
+            items.push(CodexSessionVisibilityActiveWorkspaceRepairItem {
+                instance_id: instance.id.clone(),
+                instance_name: instance.name.clone(),
+                workspace_filtered_thread_count: rollout_scan.workspace_filtered_thread_count,
+                updated_active_workspace_root_count: 0,
+                backup_dir: None,
+                running,
+            });
+            continue;
+        }
+
+        let backup_dir = backup_instance_files(
+            &instance.data_dir,
+            &[],
+            false,
+            true,
+            &instance.id,
+            &target_provider,
+        )?;
+        let backup_dir_string = backup_dir.to_string_lossy().to_string();
+        let repaired =
+            update_global_state_active_workspace_roots(&instance.data_dir, &roots_to_add);
+        let updated_count = match repaired {
+            Ok(value) => value,
+            Err(error) => {
+                let restore_result =
+                    restore_instance_files_from_backup(&instance.data_dir, &backup_dir, false);
+                if let Err(restore_error) = restore_result {
+                    return Err(format!(
+                        "扩展 active workspace roots 失败 ({}): {}；自动回滚也失败: {}；备份目录: {}",
+                        instance.name,
+                        error,
+                        restore_error,
+                        backup_dir.display()
+                    ));
+                }
+                return Err(format!(
+                    "扩展 active workspace roots 失败 ({}): {}；已自动回滚，备份目录: {}",
+                    instance.name,
+                    error,
+                    backup_dir.display()
+                ));
+            }
+        };
+
+        mutated_instance_count += 1;
+        updated_active_workspace_root_count += updated_count;
+        if running {
+            mutated_running_instance_count += 1;
+        }
+        backup_dirs.push(backup_dir_string.clone());
+        items.push(CodexSessionVisibilityActiveWorkspaceRepairItem {
+            instance_id: instance.id.clone(),
+            instance_name: instance.name.clone(),
+            workspace_filtered_thread_count: rollout_scan.workspace_filtered_thread_count,
+            updated_active_workspace_root_count: updated_count,
+            backup_dir: Some(backup_dir_string),
+            running,
+        });
+    }
+
+    prune_session_visibility_repair_backups(&instances);
+
+    let message = build_active_workspace_repair_summary_message(
+        mutated_instance_count,
+        updated_active_workspace_root_count,
+        workspace_filtered_thread_count,
+        mutated_running_instance_count,
+    );
+
+    Ok(CodexSessionVisibilityActiveWorkspaceRepairSummary {
+        instance_count: instances.len(),
+        mutated_instance_count,
+        workspace_filtered_thread_count,
+        updated_active_workspace_root_count,
+        items,
+        backup_dirs,
+        message,
+    })
+}
+
 pub fn repair_session_visibility_across_instances(
 ) -> Result<CodexSessionVisibilityRepairSummary, String> {
     let instances = collect_instances()?;
@@ -87,7 +369,12 @@ pub fn repair_session_visibility_across_instances(
     let mut backup_dirs = Vec::new();
     let mut mutated_instance_count = 0usize;
     let mut changed_rollout_file_count = 0usize;
+    let mut provider_changed_rollout_file_count = 0usize;
     let mut updated_sqlite_row_count = 0usize;
+    let mut updated_workspace_root_count = 0usize;
+    let mut updated_thread_workspace_hint_count = 0usize;
+    let mut repairable_metadata_count = 0usize;
+    let mut workspace_repair_count = 0usize;
     let mut skipped_sqlite_file_count = 0usize;
     let mut mutated_running_instance_count = 0usize;
 
@@ -96,19 +383,34 @@ pub fn repair_session_visibility_across_instances(
         let target_provider = read_target_provider(&instance.data_dir)?;
         let rollout_changes =
             collect_rollout_provider_changes(&instance.data_dir, &target_provider)?;
+        let provider_rollout_changes = rollout_changes
+            .iter()
+            .filter(|change| change.updated_first_line.is_some())
+            .count();
         let sqlite_scan = count_sqlite_rows_to_update(&instance.data_dir, &target_provider)?;
         let sqlite_rows_to_update = sqlite_scan.rows_to_update;
+        let rollout_scan = scan_rollout_visibility(&instance.data_dir, &target_provider)?;
+        let workspace_plan = rollout_scan.workspace_plan;
+        let workspace_roots_to_update = workspace_plan.missing_workspace_root_count;
+        let thread_workspace_hints_to_update = workspace_plan.missing_thread_workspace_hint_count;
         if sqlite_scan.skipped_unusable_database {
             skipped_sqlite_file_count += 1;
         }
 
-        if rollout_changes.is_empty() && sqlite_rows_to_update == 0 {
+        if rollout_changes.is_empty()
+            && sqlite_rows_to_update == 0
+            && workspace_roots_to_update == 0
+            && thread_workspace_hints_to_update == 0
+        {
             items.push(CodexSessionVisibilityRepairItem {
                 instance_id: instance.id.clone(),
                 instance_name: instance.name.clone(),
                 target_provider,
                 changed_rollout_file_count: 0,
+                provider_changed_rollout_file_count: 0,
                 updated_sqlite_row_count: 0,
+                updated_workspace_root_count: 0,
+                updated_thread_workspace_hint_count: 0,
                 skipped_sqlite_file: sqlite_scan.skipped_unusable_database,
                 backup_dir: None,
                 running,
@@ -120,6 +422,7 @@ pub fn repair_session_visibility_across_instances(
             &instance.data_dir,
             &rollout_changes,
             sqlite_rows_to_update > 0,
+            workspace_roots_to_update > 0 || thread_workspace_hints_to_update > 0,
             &instance.id,
             &target_provider,
         )?;
@@ -130,6 +433,7 @@ pub fn repair_session_visibility_across_instances(
             &target_provider,
             &rollout_changes,
             sqlite_rows_to_update > 0,
+            &workspace_plan,
         );
         let sqlite_rows_updated = match repaired {
             Ok(value) => value,
@@ -159,7 +463,12 @@ pub fn repair_session_visibility_across_instances(
 
         mutated_instance_count += 1;
         changed_rollout_file_count += rollout_changes.len();
+        provider_changed_rollout_file_count += provider_rollout_changes;
         updated_sqlite_row_count += sqlite_rows_updated;
+        updated_workspace_root_count += workspace_roots_to_update;
+        updated_thread_workspace_hint_count += thread_workspace_hints_to_update;
+        repairable_metadata_count += provider_rollout_changes + sqlite_rows_updated;
+        workspace_repair_count += workspace_roots_to_update + thread_workspace_hints_to_update;
         if running {
             mutated_running_instance_count += 1;
         }
@@ -169,7 +478,10 @@ pub fn repair_session_visibility_across_instances(
             instance_name: instance.name.clone(),
             target_provider,
             changed_rollout_file_count: rollout_changes.len(),
+            provider_changed_rollout_file_count: provider_rollout_changes,
             updated_sqlite_row_count: sqlite_rows_updated,
+            updated_workspace_root_count: workspace_roots_to_update,
+            updated_thread_workspace_hint_count: thread_workspace_hints_to_update,
             skipped_sqlite_file: sqlite_scan.skipped_unusable_database,
             backup_dir: Some(backup_dir_string),
             running,
@@ -190,7 +502,12 @@ pub fn repair_session_visibility_across_instances(
         instance_count: instances.len(),
         mutated_instance_count,
         changed_rollout_file_count,
+        provider_changed_rollout_file_count,
         updated_sqlite_row_count,
+        updated_workspace_root_count,
+        updated_thread_workspace_hint_count,
+        repairable_metadata_count,
+        workspace_repair_count,
         skipped_sqlite_file_count,
         items,
         backup_dirs,
@@ -207,6 +524,7 @@ fn repair_single_instance(
     target_provider: &str,
     rollout_changes: &[RolloutProviderChange],
     update_sqlite: bool,
+    workspace_plan: &GlobalStateWorkspaceRepairPlan,
 ) -> Result<usize, String> {
     let sqlite_rows_updated = if update_sqlite {
         update_sqlite_provider(data_dir, target_provider)?
@@ -216,6 +534,7 @@ fn repair_single_instance(
     for change in rollout_changes {
         rewrite_rollout_provider(change)?;
     }
+    update_global_state_workspaces(data_dir, workspace_plan)?;
     Ok(sqlite_rows_updated)
 }
 
@@ -227,21 +546,101 @@ fn build_summary_message(
     _skipped_sqlite_file_count: usize,
 ) -> String {
     if mutated_instance_count == 0 {
-        return "所有 Codex 实例的历史会话 provider 元数据已与当前 provider 一致，无需修复"
-            .to_string();
+        return "所有 Codex 实例的历史会话 provider 元数据与工作区索引已一致，无需修复".to_string();
     }
 
     if mutated_running_instance_count > 0 {
         return format!(
-            "已为 {} 个实例修复历史会话可见性：改写 {} 个 rollout 文件，更新 {} 条 SQLite 记录。运行中的实例可能需要重启后显示",
+            "已为 {} 个实例修复历史会话可见性：改写 {} 个 rollout 文件，更新 {} 条 SQLite 记录，并同步工作区索引。运行中的实例可能需要刷新或重启后显示",
             mutated_instance_count, changed_rollout_file_count, updated_sqlite_row_count
         );
     }
 
     format!(
-        "已为 {} 个实例修复历史会话可见性：改写 {} 个 rollout 文件，更新 {} 条 SQLite 记录",
+        "已为 {} 个实例修复历史会话可见性：改写 {} 个 rollout 文件，更新 {} 条 SQLite 记录，并同步工作区索引",
         mutated_instance_count, changed_rollout_file_count, updated_sqlite_row_count
     )
+}
+
+fn build_active_workspace_repair_summary_message(
+    mutated_instance_count: usize,
+    updated_active_workspace_root_count: usize,
+    workspace_filtered_thread_count: usize,
+    mutated_running_instance_count: usize,
+) -> String {
+    if mutated_instance_count == 0 {
+        if workspace_filtered_thread_count > 0 {
+            return format!(
+                "当前 active workspace roots 已覆盖历史会话工作区；仍有 {} 条会话受过滤时，请刷新 Codex App 项目视图",
+                workspace_filtered_thread_count
+            );
+        }
+        return "当前 active workspace roots 已覆盖历史会话工作区，无需扩展".to_string();
+    }
+
+    if mutated_running_instance_count > 0 {
+        return format!(
+            "已为 {} 个实例扩展 active workspace roots：新增 {} 个历史工作区。运行中的实例可能需要刷新或重启后显示",
+            mutated_instance_count, updated_active_workspace_root_count
+        );
+    }
+
+    format!(
+        "已为 {} 个实例扩展 active workspace roots：新增 {} 个历史工作区",
+        mutated_instance_count, updated_active_workspace_root_count
+    )
+}
+
+fn build_diagnostic_summary_message(
+    repairable_metadata_count: usize,
+    workspace_filtered_thread_count: usize,
+    missing_workspace_root_count: usize,
+    missing_thread_workspace_hint_count: usize,
+    skipped_sqlite_file_count: usize,
+) -> String {
+    let workspace_repair_count = missing_workspace_root_count + missing_thread_workspace_hint_count;
+    if repairable_metadata_count == 0 && workspace_repair_count == 0 {
+        if workspace_filtered_thread_count > 0 {
+            return format!(
+                "未发现可自动写入的 provider 或工作区索引差异；有 {} 条会话的 cwd 不在当前 active workspace roots 中，可能仍会被当前项目视图过滤",
+                workspace_filtered_thread_count
+            );
+        }
+        if skipped_sqlite_file_count > 0 {
+            return format!(
+                "未发现可自动写入的会话可见性差异；已跳过 {} 个无效或损坏的 state_5.sqlite",
+                skipped_sqlite_file_count
+            );
+        }
+        return "未发现会话可见性差异".to_string();
+    }
+
+    let mut parts = Vec::new();
+    if repairable_metadata_count > 0 {
+        parts.push(format!(
+            "{} 项 provider/SQLite 元数据可修复",
+            repairable_metadata_count
+        ));
+    }
+    if workspace_repair_count > 0 {
+        parts.push(format!(
+            "{} 项工作区索引或线程归属 hint 可同步",
+            workspace_repair_count
+        ));
+    }
+    if workspace_filtered_thread_count > 0 {
+        parts.push(format!(
+            "{} 条会话可能仍受当前 active workspace roots 过滤",
+            workspace_filtered_thread_count
+        ));
+    }
+    if skipped_sqlite_file_count > 0 {
+        parts.push(format!(
+            "已跳过 {} 个无效或损坏的 state_5.sqlite",
+            skipped_sqlite_file_count
+        ));
+    }
+    parts.join("；")
 }
 
 fn collect_instances() -> Result<Vec<CodexSyncInstance>, String> {
@@ -315,6 +714,131 @@ fn read_target_provider(data_dir: &Path) -> Result<String, String> {
         .filter(|value| !value.is_empty())
         .unwrap_or(DEFAULT_PROVIDER_ID);
     Ok(provider.to_string())
+}
+
+fn scan_rollout_visibility(
+    data_dir: &Path,
+    target_provider: &str,
+) -> Result<RolloutVisibilityScan, String> {
+    let mut thread_count = 0usize;
+    let mut provider_mismatch_thread_count = 0usize;
+    let mut hints = Vec::<ThreadWorkspaceHint>::new();
+    let mut seen_hints = HashSet::<String>::new();
+    let mut workspace_roots = Vec::<String>::new();
+    let mut seen_roots = HashSet::<String>::new();
+
+    for dir_name in SESSION_DIRS {
+        let root_dir = data_dir.join(dir_name);
+        if !root_dir.exists() {
+            continue;
+        }
+        for rollout_path in list_rollout_files(&root_dir)? {
+            let Some((first_line, _separator)) = read_first_line(&rollout_path)? else {
+                continue;
+            };
+            let Some(parsed) = parse_session_meta_record(&first_line) else {
+                continue;
+            };
+            let Some(thread_id) = session_meta_id(&parsed) else {
+                continue;
+            };
+            thread_count += 1;
+
+            let current_provider = parsed["payload"]
+                .get("model_provider")
+                .and_then(JsonValue::as_str)
+                .unwrap_or("");
+            if current_provider != target_provider {
+                provider_mismatch_thread_count += 1;
+            }
+
+            let Some(workspace_root) =
+                session_meta_cwd(&parsed).and_then(|cwd| normalize_workspace_root(&cwd))
+            else {
+                continue;
+            };
+            if seen_roots.insert(workspace_root.clone()) {
+                workspace_roots.push(workspace_root.clone());
+            }
+            if seen_hints.insert(thread_id.clone()) {
+                hints.push(ThreadWorkspaceHint {
+                    thread_id,
+                    workspace_root,
+                });
+            }
+        }
+    }
+
+    let global_state = read_global_state(data_dir)?;
+    let object = global_state.as_object();
+    let active_workspace_roots = object
+        .map(|object| read_normalized_string_array(object, "active-workspace-roots"))
+        .unwrap_or_default();
+    let workspace_root_count = workspace_roots.len();
+
+    let missing_workspace_roots = object
+        .map(|object| {
+            workspace_roots
+                .iter()
+                .filter(|root| {
+                    !global_state_array_contains(object, "project-order", root)
+                        || !global_state_array_contains(
+                            object,
+                            "electron-saved-workspace-roots",
+                            root,
+                        )
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| workspace_roots.clone());
+    let missing_thread_workspace_hints = object
+        .map(|object| {
+            hints
+                .iter()
+                .filter(|hint| !global_state_thread_hint_matches(object, hint))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| hints.clone());
+    let workspace_filtered_thread_count = if active_workspace_roots.is_empty() {
+        0
+    } else {
+        hints
+            .iter()
+            .filter(|hint| {
+                !active_workspace_roots
+                    .iter()
+                    .any(|root| root == &hint.workspace_root)
+            })
+            .count()
+    };
+    let active_workspace_roots_to_add = if active_workspace_roots.is_empty() {
+        Vec::new()
+    } else {
+        workspace_roots
+            .iter()
+            .filter(|root| !active_workspace_roots.iter().any(|active| active == *root))
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    Ok(RolloutVisibilityScan {
+        thread_count,
+        provider_mismatch_thread_count,
+        workspace_filtered_thread_count,
+        workspace_root_count,
+        missing_workspace_root_count: missing_workspace_roots.len(),
+        missing_thread_workspace_hint_count: missing_thread_workspace_hints.len(),
+        active_workspace_roots,
+        active_workspace_roots_to_add,
+        workspace_plan: GlobalStateWorkspaceRepairPlan {
+            workspace_roots,
+            thread_workspace_hints: hints,
+            missing_workspace_root_count: missing_workspace_roots.len(),
+            missing_thread_workspace_hint_count: missing_thread_workspace_hints.len(),
+        },
+    })
 }
 
 fn collect_rollout_provider_changes(
@@ -489,6 +1013,281 @@ fn session_meta_id(meta: &JsonValue) -> Option<String> {
                 .and_then(JsonValue::as_str)
                 .map(str::to_string)
         })
+}
+
+fn session_meta_cwd(meta: &JsonValue) -> Option<String> {
+    meta.get("payload")
+        .and_then(|payload| payload.get("cwd"))
+        .or_else(|| meta.get("cwd"))
+        .and_then(JsonValue::as_str)
+        .map(str::to_string)
+}
+
+fn normalize_workspace_root(value: &str) -> Option<String> {
+    let mut value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(stripped) = value.strip_prefix("\\\\?\\") {
+        value = stripped;
+    }
+
+    let is_windows_path = value.starts_with("\\\\")
+        || value
+            .as_bytes()
+            .get(1)
+            .is_some_and(|separator| *separator == b':');
+    let separator = if is_windows_path { '\\' } else { '/' };
+    let mut normalized = if is_windows_path {
+        value.replace('/', "\\")
+    } else {
+        value.replace('\\', "/")
+    };
+    while normalized.len() > 3 && normalized.ends_with(separator) {
+        normalized.pop();
+    }
+
+    if normalized.trim().is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn read_global_state(root_dir: &Path) -> Result<JsonValue, String> {
+    let path = root_dir.join(GLOBAL_STATE_FILE);
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+
+    let raw = fs::read_to_string(&path)
+        .map_err(|error| format!("读取 Codex 全局状态失败 ({}): {}", path.display(), error))?;
+    Ok(serde_json::from_str::<JsonValue>(&raw).unwrap_or_else(|_| json!({})))
+}
+
+fn read_normalized_string_array(
+    object: &serde_json::Map<String, JsonValue>,
+    key: &str,
+) -> Vec<String> {
+    object
+        .get(key)
+        .and_then(JsonValue::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().and_then(normalize_workspace_root))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn global_state_array_contains(
+    object: &serde_json::Map<String, JsonValue>,
+    key: &str,
+    workspace: &str,
+) -> bool {
+    object
+        .get(key)
+        .and_then(JsonValue::as_array)
+        .map(|values| {
+            values.iter().any(|value| {
+                value.as_str().and_then(normalize_workspace_root).as_deref() == Some(workspace)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn global_state_thread_hint_matches(
+    object: &serde_json::Map<String, JsonValue>,
+    hint: &ThreadWorkspaceHint,
+) -> bool {
+    object
+        .get("thread-workspace-root-hints")
+        .and_then(JsonValue::as_object)
+        .and_then(|hints| hints.get(&hint.thread_id))
+        .and_then(JsonValue::as_str)
+        .and_then(normalize_workspace_root)
+        .as_deref()
+        == Some(hint.workspace_root.as_str())
+}
+
+fn update_global_state_workspaces(
+    root_dir: &Path,
+    plan: &GlobalStateWorkspaceRepairPlan,
+) -> Result<bool, String> {
+    if plan.workspace_roots.is_empty() && plan.thread_workspace_hints.is_empty() {
+        return Ok(false);
+    }
+
+    let path = root_dir.join(GLOBAL_STATE_FILE);
+    let mut value = read_global_state(root_dir)?;
+    if !value.is_object() {
+        value = json!({});
+    }
+    let Some(object) = value.as_object_mut() else {
+        return Err("Codex 全局状态文件格式无效".to_string());
+    };
+
+    let mut changed = false;
+    changed |= merge_string_array(object, "project-order", &plan.workspace_roots);
+    changed |= merge_string_array(
+        object,
+        "electron-saved-workspace-roots",
+        &plan.workspace_roots,
+    );
+    changed |= merge_thread_workspace_hints(object, &plan.thread_workspace_hints);
+
+    if changed {
+        let serialized = serde_json::to_string_pretty(&value)
+            .map_err(|error| format!("序列化 Codex 全局状态失败: {}", error))?;
+        modules::atomic_write::write_string_atomic(&path, &format!("{}\n", serialized))
+            .map_err(|error| format!("写入 Codex 全局状态失败 ({}): {}", path.display(), error))?;
+    }
+
+    Ok(changed)
+}
+
+fn update_global_state_active_workspace_roots(
+    root_dir: &Path,
+    roots: &[String],
+) -> Result<usize, String> {
+    if roots.is_empty() {
+        return Ok(0);
+    }
+
+    let path = root_dir.join(GLOBAL_STATE_FILE);
+    let mut value = read_global_state(root_dir)?;
+    if !value.is_object() {
+        value = json!({});
+    }
+    let Some(object) = value.as_object_mut() else {
+        return Err("Codex 全局状态文件格式无效".to_string());
+    };
+
+    let updated_count = merge_string_array_count(object, "active-workspace-roots", roots);
+    if updated_count > 0 {
+        let serialized = serde_json::to_string_pretty(&value)
+            .map_err(|error| format!("序列化 Codex 全局状态失败: {}", error))?;
+        modules::atomic_write::write_string_atomic(&path, &format!("{}\n", serialized))
+            .map_err(|error| format!("写入 Codex 全局状态失败 ({}): {}", path.display(), error))?;
+    }
+
+    Ok(updated_count)
+}
+
+fn merge_string_array(
+    object: &mut serde_json::Map<String, JsonValue>,
+    key: &str,
+    additions: &[String],
+) -> bool {
+    let mut changed = false;
+    let mut values = object
+        .get(key)
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.as_str().map(|value| value.to_string()))
+        .collect::<Vec<_>>();
+    let mut normalized_values = values
+        .iter()
+        .filter_map(|value| normalize_workspace_root(value))
+        .collect::<HashSet<_>>();
+
+    for addition in additions {
+        let Some(normalized) = normalize_workspace_root(addition) else {
+            continue;
+        };
+        if normalized_values.insert(normalized.clone()) {
+            values.push(normalized);
+            changed = true;
+        }
+    }
+
+    if changed {
+        object.insert(
+            key.to_string(),
+            JsonValue::Array(values.into_iter().map(JsonValue::String).collect()),
+        );
+    }
+
+    changed
+}
+
+fn merge_string_array_count(
+    object: &mut serde_json::Map<String, JsonValue>,
+    key: &str,
+    additions: &[String],
+) -> usize {
+    let mut updated_count = 0usize;
+    let mut values = object
+        .get(key)
+        .and_then(JsonValue::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| item.as_str().map(|value| value.to_string()))
+        .collect::<Vec<_>>();
+    let mut normalized_values = values
+        .iter()
+        .filter_map(|value| normalize_workspace_root(value))
+        .collect::<HashSet<_>>();
+
+    for addition in additions {
+        let Some(normalized) = normalize_workspace_root(addition) else {
+            continue;
+        };
+        if normalized_values.insert(normalized.clone()) {
+            values.push(normalized);
+            updated_count += 1;
+        }
+    }
+
+    if updated_count > 0 {
+        object.insert(
+            key.to_string(),
+            JsonValue::Array(values.into_iter().map(JsonValue::String).collect()),
+        );
+    }
+
+    updated_count
+}
+
+fn merge_thread_workspace_hints(
+    object: &mut serde_json::Map<String, JsonValue>,
+    additions: &[ThreadWorkspaceHint],
+) -> bool {
+    let mut changed = false;
+    if !object
+        .get("thread-workspace-root-hints")
+        .is_some_and(JsonValue::is_object)
+    {
+        object.insert("thread-workspace-root-hints".to_string(), json!({}));
+        changed = true;
+    }
+    let Some(hints) = object
+        .get_mut("thread-workspace-root-hints")
+        .and_then(JsonValue::as_object_mut)
+    else {
+        return changed;
+    };
+
+    for addition in additions {
+        let Some(normalized) = normalize_workspace_root(&addition.workspace_root) else {
+            continue;
+        };
+        let current = hints
+            .get(&addition.thread_id)
+            .and_then(JsonValue::as_str)
+            .and_then(normalize_workspace_root);
+        if current.as_deref() == Some(normalized.as_str()) {
+            continue;
+        }
+        hints.insert(addition.thread_id.clone(), JsonValue::String(normalized));
+        changed = true;
+    }
+
+    changed
 }
 
 fn read_session_index_map(root_dir: &Path) -> Result<HashMap<String, JsonValue>, String> {
@@ -1019,21 +1818,15 @@ fn backup_instance_files(
     data_dir: &Path,
     rollout_changes: &[RolloutProviderChange],
     include_sqlite: bool,
+    include_global_state: bool,
     instance_id: &str,
     target_provider: &str,
 ) -> Result<PathBuf, String> {
-    let backup_dir_name = format!(
-        "{}{}{}",
-        SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX,
-        Utc::now().format("%Y%m%d-%H%M%S"),
-        SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX
-    );
-    let backup_dir = data_dir.join(backup_dir_name);
-    fs::create_dir_all(&backup_dir)
-        .map_err(|error| format!("创建备份目录失败 ({}): {}", backup_dir.display(), error))?;
+    let backup_dir = create_unique_session_visibility_backup_dir(data_dir)?;
 
     let mut backed_up_files = Vec::new();
     let mut sqlite_backup_created = false;
+    let mut global_state_backup_created = false;
     for change in rollout_changes {
         let target = backup_dir.join("files").join(&change.relative_path);
         if let Some(parent) = target.parent() {
@@ -1063,6 +1856,9 @@ fn backup_instance_files(
     if include_sqlite {
         sqlite_backup_created = backup_sqlite_database(data_dir, &backup_dir)?;
     }
+    if include_global_state {
+        global_state_backup_created = backup_global_state_file(data_dir, &backup_dir)?;
+    }
 
     let manifest = json!({
         "instanceId": instance_id,
@@ -1070,6 +1866,7 @@ fn backup_instance_files(
         "targetProvider": target_provider,
         "createdAt": Utc::now().to_rfc3339(),
         "hasSqliteBackup": sqlite_backup_created,
+        "hasGlobalStateBackup": global_state_backup_created,
         "rolloutFiles": backed_up_files,
     });
     fs::write(
@@ -1091,22 +1888,109 @@ fn backup_instance_files(
     Ok(backup_dir)
 }
 
+fn create_unique_session_visibility_backup_dir(data_dir: &Path) -> Result<PathBuf, String> {
+    let timestamp = Utc::now().format("%Y%m%d-%H%M%S-%f").to_string();
+    for attempt in 0..1000 {
+        let timestamp = if attempt == 0 {
+            timestamp.clone()
+        } else {
+            format!("{}-{:03}", timestamp, attempt)
+        };
+        let backup_dir_name = format!(
+            "{}{}{}",
+            SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX,
+            timestamp,
+            SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX
+        );
+        let backup_dir = data_dir.join(backup_dir_name);
+        match fs::create_dir(&backup_dir) {
+            Ok(()) => return Ok(backup_dir),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "创建备份目录失败 ({}): {}",
+                    backup_dir.display(),
+                    error
+                ))
+            }
+        }
+    }
+
+    Err(format!(
+        "创建备份目录失败 ({}): 同一时间戳下的备份目录过多",
+        data_dir.display()
+    ))
+}
+
+fn backup_global_state_file(data_dir: &Path, backup_dir: &Path) -> Result<bool, String> {
+    let source = data_dir.join(GLOBAL_STATE_FILE);
+    if !source.exists() {
+        return Ok(false);
+    }
+
+    let target = backup_dir.join("files").join(GLOBAL_STATE_FILE);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "创建 Codex 全局状态备份目录失败 ({}): {}",
+                parent.display(),
+                error
+            )
+        })?;
+    }
+    fs::copy(&source, &target).map_err(|error| {
+        format!(
+            "备份 Codex 全局状态失败 ({} -> {}): {}",
+            source.display(),
+            target.display(),
+            error
+        )
+    })?;
+    modules::codex_session_file_time::restore_modified_time(
+        &target,
+        modules::codex_session_file_time::read_modified_time(&source),
+    )?;
+    Ok(true)
+}
+
 fn parse_session_visibility_repair_backup_timestamp(name: &str) -> Option<&str> {
     let timestamp = name
         .strip_prefix(SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX)?
         .strip_suffix(SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX)?;
-    if timestamp.len() != 15 {
+
+    let parts = timestamp.split('-').collect::<Vec<_>>();
+    let valid = matches!(
+        parts.as_slice(),
+        [date, time]
+            if date.len() == 8
+                && time.len() == 6
+                && date.chars().all(|value| value.is_ascii_digit())
+                && time.chars().all(|value| value.is_ascii_digit())
+    ) || matches!(
+        parts.as_slice(),
+        [date, time, nanos]
+            if date.len() == 8
+                && time.len() == 6
+                && nanos.len() == 9
+                && date.chars().all(|value| value.is_ascii_digit())
+                && time.chars().all(|value| value.is_ascii_digit())
+                && nanos.chars().all(|value| value.is_ascii_digit())
+    ) || matches!(
+        parts.as_slice(),
+        [date, time, nanos, counter]
+            if date.len() == 8
+                && time.len() == 6
+                && nanos.len() == 9
+                && counter.len() == 3
+                && date.chars().all(|value| value.is_ascii_digit())
+                && time.chars().all(|value| value.is_ascii_digit())
+                && nanos.chars().all(|value| value.is_ascii_digit())
+                && counter.chars().all(|value| value.is_ascii_digit())
+    );
+    if !valid {
         return None;
     }
-    if !timestamp.chars().enumerate().all(|(index, value)| {
-        if index == 8 {
-            value == '-'
-        } else {
-            value.is_ascii_digit()
-        }
-    }) {
-        return None;
-    }
+
     Some(timestamp)
 }
 
@@ -1288,7 +2172,14 @@ mod tests {
             collect_rollout_provider_changes(&data_dir, "relay").expect("collect rollout changes");
         assert_eq!(changes.len(), 1);
 
-        repair_single_instance(&data_dir, "relay", &changes, false).expect("repair rollout");
+        repair_single_instance(
+            &data_dir,
+            "relay",
+            &changes,
+            false,
+            &GlobalStateWorkspaceRepairPlan::default(),
+        )
+        .expect("repair rollout");
 
         let content = fs::read_to_string(&rollout_path).expect("read repaired rollout");
         let first_line = content.lines().next().expect("first line");
@@ -1331,7 +2222,14 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert!(changes[0].updated_first_line.is_none());
 
-        repair_single_instance(&data_dir, "relay", &changes, false).expect("repair rollout time");
+        repair_single_instance(
+            &data_dir,
+            "relay",
+            &changes,
+            false,
+            &GlobalStateWorkspaceRepairPlan::default(),
+        )
+        .expect("repair rollout time");
 
         assert_eq!(
             fs::read_to_string(&rollout_path).expect("read repaired rollout"),
@@ -1459,7 +2357,14 @@ mod tests {
             collect_rollout_provider_changes(&data_dir, "relay").expect("collect rollout changes");
         assert_eq!(changes.len(), 1);
 
-        repair_single_instance(&data_dir, "relay", &changes, false).expect("repair rollout time");
+        repair_single_instance(
+            &data_dir,
+            "relay",
+            &changes,
+            false,
+            &GlobalStateWorkspaceRepairPlan::default(),
+        )
+        .expect("repair rollout time");
 
         let content = fs::read_to_string(&rollout_path).expect("read repaired rollout");
         assert!(content.contains("\"model_provider\":\"relay\""));
@@ -1512,6 +2417,161 @@ mod tests {
     }
 
     #[test]
+    fn visibility_diagnostic_detects_workspace_filter_and_missing_hints() {
+        let data_dir = make_temp_dir("codex-session-visibility-workspace-scan-test");
+        let rollout_dir = data_dir.join("sessions").join("2026").join("06").join("13");
+        fs::create_dir_all(&rollout_dir).expect("create rollout dir");
+        fs::write(
+            rollout_dir.join("rollout-test.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"t1\",\"model_provider\":\"relay\",\"cwd\":\"/repo/hidden\"}}\n{\"type\":\"event\"}\n",
+        )
+        .expect("write rollout");
+        fs::write(
+            data_dir.join(GLOBAL_STATE_FILE),
+            "{\"active-workspace-roots\":[\"/repo/current\"],\"project-order\":[],\"electron-saved-workspace-roots\":[],\"thread-workspace-root-hints\":{}}\n",
+        )
+        .expect("write global state");
+
+        let scan = scan_rollout_visibility(&data_dir, "relay").expect("scan rollout visibility");
+
+        assert_eq!(scan.thread_count, 1);
+        assert_eq!(scan.provider_mismatch_thread_count, 0);
+        assert_eq!(scan.workspace_filtered_thread_count, 1);
+        assert_eq!(scan.workspace_root_count, 1);
+        assert_eq!(scan.missing_workspace_root_count, 1);
+        assert_eq!(scan.missing_thread_workspace_hint_count, 1);
+        assert_eq!(
+            scan.active_workspace_roots,
+            vec!["/repo/current".to_string()]
+        );
+        fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn workspace_repair_syncs_project_indexes_and_thread_hints_only() {
+        let data_dir = make_temp_dir("codex-session-visibility-workspace-repair-test");
+        fs::write(
+            data_dir.join(GLOBAL_STATE_FILE),
+            "{\"active-workspace-roots\":[\"/repo/current\"],\"project-order\":[],\"electron-saved-workspace-roots\":[],\"thread-workspace-root-hints\":{}}\n",
+        )
+        .expect("write global state");
+        let plan = GlobalStateWorkspaceRepairPlan {
+            workspace_roots: vec!["/repo/hidden".to_string()],
+            thread_workspace_hints: vec![ThreadWorkspaceHint {
+                thread_id: "t1".to_string(),
+                workspace_root: "/repo/hidden".to_string(),
+            }],
+            missing_workspace_root_count: 1,
+            missing_thread_workspace_hint_count: 1,
+        };
+
+        assert!(update_global_state_workspaces(&data_dir, &plan).expect("update global state"));
+
+        let parsed = serde_json::from_str::<JsonValue>(
+            &fs::read_to_string(data_dir.join(GLOBAL_STATE_FILE)).expect("read global state"),
+        )
+        .expect("parse global state");
+        assert_eq!(
+            parsed["active-workspace-roots"]
+                .as_array()
+                .expect("active roots array")
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .collect::<Vec<_>>(),
+            vec!["/repo/current"]
+        );
+        assert_eq!(
+            parsed["project-order"]
+                .as_array()
+                .expect("project order array")
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .collect::<Vec<_>>(),
+            vec!["/repo/hidden"]
+        );
+        assert_eq!(
+            parsed["electron-saved-workspace-roots"]
+                .as_array()
+                .expect("saved roots array")
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .collect::<Vec<_>>(),
+            vec!["/repo/hidden"]
+        );
+        assert_eq!(
+            parsed["thread-workspace-root-hints"]["t1"].as_str(),
+            Some("/repo/hidden")
+        );
+        fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn protected_active_workspace_repair_extends_active_roots_only() {
+        let data_dir = make_temp_dir("codex-session-visibility-active-root-repair-test");
+        fs::write(
+            data_dir.join(GLOBAL_STATE_FILE),
+            "{\"active-workspace-roots\":[\"/repo/current\"],\"project-order\":[],\"electron-saved-workspace-roots\":[],\"thread-workspace-root-hints\":{}}\n",
+        )
+        .expect("write global state");
+
+        let updated_count =
+            update_global_state_active_workspace_roots(&data_dir, &["/repo/hidden".to_string()])
+                .expect("update active workspace roots");
+
+        assert_eq!(updated_count, 1);
+        let parsed = serde_json::from_str::<JsonValue>(
+            &fs::read_to_string(data_dir.join(GLOBAL_STATE_FILE)).expect("read global state"),
+        )
+        .expect("parse global state");
+        assert_eq!(
+            parsed["active-workspace-roots"]
+                .as_array()
+                .expect("active roots array")
+                .iter()
+                .filter_map(JsonValue::as_str)
+                .collect::<Vec<_>>(),
+            vec!["/repo/current", "/repo/hidden"]
+        );
+        assert_eq!(
+            parsed["project-order"]
+                .as_array()
+                .expect("project order array")
+                .len(),
+            0
+        );
+        assert_eq!(
+            parsed["electron-saved-workspace-roots"]
+                .as_array()
+                .expect("saved roots array")
+                .len(),
+            0
+        );
+        assert_eq!(
+            parsed["thread-workspace-root-hints"]
+                .as_object()
+                .expect("thread hints object")
+                .len(),
+            0
+        );
+        fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
+    fn session_visibility_repair_backups_are_unique_within_same_second() {
+        let data_dir = make_temp_dir("codex-session-visibility-backup-unique-test");
+
+        let first = backup_instance_files(&data_dir, &[], false, false, "default", "openai")
+            .expect("create first backup");
+        let second = backup_instance_files(&data_dir, &[], false, false, "default", "openai")
+            .expect("create second backup");
+
+        assert_ne!(first, second);
+        assert!(first.exists());
+        assert!(second.exists());
+        fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
+    }
+
+    #[test]
     fn sqlite_backup_restore_replaces_db_and_clears_sidecars() {
         let data_dir = make_temp_dir("codex-session-visibility-sqlite-backup-test");
         let db_path = data_dir.join(STATE_DB_FILE);
@@ -1530,8 +2590,8 @@ mod tests {
             .expect("insert old row");
         drop(connection);
 
-        let backup_dir =
-            backup_instance_files(&data_dir, &[], true, "default", "relay").expect("backup db");
+        let backup_dir = backup_instance_files(&data_dir, &[], true, false, "default", "relay")
+            .expect("backup db");
 
         let connection = Connection::open(&db_path).expect("reopen sqlite");
         connection

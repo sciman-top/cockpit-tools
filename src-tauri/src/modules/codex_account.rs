@@ -163,11 +163,7 @@ struct StoredCodexModelProvider {
     name: Option<String>,
     #[serde(rename = "baseUrl", alias = "base_url")]
     base_url: Option<String>,
-    #[serde(
-        default,
-        rename = "supportsWebsockets",
-        alias = "supports_websockets"
-    )]
+    #[serde(default, rename = "supportsWebsockets", alias = "supports_websockets")]
     supports_websockets: bool,
 }
 
@@ -1724,8 +1720,7 @@ pub async fn probe_model_provider_websocket_support(
         .take()
         .map(|stderr| tokio::spawn(read_async_process_stream(stderr)));
 
-    let wait_result =
-        tokio::time::timeout(std::time::Duration::from_secs(12), child.wait()).await;
+    let wait_result = tokio::time::timeout(std::time::Duration::from_secs(12), child.wait()).await;
     let latency_ms = started_at.elapsed().as_millis().try_into().ok();
     let command_source = Some(runtime.source.clone());
 
@@ -7008,7 +7003,8 @@ fn extract_codex_tokens_from_value(
 mod tests {
     use super::{
         api_key_bundle_with_oauth_semantically_matches, apply_local_oauth_snapshot,
-        build_account_storage_id, build_auth_file_value, decode_jwt_payload_value,
+        build_account_storage_id, build_auth_file_value,
+        classify_provider_websocket_probe_from_doctor_report, decode_jwt_payload_value,
         detect_auth_file_plan_type_from_path, ensure_managed_account_fresh,
         extract_codex_import_candidate_from_value, extract_codex_tokens_from_value,
         extract_user_info, format_refresh_error_for_user, get_accounts_dir,
@@ -7028,14 +7024,12 @@ mod tests {
         write_api_key_provider_to_config_toml, write_api_provider_to_config_toml,
         write_auth_file_to_dir, write_managed_projection_to_dir, write_quick_config_to_config_toml,
         ApiProviderConfig, CodexAccountIndex, CodexAccountSummary, CodexAuthFile, CodexAuthTokens,
-        CodexJsonImportCandidate, CodexProviderWebsocketProbeStatus,
-        LocalCodexOAuthSnapshot, CODEX_AUTH_PROJECTION_FILE_NAME,
-        CODEX_AUTO_COMPACT_DEFAULT_LIMIT, CODEX_CONTEXT_WINDOW_1M_VALUE,
-        CODEX_LOCAL_ACCESS_FILE_NAME, CODEX_LOCAL_ACCESS_HEALTH_FILE,
-        CODEX_MODEL_PROVIDERS_FILE_NAME, CODEX_PROFILE_SHARED_COCKPIT_API,
-        CODEX_RUNTIME_MODEL_PROVIDER_ID, CODEX_WEEK_WINDOW_MINUTES,
-        classify_provider_websocket_probe_from_doctor_report,
-        WEEKLY_WINDOW_MINUTES_THRESHOLD,
+        CodexJsonImportCandidate, CodexProviderWebsocketProbeStatus, LocalCodexOAuthSnapshot,
+        CODEX_AUTH_PROJECTION_FILE_NAME, CODEX_AUTO_COMPACT_DEFAULT_LIMIT,
+        CODEX_CONTEXT_WINDOW_1M_VALUE, CODEX_LOCAL_ACCESS_FILE_NAME,
+        CODEX_LOCAL_ACCESS_HEALTH_FILE, CODEX_MODEL_PROVIDERS_FILE_NAME,
+        CODEX_PROFILE_SHARED_COCKPIT_API, CODEX_RUNTIME_MODEL_PROVIDER_ID,
+        CODEX_WEEK_WINDOW_MINUTES, WEEKLY_WINDOW_MINUTES_THRESHOLD,
     };
     use crate::models::codex::{
         CodexAccount, CodexApiProviderMode, CodexAuthMode, CodexQuota, CodexTokens,
@@ -11228,7 +11222,10 @@ supports_websockets = false
             Some("PATH".to_string()),
         )
         .expect("probe result");
-        assert_eq!(result.status, CodexProviderWebsocketProbeStatus::Unsupported);
+        assert_eq!(
+            result.status,
+            CodexProviderWebsocketProbeStatus::Unsupported
+        );
         assert_eq!(result.detected_supports_websockets, Some(false));
     }
 

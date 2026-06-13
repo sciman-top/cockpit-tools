@@ -4,25 +4,23 @@ use crate::models::codex_local_access::{
     CodexLocalAccessAccountHealthStatus, CodexLocalAccessAccountHealthView,
     CodexLocalAccessAccountModelRule, CodexLocalAccessAccountServiceHealth,
     CodexLocalAccessAccountStats, CodexLocalAccessApiKey, CodexLocalAccessApiKeyStats,
-    CodexLocalAccessChatMessage, CodexLocalAccessChatResult, CodexLocalAccessClientBaseUrlHost,
-    CodexLocalAccessCollection, CodexLocalAccessConcurrencyDiagnostics,
-    CodexLocalAccessCustomRoutingRule, CodexLocalAccessGatewayMode, CodexLocalAccessGlobalError,
-    CodexLocalAccessHealthRegistry, CodexLocalAccessHealthSummary,
-    CodexLocalAccessImageGenerationMode, CodexLocalAccessImageGenerationStatus,
-    CodexLocalAccessLightConcurrencyDiagnostics, CodexLocalAccessLightState,
-    CodexLocalAccessModelAlias, CodexLocalAccessModelCooldown, CodexLocalAccessModelPricing,
-    CodexLocalAccessModelStats, CodexLocalAccessPortCleanupResult,
-    CodexLocalAccessProfileAttachment, CodexLocalAccessRequestKind,
-    CodexLocalAccessRecentAuditEvent, CodexLocalAccessRoutingStrategy,
-    CodexLocalAccessScope, CodexLocalAccessState, CodexLocalAccessSelectorInsight,
-    CodexLocalAccessBlockedInsight,
-    CodexLocalAccessStats, CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding,
-    CodexLocalAccessTestFailure, CodexLocalAccessTestResult, CodexLocalAccessTimeoutPreset,
-    CodexLocalAccessTimeouts, CodexLocalAccessUsageEvent, CodexLocalAccessUsageEventPage,
-    CodexLocalAccessUsageStats, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
-    CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
-    CodexRuntimeModeState, CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION,
-    CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
+    CodexLocalAccessBlockedInsight, CodexLocalAccessChatMessage, CodexLocalAccessChatResult,
+    CodexLocalAccessClientBaseUrlHost, CodexLocalAccessCollection,
+    CodexLocalAccessConcurrencyDiagnostics, CodexLocalAccessCustomRoutingRule,
+    CodexLocalAccessGatewayMode, CodexLocalAccessGlobalError, CodexLocalAccessHealthRegistry,
+    CodexLocalAccessHealthSummary, CodexLocalAccessImageGenerationMode,
+    CodexLocalAccessImageGenerationStatus, CodexLocalAccessLightConcurrencyDiagnostics,
+    CodexLocalAccessLightState, CodexLocalAccessModelAlias, CodexLocalAccessModelCooldown,
+    CodexLocalAccessModelPricing, CodexLocalAccessModelStats, CodexLocalAccessPortCleanupResult,
+    CodexLocalAccessProfileAttachment, CodexLocalAccessRecentAuditEvent,
+    CodexLocalAccessRequestKind, CodexLocalAccessRoutingStrategy, CodexLocalAccessScope,
+    CodexLocalAccessSelectorInsight, CodexLocalAccessState, CodexLocalAccessStats,
+    CodexLocalAccessStatsWindow, CodexLocalAccessStickyBinding, CodexLocalAccessTestFailure,
+    CodexLocalAccessTestResult, CodexLocalAccessTimeoutPreset, CodexLocalAccessTimeouts,
+    CodexLocalAccessUsageEvent, CodexLocalAccessUsageEventPage, CodexLocalAccessUsageStats,
+    CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId,
+    CodexRuntimeAccountKind, CodexRuntimeIntegrationMode, CodexRuntimeModeState,
+    CODEX_LOCAL_ACCESS_HEALTH_SCHEMA_VERSION, CODEX_LOCAL_API_SAFETY_SCHEMA_VERSION,
 };
 use crate::modules::atomic_write::write_string_atomic;
 use crate::modules::{
@@ -6211,10 +6209,7 @@ fn selector_audit_detail(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        detail.insert(
-            "session_affinity_source".to_string(),
-            source.to_string(),
-        );
+        detail.insert("session_affinity_source".to_string(), source.to_string());
     }
     detail
 }
@@ -8522,9 +8517,7 @@ fn read_recent_health_audit_insights_from_path(
     recent_events: &mut Vec<CodexLocalAccessRecentAuditEvent>,
     event_limit: usize,
 ) {
-    if selector_insight.is_some()
-        && blocked_insight.is_some()
-        && recent_events.len() >= event_limit
+    if selector_insight.is_some() && blocked_insight.is_some() && recent_events.len() >= event_limit
     {
         return;
     }
@@ -24953,13 +24946,11 @@ mod tests {
         build_effective_local_access_account_ids_from_registry, build_health_summary_from_registry,
         build_health_summary_from_registry_for_accounts, build_images_api_payload,
         build_light_state_snapshot, build_local_models_response, build_ordered_account_ids,
-        build_pool_unavailable_message,
-        parse_blocked_insight_from_audit_event, parse_selector_insight_from_audit_event,
-        build_projection_seed_local_access_account_ids, build_proxy_dispatch_error_body,
-        build_request_routing_hint, build_responses_upstream_stream_error_sse,
-        build_routing_pool_account_ids, build_runtime_account, build_runtime_mode_state,
-        build_state_snapshot_inner,
-        build_selector_audit_summary, build_upstream_http_client, build_upstream_websocket_url,
+        build_pool_unavailable_message, build_projection_seed_local_access_account_ids,
+        build_proxy_dispatch_error_body, build_request_routing_hint,
+        build_responses_upstream_stream_error_sse, build_routing_pool_account_ids,
+        build_runtime_account, build_runtime_mode_state, build_selector_audit_summary,
+        build_state_snapshot_inner, build_upstream_http_client, build_upstream_websocket_url,
         cache_prepared_account, calculate_usage_cost_usd, canonical_model_for_client_model,
         classified_audit_detail, classify_active_stream_terminal_error, classify_codex_api_failure,
         classify_codex_upstream_error, classify_upstream_error_category,
@@ -24985,8 +24976,9 @@ mod tests {
         merge_collection_and_account_excluded_models, model_pricing, next_routing_start_index,
         normalize_account_model_rules, normalize_custom_routing_rules, normalize_health_registry,
         normalize_local_api_safety_config, normalized_sidecar_error_category, now_ms,
-        official_codex_sticky_routing_boundary, parse_codex_retry_after, parse_http_request,
-        parse_responses_payload_from_upstream, parse_retry_after_header_value,
+        official_codex_sticky_routing_boundary, parse_blocked_insight_from_audit_event,
+        parse_codex_retry_after, parse_http_request, parse_responses_payload_from_upstream,
+        parse_retry_after_header_value, parse_selector_insight_from_audit_event,
         parse_websocket_upstream_error, pause_health_registry_account, pin_process_sticky_account,
         pool_wait_fits_request_budget, prepare_gateway_request, profile_base_url_matches,
         proxy_dispatch_final_error_detail, proxy_dispatch_final_error_type,
@@ -24998,8 +24990,8 @@ mod tests {
         reset_local_api_backpressure_for_tests, resolve_plan_rank, resolve_supported_model_alias,
         resolve_upstream_target, restore_config_toml_from_takeover_backup,
         retry_failover_account_attempt_limit, retry_failover_max_retries, save_collection_to_disk,
-        save_health_registry_to_disk, save_health_registry_to_path, save_local_access_accounts, selector_audit_detail,
-        selector_selected_reason, set_runtime_integration_mode,
+        save_health_registry_to_disk, save_health_registry_to_path, save_local_access_accounts,
+        selector_audit_detail, selector_selected_reason, set_runtime_integration_mode,
         should_block_codex_auth_projection_change, should_block_direct_projection_change,
         should_block_runtime_projection_change, should_defer_pool_unavailable,
         should_restore_direct_projection_before_app_exit,
@@ -25017,15 +25009,15 @@ mod tests {
         AccountQuotaSortHint, ActiveStreamTerminal, AuditContext, AuditTrailStatus,
         CachedHealthSummary, CodexLocalAccessErrorScope, CodexLocalAccessErrorType,
         GatewayResponseAdapter, GatewayRuntime, LocalApiBackpressureState,
-        OfficialCodexStickyRoutingBoundary, ParsedRequest, ProxyDispatchError,
-        ResolvedLocalApiKey, ResponseUsageCollector, RoutingCandidate, RuntimeAccountHealth,
-        RuntimeProjectionContinuityRisk, SidecarUsageDetails, SidecarUsageEvent,
-        StreamWriteState, UpstreamHttpClientSignature, UpstreamProxySource, UsageCapture,
-        CODEX_AUTO_REVIEW_MODEL_ID, CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID,
-        CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID, CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME,
-        CODEX_PROFILE_AUTH_FILE, CODEX_PROFILE_CONFIG_FILE, DAY_WINDOW_MS,
-        HEALTH_SUMMARY_CACHE_TTL_MS, MAX_HTTP_REQUEST_BYTES, PREFERRED_CODEX_LOCAL_ACCESS_PORTS,
-        X_CODEX_TURN_METADATA_HEADER, X_CODEX_TURN_STATE_HEADER,
+        OfficialCodexStickyRoutingBoundary, ParsedRequest, ProxyDispatchError, ResolvedLocalApiKey,
+        ResponseUsageCollector, RoutingCandidate, RuntimeAccountHealth,
+        RuntimeProjectionContinuityRisk, SidecarUsageDetails, SidecarUsageEvent, StreamWriteState,
+        UpstreamHttpClientSignature, UpstreamProxySource, UsageCapture, CODEX_AUTO_REVIEW_MODEL_ID,
+        CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID, CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID,
+        CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_NAME, CODEX_PROFILE_AUTH_FILE,
+        CODEX_PROFILE_CONFIG_FILE, DAY_WINDOW_MS, HEALTH_SUMMARY_CACHE_TTL_MS,
+        MAX_HTTP_REQUEST_BYTES, PREFERRED_CODEX_LOCAL_ACCESS_PORTS, X_CODEX_TURN_METADATA_HEADER,
+        X_CODEX_TURN_STATE_HEADER,
     };
     use crate::models::codex::{
         CodexAccount, CodexAccountIndex, CodexAccountSummary, CodexApiProviderMode, CodexAppSpeed,
@@ -25033,16 +25025,16 @@ mod tests {
     };
     use crate::models::codex_local_access::{
         CodexLocalAccessAccountHealth, CodexLocalAccessAccountHealthStatus,
-        CodexLocalAccessAccountStats, CodexLocalAccessApiKeyStats,
-        CodexLocalAccessAccountModelRule, CodexLocalAccessClientBaseUrlHost,
-        CodexLocalAccessCollection, CodexLocalAccessCustomRoutingRule, CodexLocalAccessGatewayMode,
-        CodexLocalAccessHealthSummary, CodexLocalAccessImageGenerationMode,
-        CodexLocalAccessHealthRegistry, CodexLocalAccessModelCooldown,
-        CodexLocalAccessModelStats, CodexLocalAccessRequestKind,
-        CodexLocalAccessRoutingStrategy, CodexLocalAccessScope, CodexLocalAccessStats,
-        CodexLocalAccessStatsWindow, CodexLocalAccessTimeouts, CodexLocalAccessUsageEvent,
-        CodexLocalAccessUsageStats, CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig,
-        CodexLocalApiSafetyPresetId, CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
+        CodexLocalAccessAccountModelRule, CodexLocalAccessAccountStats,
+        CodexLocalAccessApiKeyStats, CodexLocalAccessClientBaseUrlHost, CodexLocalAccessCollection,
+        CodexLocalAccessCustomRoutingRule, CodexLocalAccessGatewayMode,
+        CodexLocalAccessHealthRegistry, CodexLocalAccessHealthSummary,
+        CodexLocalAccessImageGenerationMode, CodexLocalAccessModelCooldown,
+        CodexLocalAccessModelStats, CodexLocalAccessRequestKind, CodexLocalAccessRoutingStrategy,
+        CodexLocalAccessScope, CodexLocalAccessStats, CodexLocalAccessStatsWindow,
+        CodexLocalAccessTimeouts, CodexLocalAccessUsageEvent, CodexLocalAccessUsageStats,
+        CodexLocalApiFallbackMode, CodexLocalApiSafetyConfig, CodexLocalApiSafetyPresetId,
+        CodexRuntimeAccountKind, CodexRuntimeIntegrationMode,
     };
     use crate::models::{
         DefaultInstanceSettings, InstanceLaunchMode, InstanceProfile, InstanceStore,
@@ -25139,7 +25131,11 @@ mod tests {
         })
     }
 
-    fn measure_duration_samples<F>(warmup_count: usize, sample_count: usize, mut task: F) -> Vec<u128>
+    fn measure_duration_samples<F>(
+        warmup_count: usize,
+        sample_count: usize,
+        mut task: F,
+    ) -> Vec<u128>
     where
         F: FnMut(),
     {
@@ -25187,7 +25183,10 @@ mod tests {
             api_keys: vec![CodexLocalAccessApiKeyStats {
                 api_key_id: "local-api-key".to_string(),
                 label: "Local API Key".to_string(),
-                usage: synthetic_usage_stats(accounts.len() as u64 * 3, accounts.len() as u64 * 120),
+                usage: synthetic_usage_stats(
+                    accounts.len() as u64 * 3,
+                    accounts.len() as u64 * 120,
+                ),
                 updated_at,
             }],
         }
@@ -25204,7 +25203,10 @@ mod tests {
             .map(|(index, account_id)| CodexLocalAccessAccountStats {
                 account_id: account_id.clone(),
                 email: format!("perf-{:03}@example.com", index),
-                usage: synthetic_usage_stats(8 + (index % 5) as u64, 400 + (index % 11) as u64 * 17),
+                usage: synthetic_usage_stats(
+                    8 + (index % 5) as u64,
+                    400 + (index % 11) as u64 * 17,
+                ),
                 updated_at: now - index as i64 * 250,
             })
             .collect::<Vec<_>>();
@@ -25289,13 +25291,13 @@ mod tests {
                     status,
                     cooldown_until_ms,
                     estimated_reset_at_ms: cooldown_until_ms,
-                    estimated_remaining_percentage: Some(if status
-                        == CodexLocalAccessAccountHealthStatus::EstimatedAvailable
-                    {
-                        65
-                    } else {
-                        100
-                    }),
+                    estimated_remaining_percentage: Some(
+                        if status == CodexLocalAccessAccountHealthStatus::EstimatedAvailable {
+                            65
+                        } else {
+                            100
+                        },
+                    ),
                     last_observed_remaining_percentage: Some(80),
                     last_selected_at_ms: Some(now - index as i64 * 1_000),
                     last_success_at_ms: Some(now - index as i64 * 1_000),
@@ -25329,7 +25331,8 @@ mod tests {
                             .then_some("usage_limit_reached".to_string()),
                         last_failure_message: (index % 10 == 0)
                             .then_some("quota cooldown".to_string()),
-                        image_generation_status: super::CodexLocalAccessImageGenerationStatus::Available,
+                        image_generation_status:
+                            super::CodexLocalAccessImageGenerationStatus::Available,
                         image_generation_checked_at: Some(now - index as i64 * 500),
                     },
                 )
@@ -28433,8 +28436,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
 
         let now = now_ms();
         let registry = empty_health_registry(now);
-        save_health_registry_to_path(&env.root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE), &registry)
-            .expect("health registry should be written to isolated test root");
+        save_health_registry_to_path(
+            &env.root.join(super::CODEX_LOCAL_ACCESS_HEALTH_FILE),
+            &registry,
+        )
+        .expect("health registry should be written to isolated test root");
 
         let listener = TcpListener::bind((super::CODEX_LOCAL_ACCESS_BIND_HOST, 0))
             .await
@@ -29697,9 +29703,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 else {
                     break;
                 };
-                let request_text =
-                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
-                        .await;
+                let request_text = read_fake_upstream_request_text(
+                    &mut socket,
+                    "fake upstream should read request",
+                )
+                .await;
                 upstream_seen_task.lock().await.push(request_text.clone());
 
                 assert!(
@@ -29949,9 +29957,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 else {
                     break;
                 };
-                let request_text =
-                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
-                        .await;
+                let request_text = read_fake_upstream_request_text(
+                    &mut socket,
+                    "fake upstream should read request",
+                )
+                .await;
                 upstream_seen_task.lock().await.push(request_text.clone());
 
                 if request_text.contains("Bearer sk-local-rescue-c") {
@@ -30182,9 +30192,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                     .accept()
                     .await
                     .expect("fake upstream should accept");
-                let request_text =
-                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
-                        .await;
+                let request_text = read_fake_upstream_request_text(
+                    &mut socket,
+                    "fake upstream should read request",
+                )
+                .await;
                 upstream_seen_task.lock().await.push(request_text.clone());
 
                 if request_text.contains("Bearer sk-local-old") {
@@ -30730,9 +30742,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                     .accept()
                     .await
                     .expect("fake upstream should accept retry request");
-                let request_text =
-                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
-                        .await;
+                let request_text = read_fake_upstream_request_text(
+                    &mut socket,
+                    "fake upstream should read request",
+                )
+                .await;
                 seen.push(request_text);
 
                 if attempt == 0 {
@@ -30967,9 +30981,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 let Some((mut socket, _)) = accepted else {
                     break;
                 };
-                let request_text =
-                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
-                        .await;
+                let request_text = read_fake_upstream_request_text(
+                    &mut socket,
+                    "fake upstream should read request",
+                )
+                .await;
                 assert!(
                     request_text.contains("Bearer sk-local-old"),
                     "hard-affinity followup must use original account: {}",
@@ -31423,9 +31439,11 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 let Ok(Ok((mut socket, _))) = accept else {
                     break;
                 };
-                let request_text =
-                    read_fake_upstream_request_text(&mut socket, "fake upstream should read request")
-                        .await;
+                let request_text = read_fake_upstream_request_text(
+                    &mut socket,
+                    "fake upstream should read request",
+                )
+                .await;
                 upstream_seen_task.lock().await.push(request_text.clone());
 
                 if request_text.contains("Bearer sk-local-old") {
@@ -36385,8 +36403,14 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
         assert_eq!(selector.selected_reason.as_deref(), Some("sticky_selected"));
         assert_eq!(selector.candidate_count, 4);
         assert_eq!(selector.eligible_count, 2);
-        assert_eq!(selector.skipped_counts_by_reason.get("health_skipped"), Some(&1));
-        assert_eq!(selector.skipped_counts_by_reason.get("cap_truncated"), Some(&1));
+        assert_eq!(
+            selector.skipped_counts_by_reason.get("health_skipped"),
+            Some(&1)
+        );
+        assert_eq!(
+            selector.skipped_counts_by_reason.get("cap_truncated"),
+            Some(&1)
+        );
         assert_eq!(blocked.error_type.as_deref(), Some("pool_unavailable"));
         assert_eq!(
             blocked.recover_action.as_deref(),
@@ -36413,8 +36437,14 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 ("model_key".to_string(), "gpt-5.5".to_string()),
                 ("selected_reason".to_string(), "sticky_selected".to_string()),
                 ("candidate_count".to_string(), "4".to_string()),
-                ("request_id_source".to_string(), "client_request_id".to_string()),
-                ("session_affinity_source".to_string(), "session_id".to_string()),
+                (
+                    "request_id_source".to_string(),
+                    "client_request_id".to_string(),
+                ),
+                (
+                    "session_affinity_source".to_string(),
+                    "session_id".to_string(),
+                ),
             ]),
         };
         let blocked_event = super::CodexLocalAccessAuditEvent {
@@ -36449,7 +36479,10 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
 
         assert_eq!(selector.phase, "selector");
         assert_eq!(selector.request_id, "req-selector");
-        assert_eq!(selector.request_id_source.as_deref(), Some("client_request_id"));
+        assert_eq!(
+            selector.request_id_source.as_deref(),
+            Some("client_request_id")
+        );
         assert_eq!(
             selector.session_affinity_source.as_deref(),
             Some("session_id")
@@ -36489,7 +36522,10 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
             outcome: Some("selected".to_string()),
             detail: BTreeMap::from([
                 ("model_key".to_string(), "gpt-5.5".to_string()),
-                ("selected_reason".to_string(), "fill_first_selected".to_string()),
+                (
+                    "selected_reason".to_string(),
+                    "fill_first_selected".to_string(),
+                ),
             ]),
         };
         let non_api = super::CodexLocalAccessAuditEvent {

@@ -509,6 +509,20 @@ pub async fn codex_repair_session_visibility_across_instances(
 }
 
 #[tauri::command]
+pub async fn codex_repair_session_visibility_active_workspace_roots_across_instances() -> Result<
+    modules::codex_session_visibility::CodexSessionVisibilityActiveWorkspaceRepairSummary,
+    String,
+> {
+    modules::codex_session_visibility::repair_session_visibility_active_workspace_roots_across_instances()
+}
+
+#[tauri::command]
+pub async fn codex_diagnose_session_visibility_across_instances(
+) -> Result<modules::codex_session_visibility::CodexSessionVisibilityDiagnosticSummary, String> {
+    modules::codex_session_visibility::diagnose_session_visibility_across_instances()
+}
+
+#[tauri::command]
 pub async fn codex_list_sessions_across_instances(
 ) -> Result<Vec<modules::codex_session_manager::CodexSessionRecord>, String> {
     modules::codex_session_manager::list_sessions_across_instances()

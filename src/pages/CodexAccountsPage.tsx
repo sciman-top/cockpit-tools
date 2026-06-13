@@ -180,7 +180,11 @@ import {
   CODEX_CODE_REVIEW_QUOTA_VISIBILITY_CHANGED_EVENT,
   isCodexCodeReviewQuotaVisibleByDefault,
 } from "../utils/codexPreferences";
-import { formatCodexSessionVisibilityRepairMessage } from "../utils/codexSessionVisibility";
+import {
+  formatCodexSessionVisibilityDiagnosticMessage,
+  formatCodexSessionVisibilityRepairMessage,
+  getCodexSessionVisibilityDiagnosticRepairableCount,
+} from "../utils/codexSessionVisibility";
 import { emitAccountsChanged } from "../utils/accountSyncEvents";
 import {
   CODEX_API_PROVIDER_CUSTOM_ID,
@@ -2287,6 +2291,9 @@ export function CodexAccountsPage() {
   const repairSessionVisibilityAcrossInstances = useCodexInstanceStore(
     (state) => state.repairSessionVisibilityAcrossInstances,
   );
+  const diagnoseSessionVisibilityAcrossInstances = useCodexInstanceStore(
+    (state) => state.diagnoseSessionVisibilityAcrossInstances,
+  );
 
   const showAddModalRef = useRef(showAddModal);
   const addTabRef = useRef(addTab);
@@ -3260,11 +3267,40 @@ export function CodexAccountsPage() {
     setApiSwitchNoticeRepairResult(null);
     setApiSwitchNoticeRepairing(true);
     try {
-      const summary = await repairSessionVisibilityAcrossInstances();
-      if (apiSwitchNoticeRepairSeqRef.current === repairSeq) {
+      const diagnosticSummary = await diagnoseSessionVisibilityAcrossInstances();
+      if (apiSwitchNoticeRepairSeqRef.current !== repairSeq) return;
+      if (
+        getCodexSessionVisibilityDiagnosticRepairableCount(
+          diagnosticSummary,
+        ) === 0
+      ) {
         setApiSwitchNoticeRepairResult(
-          formatCodexSessionVisibilityRepairMessage(summary, t),
+          formatCodexSessionVisibilityDiagnosticMessage(diagnosticSummary, t),
         );
+        return;
+      }
+
+      const summary = await repairSessionVisibilityAcrossInstances();
+      if (apiSwitchNoticeRepairSeqRef.current !== repairSeq) return;
+      const repairMessage = formatCodexSessionVisibilityRepairMessage(
+        summary,
+        t,
+      );
+      const needsWorkspaceAttention =
+        diagnosticSummary.workspaceFilteredThreadCount > 0;
+      setApiSwitchNoticeRepairResult(
+        needsWorkspaceAttention
+          ? t(
+              "codex.apiSwitchNotice.repairWithWorkspaceFilter",
+              "{{message}}；另有 {{count}} 条会话可能仍受当前 active workspace roots 过滤。",
+              {
+                message: repairMessage,
+                count: diagnosticSummary.workspaceFilteredThreadCount,
+              },
+            )
+          : repairMessage,
+      );
+      if (!needsWorkspaceAttention) {
         apiSwitchNoticeAutoCloseTimerRef.current = window.setTimeout(() => {
           if (apiSwitchNoticeRepairSeqRef.current !== repairSeq) return;
           apiSwitchNoticeRepairSeqRef.current += 1;
@@ -3289,7 +3325,12 @@ export function CodexAccountsPage() {
         setApiSwitchNoticeRepairing(false);
       }
     }
-  }, [repairSessionVisibilityAcrossInstances, setApiSwitchNoticeError, t]);
+  }, [
+    diagnoseSessionVisibilityAcrossInstances,
+    repairSessionVisibilityAcrossInstances,
+    setApiSwitchNoticeError,
+    t,
+  ]);
 
   const openApiSwitchVisibilityNotice = useCallback(
     (context: CodexApiSwitchNoticeContext) => {
@@ -12666,7 +12707,7 @@ export function CodexAccountsPage() {
                   <p className="codex-local-access-hide-confirm-desc">
                     {t(
                       "codex.apiSwitchNotice.message",
-                      "检测到 Codex 已从 {{from}} 切换到 {{to}}。由于官方机制，API 与账号直接切换后，原有会话可能不会自动显示。正在自动修复会话可见性，后续也可以通过「会话管理」里的「修复可见性」功能修复。",
+                      "检测到 Codex 已从 {{from}} 切换到 {{to}}。由于官方机制，API 与账号直接切换后，原有会话可能不会自动显示。正在诊断并修复可安全自动处理的会话可见性差异；若只剩当前项目视图过滤，会直接提示原因。",
                       {
                         from: formatCodexLaunchCredentialKindLabel(
                           apiSwitchNoticeContext.from,
@@ -12683,7 +12724,7 @@ export function CodexAccountsPage() {
                       <span>
                         {t(
                           "codex.apiSwitchNotice.repairing",
-                          "正在修复 Codex 会话可见性...",
+                          "正在诊断并修复 Codex 会话可见性...",
                         )}
                       </span>
                     </div>

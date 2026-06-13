@@ -461,7 +461,10 @@ export interface CodexSessionVisibilityRepairItem {
   instanceName: string;
   targetProvider: string;
   changedRolloutFileCount: number;
+  providerChangedRolloutFileCount: number;
   updatedSqliteRowCount: number;
+  updatedWorkspaceRootCount: number;
+  updatedThreadWorkspaceHintCount: number;
   skippedSqliteFile: boolean;
   backupDir?: string | null;
   running: boolean;
@@ -471,10 +474,69 @@ export interface CodexSessionVisibilityRepairSummary {
   instanceCount: number;
   mutatedInstanceCount: number;
   changedRolloutFileCount: number;
+  providerChangedRolloutFileCount: number;
   updatedSqliteRowCount: number;
+  updatedWorkspaceRootCount: number;
+  updatedThreadWorkspaceHintCount: number;
+  repairableMetadataCount: number;
+  workspaceRepairCount: number;
   skippedSqliteFileCount: number;
   items: CodexSessionVisibilityRepairItem[];
   backupDirs: string[];
+  message: string;
+}
+
+export interface CodexSessionVisibilityActiveWorkspaceRepairItem {
+  instanceId: string;
+  instanceName: string;
+  workspaceFilteredThreadCount: number;
+  updatedActiveWorkspaceRootCount: number;
+  backupDir?: string | null;
+  running: boolean;
+}
+
+export interface CodexSessionVisibilityActiveWorkspaceRepairSummary {
+  instanceCount: number;
+  mutatedInstanceCount: number;
+  workspaceFilteredThreadCount: number;
+  updatedActiveWorkspaceRootCount: number;
+  items: CodexSessionVisibilityActiveWorkspaceRepairItem[];
+  backupDirs: string[];
+  message: string;
+}
+
+export interface CodexSessionVisibilityDiagnosticItem {
+  instanceId: string;
+  instanceName: string;
+  targetProvider: string;
+  rolloutThreadCount: number;
+  providerMismatchThreadCount: number;
+  sqliteRowsToUpdate: number;
+  repairableMetadataCount: number;
+  workspaceFilteredThreadCount: number;
+  workspaceRootCount: number;
+  missingWorkspaceRootCount: number;
+  missingThreadWorkspaceHintCount: number;
+  workspaceRepairCount: number;
+  activeWorkspaceRepairRootCount: number;
+  activeWorkspaceRoots: string[];
+  skippedSqliteFile: boolean;
+  running: boolean;
+}
+
+export interface CodexSessionVisibilityDiagnosticSummary {
+  instanceCount: number;
+  rolloutThreadCount: number;
+  providerMismatchThreadCount: number;
+  sqliteRowsToUpdate: number;
+  repairableMetadataCount: number;
+  workspaceFilteredThreadCount: number;
+  missingWorkspaceRootCount: number;
+  missingThreadWorkspaceHintCount: number;
+  workspaceRepairCount: number;
+  activeWorkspaceRepairRootCount: number;
+  skippedSqliteFileCount: number;
+  items: CodexSessionVisibilityDiagnosticItem[];
   message: string;
 }
 
