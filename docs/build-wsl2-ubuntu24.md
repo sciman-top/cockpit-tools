@@ -30,7 +30,7 @@ grep -i microsoft /proc/version
 仓库目录约定：
 
 ```text
-~/codes/cockpit-tools
+~/codes/cockpit-tools-local
 ```
 
 Node.js 要求：
@@ -108,11 +108,11 @@ pkg-config --modversion webkit2gtk-4.1
 mkdir -p ~/codes
 cd ~/codes
 
-if [ ! -d cockpit-tools/.git ]; then
-  git clone https://github.com/jlcodes99/cockpit-tools.git cockpit-tools
+if [ ! -d cockpit-tools-local/.git ]; then
+  git clone https://github.com/sciman-top/cockpit-tools-local.git cockpit-tools-local
 fi
 
-cd ~/codes/cockpit-tools
+cd ~/codes/cockpit-tools-local
 test -f package.json && test -f src-tauri/tauri.conf.json && pwd
 ```
 
@@ -181,7 +181,7 @@ console.log(`Node.js ${process.versions.node} OK`);
 新 shell 窗口打开后执行：
 
 ```bash
-cd ~/codes/cockpit-tools
+cd ~/codes/cockpit-tools-local
 
 node -v
 npm -v
@@ -196,7 +196,7 @@ cargo --version
 以下命令默认都在新打开的 shell 中执行，并且当前目录是：
 
 ```bash
-cd ~/codes/cockpit-tools
+cd ~/codes/cockpit-tools-local
 ```
 
 安装前端依赖：
@@ -276,7 +276,7 @@ false
 执行完整编译和打包：
 
 ```bash
-npm run tauri build
+npm run tauri -- build
 ```
 
 首次编译会下载 Rust crates，release 构建可能需要十几分钟。后续增量编译会快很多。
@@ -292,7 +292,7 @@ nvm use 24
 nvm alias default 24
 
 npm ci --cache .npm-cache
-npm run tauri build
+npm run tauri -- build
 ```
 
 编译成功后检查二进制：
@@ -340,11 +340,11 @@ git diff -- src-tauri/tauri.conf.json
 以下命令默认都在新打开的 shell 中执行，并且当前目录是：
 
 ```bash
-cd ~/codes/cockpit-tools
+cd ~/codes/cockpit-tools-local
 ```
 
 开发模式会启动 Vite dev server 和 Tauri 应用：
 
 ```bash
-npm run tauri dev
+npm run tauri:dev
 ```

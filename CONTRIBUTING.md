@@ -1,102 +1,133 @@
-# Contributing to Cockpit Tools
+# Contributing to Cockpit Tools Local
 
-Thank you for your interest in contributing to Cockpit Tools! This project aims to be the universal manager for AI IDEs, and we welcome contributions of all kinds.
+Thank you for helping with `sciman-top/cockpit-tools-local`.
 
-## 🚀 Getting Started
+This repository is a self-use fork of `jlcodes99/cockpit-tools`. Contributions must preserve the local fork semantics instead of assuming the official upstream release posture.
 
-1.  **Fork** the repository on GitHub.
-2.  **Clone** your fork locally:
-    ```bash
-    git clone https://github.com/YOUR_USERNAME/cockpit-tools.git
-    ```
-3.  **Create a branch** for your feature or bug fix:
-    ```bash
-    git checkout -b feature/my-cool-feature
-    ```
+## Before You Change Anything
 
-## 🛠️ Project Structure
+Read these files first:
 
-This project is a Cargo Workspace:
-- `crates/cockpit-core`: Shared business logic (Library).
-- `src-tauri`: The GUI application (Tauri + React).
-- `crates/cockpit-cli`: The command-line interface.
+1. [README.md](README.md)
+2. [docs/SELF_USE_DELTA.md](docs/SELF_USE_DELTA.md)
+3. [docs/UPSTREAM_SYNC_POLICY.md](docs/UPSTREAM_SYNC_POLICY.md)
+4. [docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md](docs/LOCAL_HARDENED_API_RELEASE_ACCEPTANCE_SUMMARY.md)
 
-## 📝 Coding Standards
+Keep these repo truths intact:
 
-- **Rust:** Follow standard Rust idioms. Run `cargo fmt` before committing.
-- **Frontend:** We use React 19 and Tailwind CSS. Use functional components and hooks.
-- **Commits:** Use clear, descriptive commit messages.
+- `main` is the self-use source line for this fork.
+- Releases publish self-use assets only.
+- Windows-first runtime assumptions are intentional.
+- Codex local API / hardened runtime / continuity guard behavior is part of the local delta and must not be overwritten casually by upstream code.
 
-## 🧪 Testing
+## Local Setup
 
-- **GUI:** `npm run tauri dev`
-- **CLI:** `cargo run --package cockpit-cli -- <commands>`
-- **Core:** `cargo test --package cockpit-core`
+### Prerequisites
 
-## 📬 Submitting a Pull Request
+- Node.js 18+
+- npm 9+
+- Rust stable
 
-1.  Push your changes to your fork.
-2.  Open a Pull Request against the `main` branch.
-3.  Provide a clear description of the changes and link any related issues.
-4.  Be prepared to iterate based on feedback!
+### Install
 
-## 📜 Code of Conduct
+```bash
+npm install
+```
 
-Please be respectful and professional in all interactions. We follow the [Contributor Covenant](https://www.contributor-covenant.org/).
+### Development profile
 
----
+```bash
+npm run typecheck
+npm run tauri:dev
+```
 
-## 📋 Additional Project Specifications
+`npm run tauri:dev` launches the isolated `Cockpit Tools Dev` profile rather than overwriting the default self-use data directory.
 
-### TypeScript Configuration
+## Project Structure
 
-- **Strict mode** enabled (`strict: true`)
-- **No unused locals** (`noUnusedLocals: true`)
-- **No unused parameters** (`noUnusedParameters: true`)
-- **No fallthrough cases in switch** (`noFallthroughCasesInSwitch: true`)
-- Target: ES2020, JSX: react-jsx
+- `src/`: React UI, hooks, utilities, styles, assets, i18n
+- `src-tauri/`: Tauri shell, commands, capabilities, platform integration
+- `crates/cockpit-core/`: shared Rust logic for accounts, providers, OAuth, quotas, config, persistence
+- `crates/cockpit-cli/`: CLI entrypoint
+- `scripts/`: version sync, locale checks, release preflight, smoke/acceptance helpers
+- `docs/`, `reports/`, `public/`, `Casks/`: documentation, evidence, static assets, release metadata
 
-### Build & Development
+Do not edit generated output directories such as `dist/`, `target/`, `target-test/`, `target-codex-verify/`, `target-codex-tauri-*`, or `node_modules/`.
 
-| Command | Description |
-|---------|-------------|
-| `npm run tauri dev` | Start development server (port 1420) |
-| `npm run typecheck` | Run TypeScript type checking (auto-runs before build) |
-| `npm run build` | Build frontend (syncs version + typecheck + vite build) |
-| `npm run sync-version` | Sync `package.json` version to Tauri config |
-| `npm run release:preflight` | Run full release pre-check (locales + typecheck + build + cargo check) |
+## Verification Order
 
-### State Management & i18n
+Default gate order for code changes:
 
-- **State management:** Zustand
-- **Internationalization:** i18next + react-i18next (supports 18 languages)
-- **UI framework:** Tailwind CSS + DaisyUI
+1. `npm run build`
+2. `cargo test --manifest-path src-tauri/Cargo.toml --lib`
+3. `node scripts/release/preflight.cjs --skip-typecheck --skip-build --skip-cargo --skip-cargo-test`
+4. Hotspot review for:
+   - `SECURITY.md`
+   - `src-tauri/capabilities/`
+   - updater / signing / release scripts
+   - quota / cooldown / pool routing / continuity
+   - i18n text
+   - live continuity risk boundaries
 
-### Release Process Summary
+Useful commands:
 
-1. Update version in `package.json` + CHANGELOG (Chinese & English)
-2. Run `npm run sync-version` → `npm run release:preflight`
-3. Commit → Tag (e.g., `v0.22.20`) → Push branch and tag
-4. CI auto-builds macOS (universal) + Windows + Linux → Generates SHA256 → Updates Homebrew Cask
+| Command | Purpose |
+| --- | --- |
+| `npm run typecheck` | Fast TypeScript feedback |
+| `npm run build` | Frontend build with version sync |
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | Rust lib tests |
+| `npm run release:preflight` | Full release preflight |
+| `npm run tauri:dev` | Desktop development profile |
+| `npm run tauri -- build` | Tauri packaging wrapper |
 
-### Release Targets
+For documentation-only changes, full code gates may be `gate_na`, but you should still run at least lightweight verification such as `git diff --check` and any doc-adjacent checks that the touched files depend on.
 
-- **macOS, Windows, and Linux**
-- macOS recommended: `universal.dmg` (compatible with both Intel and Apple Silicon)
-- Linux packages: `.AppImage`, `.deb`, and `.rpm`
-- Each release includes `SHA256SUMS.txt` for integrity verification
+## Documentation Expectations
 
-### Branch Strategy
+When behavior, commands, release posture, or user-visible flows change, update the relevant docs in the same change:
 
-- **Main branch:** `main`
-- **PR target:** `main`
-- **Release tag format:** `v<major>.<minor>.<patch>`
+- `README*.md`
+- `CHANGELOG*.md`
+- `docs/LOCAL_HARDENED_API*.md`
+- `docs/SELF_USE_DELTA.md`
+- `docs/UPSTREAM_SYNC_POLICY.md`
+- `docs/reference-sources.md`
 
-### Related Specification Files
+Do not leave docs implying that blocked live acceptance is already complete. Keep repo-side truth boundaries explicit.
 
-| File | Content |
-|------|---------|
-| `docs/release-process.md` | Detailed release process documentation |
-| `tsconfig.json` | TypeScript strict compilation rules |
-| `.github/workflows/release.yml` | CI/CD release automation |
-| `SECURITY.md` | Security policy |
+## High-Impact Areas
+
+Treat these areas as high impact and document rollback/evidence clearly:
+
+- auth / provider projection
+- Codex API service and routing
+- quota continuity and cooldown behavior
+- updater / signing / release assets
+- Tauri capabilities
+- live runtime continuity
+
+Do not automatically stop, restart, kill, relaunch, or replace the live `Codex App`, `codex`, Cockpit release exe, or current live dev app/server without explicit confirmation.
+
+## Pull Requests
+
+When opening a PR or change summary:
+
+- explain whether the change is self-use specific, upstream-compatible, or a local adaptation of upstream code
+- list the commands you used for verification
+- call out any remaining blockers or `platform_na` / `gate_na` items
+- mention doc updates whenever user-visible behavior or repo workflow changed
+
+## Release Notes and Versioning
+
+- Keep the self-use version scheme as `official-base + -local.N`.
+- Do not publish bare upstream version numbers from this repo.
+- Keep `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` aligned.
+
+## Questions
+
+If you are unsure whether a change should preserve local behavior or absorb upstream behavior, compare it against:
+
+- [docs/SELF_USE_DELTA.md](docs/SELF_USE_DELTA.md)
+- [docs/UPSTREAM_SYNC_POLICY.md](docs/UPSTREAM_SYNC_POLICY.md)
+
+Default bias: preserve the local self-use behavior unless there is clear evidence that the upstream behavior is better and safe for this fork.

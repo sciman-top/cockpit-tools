@@ -1,7 +1,7 @@
 # Local Hardened API Release Acceptance Summary
 
 状态：active
-更新时间：2026-06-07
+更新时间：2026-06-13
 
 ## 1. 作用
 
@@ -96,6 +96,8 @@ git diff --check
 | `U10 / NPB-03` 性能基线 | `reports/local-hardened-api-performance/perf-baseline-20260607-202512.md`、`reports/local-hardened-api-performance/browser-preview-modal-baseline-20260607.md` | synthetic 与 app-safe browser-preview 两层证据分开看，不能互相冒充 |
 | live UI smoke 分层入口 | `docs/LOCAL_HARDENED_API_LIVE_UI_SMOKE_MAP.md` | 先判断是 browser-preview、app-safe isolated probe，还是必须进入真实 live Tauri / tray / 系统通知 |
 | 剩余 live acceptance blocker | `reports/local-hardened-api-smoke/live-acceptance-blockers-20260607.md` | 把 `enabled=false`、listener 缺失、桌面观察能力缺口和下一次安全执行顺序收口成正式证据 |
+| 单账号隔离上游 smoke 已通过 | `reports/local-hardened-api-smoke/smoke-20260609-002356.json` | 证明单账号隔离 listener + 真实 upstream chat 已可通过，且 `~/.codex` / `Codex App` 守卫继续保持不变 |
+| bounded drain 后 continuity/fallback 仍 blocked | `reports/local-hardened-api-smoke/smoke-20260609-012423.json` | 证明当前 blocker 已不是 listener 或发送层异常，而是仍未观察到 `usage_limit_reached -> model_cooldown_applied -> fallback_blocked` 事件链 |
 
 ### 5.1 低风险默认 UI / 浏览器证据
 
@@ -131,6 +133,12 @@ git diff --check
   - 已证明 `small_pool` 仍要求 `accountIds` 为 2 到 3 个；当前 1 个成员不足以验证“新请求切到健康账号”
 - `reports/local-hardened-api-smoke/smoke-20260608-003000.json`
   - 已证明当前单账号 `RunUpstreamSmoke` 结果是请求异常，尚未形成可用 audit 事件链
+- `reports/local-hardened-api-smoke/smoke-20260609-002356.json`
+  - 已证明单账号隔离 `RunUpstreamSmoke` 可通过：`single_account_upstream_chat = pass`
+  - 已证明 `codex_cli_config_auth_untouched = pass`、`codex_app_process_stable = pass` 仍成立
+- `reports/local-hardened-api-smoke/smoke-20260609-012423.json`
+  - 已证明在要求 `RequireQuotaFallback` 的 bounded drain run 中，`same_task_affinity_fallback_blocked` 与 `new_request_avoids_exhausted_account` 仍是 `blocked`
+  - 已把当前 blocker 收敛为“未观察到真实 quota fallback 事件链”，而不是 transport、listener 或配置守卫失败
 
 ### 5.2 协议与连续性入口
 
@@ -190,7 +198,7 @@ git diff --check
 
 ## 8. 当前收口判断
 
-截至 2026-06-07，当前 release 收口状态是：
+截至 2026-06-13，当前 release 收口状态是：
 
 - `fallbackMode` / rescue / reselection 语义已在总控与本文件对照表中统一，不再需要依赖零散讨论记录理解当前行为。
 - 高级显式 LAN 模式已具备独立合同与风险提示入口；剩余缺口是未来真实启用时的 live acceptance，而不是继续补概念定义。
@@ -207,3 +215,6 @@ git diff --check
 - 2026-06-08 新增隔离 smoke 证据后，可进一步区分：`enabled=false` 不是绝对无解；当前 continuity / fallback acceptance 的直接脚本阻塞已收敛为 `accountIds=[]`。
 - 2026-06-08 在用户补入 1 个号池成员后，`single` 隔离合同已通过；当前 continuity / fallback acceptance 的剩余自动化门槛已进一步收敛为显式 live upstream 风险确认，以及 tray / notification 的桌面观察能力。
 - 2026-06-08 后续预检又进一步显示：`fallback_probe` 已推进到显式上游门槛，但 `small_pool` 仍缺第 2 个成员；在只有 1 个成员时，单账号 live upstream smoke 也尚未形成可用 audit 证据链。
+- 2026-06-09 新增 `smoke-20260609-002356.json` 后，单账号隔离上游 chat 已可通过；这说明当前单账号真实上游路径已经跑通，不再停留在“发送层异常”的旧状态。
+- 2026-06-09 新增 `smoke-20260609-012423.json` 后，current truth boundary 进一步收紧为：continuity/fallback 主合同仍未闭合，但 blocker 已经从“listener/transport 不通”转成“bounded drain 过程中仍未观察到真实 `usage_limit_reached -> model_cooldown_applied -> fallback_blocked` 事件链”。
+- 因此，`same_task_affinity_fallback_blocked` 与 `new_request_avoids_exhausted_account` 目前仍应保持 `blocked` 口径；在看到真实 quota fallback 证据前，不能把它们写成 pass，也不能把单账号 upstream pass 误读成全链路 continuity 已完成。

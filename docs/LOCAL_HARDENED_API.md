@@ -123,6 +123,11 @@ API 服务面板的“策略预设”按钮会调用 `codex_local_access_apply_s
 
 若上一轮已把该账号/模型写入 cooldown，后续同模型 smoke 不应继续打上游。普通 HTTP 客户端应收到本地 `503/pool_unavailable` 和 `Retry-After`；Codex-facing `/v1/responses` 若无法在本次请求预算内恢复，应返回本地 completed Responses SSE/JSON，避免 503、`response.failed` 或静默挂起。
 
+最新已知结果：
+
+- `reports/local-hardened-api-smoke/smoke-20260609-002356.json` 已证明单账号隔离 `RunUpstreamSmoke` 可以通过，且 `codex_cli_config_auth_untouched` / `codex_app_process_stable` 继续保持 `pass`。
+- 这只说明“单账号真实上游链路可跑通”，不等于 quota fallback / continuity 主合同已经闭合。
+
 ## 额度耗尽后的请求边界
 
 Hardened API Mode 的目标是接近 Direct OAuth 的稳定体验，但不伪造上游 quota grace：
@@ -252,6 +257,11 @@ fallback continuity 验收只使用当前 API service 号池中已经手动添�
 同任务 `429 usage_limit_reached -> fallback_blocked(hard_affinity) -> in_band_local_completion`，
 并观察到新请求使用健康账号，或达到 `-DrainMaxRequests` 后阻断停止。
 该模式默认关闭，且不会用于普通验收。
+
+截至 2026-06-09，`reports/local-hardened-api-smoke/smoke-20260609-012423.json` 仍显示
+`same_task_affinity_fallback_blocked` 与 `new_request_avoids_exhausted_account` 为 `blocked`。
+当前 blocker 不再是 listener、transport 或配置守卫，而是 bounded drain 过程中仍未观察到
+真实 `429 usage_limit_reached`、`model_cooldown_applied`、`fallback_blocked` 事件链。
 
 ## Browser Preview + AI UI 审查
 
