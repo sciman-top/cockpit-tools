@@ -106,7 +106,6 @@ import {
   type CodexApiProviderMode,
   type CodexQuotaErrorInfo,
 } from "../types/codex";
-import { isBlockingCodexQuotaError } from "../utils/codexQuotaError";
 import { buildCodexAccountPresentation } from "../presentation/platformAccountPresentation";
 import {
   moveIdInOrder,
@@ -129,16 +128,6 @@ import {
   isCodexLocalAccessRuntimeActive,
 } from "../utils/codexLocalAccessUiState";
 import { filterCodexLocalAccessAccountIds } from "../utils/codexLocalAccessAccounts";
-import {
-  buildCodexLocalAccessSkippedReasonSummary,
-  formatCodexLocalAccessRequestIdShort,
-  getCodexLocalAccessBlockedRecoverActionLabel,
-  getCodexLocalAccessRecentAuditHeadline,
-  getCodexLocalAccessRecentAuditPhaseLabel,
-  getCodexLocalAccessRequestIdSourceLabel,
-  getCodexLocalAccessSessionAffinitySourceLabel,
-  getCodexLocalAccessSelectorReasonLabel,
-} from "../utils/codexLocalAccessInsights";
 import { runSettledWithConcurrency } from "../utils/asyncConcurrency";
 import { isCodexContinuityProtectionError } from "../utils/codexContinuityProtection";
 
@@ -409,31 +398,6 @@ function shouldIgnoreAccountDragStart(target: EventTarget | null): boolean {
 type CodexOverviewLayoutMode = "compact" | "list" | "grid";
 type OAuthBindingSortBy = "account" | "created_at" | "last_used" | "plan";
 type OAuthBindingTargetKind = "api_key_account" | "local_access";
-
-interface LocalAccessAccountPoolHealthSummary {
-  total: number;
-  available: number;
-  abnormal: number;
-  cooldown: number;
-  missing: number;
-  authError: number;
-  quotaLimited: number;
-}
-
-const BLOCKING_LOCAL_ACCESS_ACCOUNT_FAILURE_CATEGORIES = new Set([
-  "auth_unavailable",
-  "auth_refresh_failed",
-  "account_prepare_failed",
-  "free_account_restricted",
-]);
-
-function isBlockingLocalAccessAccountFailureCategory(
-  category?: string | null,
-): boolean {
-  return Boolean(
-    category && BLOCKING_LOCAL_ACCESS_ACCOUNT_FAILURE_CATEGORIES.has(category),
-  );
-}
 
 function normalizeLocalAccessAddressKind(
   value: string | null | undefined,
@@ -4942,72 +4906,6 @@ export function CodexAccountsPage() {
     () => summarizeCodexQuotaPool(localAccessAccounts),
     [localAccessAccounts],
   );
-  const localAccessAccountPoolHealthSummary =
-    useMemo<LocalAccessAccountPoolHealthSummary>(() => {
-      const healthById = new Map(
-        (localAccessState?.accountHealth ?? []).map((health) => [
-          health.accountId,
-          health,
-        ]),
-      );
-      const summary: LocalAccessAccountPoolHealthSummary = {
-        total: localAccessCollection?.accountIds.length ?? 0,
-        available: 0,
-        abnormal: 0,
-        cooldown: 0,
-        missing: 0,
-        authError: 0,
-        quotaLimited: 0,
-      };
-
-      (localAccessCollection?.accountIds ?? []).forEach((accountId) => {
-        const account = accountById.get(accountId);
-        const health = healthById.get(accountId);
-        if (!account) {
-          summary.missing += 1;
-          summary.abnormal += 1;
-          return;
-        }
-        if (health?.cooldowns?.length) {
-          summary.cooldown += 1;
-          return;
-        }
-        const quotaIssueInfo = getCodexQuotaIssueInfo(account.quota_error);
-        if (quotaIssueInfo.isQuotaCooldownError) {
-          summary.cooldown += 1;
-          return;
-        }
-        if (isBlockingCodexQuotaError(account.quota_error)) {
-          summary.quotaLimited += 1;
-          summary.abnormal += 1;
-          return;
-        }
-        if (
-          isBlockingLocalAccessAccountFailureCategory(
-            health?.lastFailureCategory,
-          )
-        ) {
-          summary.authError += 1;
-          summary.abnormal += 1;
-          return;
-        }
-        if (health && !health.available) {
-          summary.abnormal += 1;
-          return;
-        }
-        summary.available += 1;
-      });
-
-      return summary;
-    }, [
-      accountById,
-      accounts,
-      localAccessCollection?.accountIds,
-      localAccessState?.accountHealth,
-    ]);
-  const localAccessAccountPoolHealthHasIssue =
-    localAccessAccountPoolHealthSummary.abnormal > 0 ||
-    localAccessAccountPoolHealthSummary.cooldown > 0;
   const localAccessQuotaPoolLabels = useMemo(
     () => ({
       hourly: t("codex.localAccess.quotaPool.hourlyShort", "5h"),
@@ -8071,24 +7969,6 @@ export function CodexAccountsPage() {
       "当前集合暂无账号",
     );
     const localAccessHealth = localAccessState?.health ?? null;
-    const localAccessSelectorInsight = localAccessHealth?.selectorInsight ?? null;
-    const localAccessBlockedInsight = localAccessHealth?.blockedInsight ?? null;
-    const localAccessSelectorReasonLabel = getCodexLocalAccessSelectorReasonLabel(
-      localAccessSelectorInsight?.selectedReason,
-      t,
-    );
-    const localAccessSelectorSkippedSummary =
-      buildCodexLocalAccessSkippedReasonSummary(
-        localAccessSelectorInsight?.skippedCountsByReason,
-        t,
-      );
-    const localAccessBlockedRecoverActionLabel =
-      getCodexLocalAccessBlockedRecoverActionLabel(
-        localAccessBlockedInsight?.recoverAction,
-        t,
-      );
-    const localAccessRecentAuditEvents =
-      localAccessHealth?.recentAuditEvents?.slice(0, 2) ?? [];
     const localAccessAvailableAccountCount =
       (localAccessHealth?.healthyCount ?? 0) +
       (localAccessHealth?.estimatedAvailableCount ?? 0);
@@ -8646,233 +8526,6 @@ export function CodexAccountsPage() {
               <div className="quota-error-inline">
                 <CircleAlert size={14} />
                 <span>{localAccessEstimatedAvailableMessage}</span>
-              </div>
-            )}
-
-            {localAccessAccountPoolHealthSummary.total > 0 && (
-              <div
-                className={`codex-local-access-health-summary${
-                  localAccessAccountPoolHealthHasIssue ? " has-issue" : ""
-                }`}
-                title={t("codex.localAccess.accountPoolHealth.detail", {
-                  available: localAccessAccountPoolHealthSummary.available,
-                  total: localAccessAccountPoolHealthSummary.total,
-                  abnormal: localAccessAccountPoolHealthSummary.abnormal,
-                  cooldown: localAccessAccountPoolHealthSummary.cooldown,
-                  missing: localAccessAccountPoolHealthSummary.missing,
-                  authError: localAccessAccountPoolHealthSummary.authError,
-                  quotaLimited:
-                    localAccessAccountPoolHealthSummary.quotaLimited,
-                  defaultValue:
-                    "可用 {{available}}/{{total}}，异常 {{abnormal}}，冷却 {{cooldown}}，缺失 {{missing}}，鉴权 {{authError}}，额度 {{quotaLimited}}",
-                })}
-              >
-                <span className="codex-local-access-health-summary-title">
-                  {t("codex.localAccess.accountPoolHealth.title", "账号池")}
-                </span>
-                <span className="codex-local-access-health-summary-value">
-                  {t("codex.localAccess.accountPoolHealth.availableRatio", {
-                    available: localAccessAccountPoolHealthSummary.available,
-                    total: localAccessAccountPoolHealthSummary.total,
-                    defaultValue: "可用 {{available}}/{{total}}",
-                  })}
-                </span>
-                <span className="codex-local-access-health-summary-value">
-                  {t("codex.localAccess.accountPoolHealth.issueSummary", {
-                    abnormal: localAccessAccountPoolHealthSummary.abnormal,
-                    cooldown: localAccessAccountPoolHealthSummary.cooldown,
-                    defaultValue: "异常 {{abnormal}} · 冷却 {{cooldown}}",
-                  })}
-                </span>
-              </div>
-            )}
-
-            {(localAccessSelectorInsight ||
-              localAccessBlockedInsight ||
-              localAccessRecentAuditEvents.length > 0) && (
-              <div className="codex-local-access-inline-insights">
-                {localAccessSelectorInsight && (
-                  <div className="codex-local-access-inline-insight">
-                    <span className="codex-local-access-inline-insight-label">
-                      {t("codex.localAccess.health.selectorTitle", "最近调度")}
-                    </span>
-                    <strong>{localAccessSelectorReasonLabel}</strong>
-                    <div className="codex-local-access-inline-insight-meta">
-                      <span>
-                        {t("codex.localAccess.health.selectorCandidates", {
-                          count: localAccessSelectorInsight.candidateCount,
-                          defaultValue: "候选 {{count}}",
-                        })}
-                      </span>
-                      <span>
-                        {t("codex.localAccess.health.selectorEligible", {
-                          count: localAccessSelectorInsight.eligibleCount,
-                          defaultValue: "可调度 {{count}}",
-                        })}
-                      </span>
-                      {localAccessSelectorInsight.capApplied && (
-                        <span>
-                          {t("codex.localAccess.health.selectorCap", {
-                            count: localAccessSelectorInsight.capLimit,
-                            defaultValue: "尝试上限 {{count}}",
-                          })}
-                        </span>
-                      )}
-                      {localAccessSelectorInsight.modelKey && (
-                        <span>
-                          {t("codex.localAccess.health.selectorModel", "模型")}:{" "}
-                          <code>{localAccessSelectorInsight.modelKey}</code>
-                        </span>
-                      )}
-                      {localAccessSelectorSkippedSummary && (
-                        <span>{localAccessSelectorSkippedSummary}</span>
-                      )}
-                    </div>
-                  </div>
-                )}
-                {localAccessBlockedInsight && (
-                  <div className="codex-local-access-inline-insight is-warning">
-                    <span className="codex-local-access-inline-insight-label">
-                      {t("codex.localAccess.health.blockedTitle", "当前阻断")}
-                    </span>
-                    <strong>{localAccessBlockedInsight.reason ?? "--"}</strong>
-                    <div className="codex-local-access-inline-insight-meta">
-                      {localAccessBlockedInsight.status != null && (
-                        <span>
-                          {t("codex.localAccess.health.blockedStatus", "状态")}:{" "}
-                          <code>HTTP {localAccessBlockedInsight.status}</code>
-                        </span>
-                      )}
-                      {localAccessBlockedInsight.errorType && (
-                        <span>
-                          {t("codex.localAccess.health.blockedType", "分类")}:{" "}
-                          <code>{localAccessBlockedInsight.errorType}</code>
-                        </span>
-                      )}
-                      {localAccessBlockedRecoverActionLabel && (
-                        <span>
-                          {t("codex.localAccess.health.recoverAction", "恢复动作")}:{" "}
-                          {localAccessBlockedRecoverActionLabel}
-                        </span>
-                      )}
-                      {localAccessBlockedInsight.retryAfterMs != null && (
-                        <span>
-                          {t("codex.localAccess.health.retryAfter", "建议等待")}:{" "}
-                          {Math.max(
-                            1,
-                            Math.round(localAccessBlockedInsight.retryAfterMs / 1000),
-                          )}
-                          s
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                )}
-                {localAccessRecentAuditEvents.length > 0 && (
-                  <div className="codex-local-access-inline-insight is-full">
-                    <span className="codex-local-access-inline-insight-label">
-                      {t("codex.localAccess.health.recentAuditTitle", "最近审计")}
-                    </span>
-                    <div className="codex-local-access-inline-audit-list">
-                      {localAccessRecentAuditEvents.map((event, index) => {
-                        const eventRecoverActionLabel =
-                          getCodexLocalAccessBlockedRecoverActionLabel(
-                            event.recoverAction,
-                            t,
-                          );
-                        const requestIdSourceLabel =
-                          getCodexLocalAccessRequestIdSourceLabel(
-                            event.requestIdSource,
-                            t,
-                          );
-                        const sessionAffinitySourceLabel =
-                          getCodexLocalAccessSessionAffinitySourceLabel(
-                            event.sessionAffinitySource,
-                            t,
-                          );
-                        return (
-                          <div
-                            key={`${event.timestamp}-${event.requestId}-${event.phase}-${index}`}
-                            className="codex-local-access-inline-audit-item"
-                          >
-                            <div className="codex-local-access-inline-audit-head">
-                              <strong>
-                                {getCodexLocalAccessRecentAuditHeadline(event, t)}
-                              </strong>
-                              <span className="codex-local-access-inline-audit-time">
-                                {new Date(event.timestamp).toLocaleString()}
-                              </span>
-                            </div>
-                            <div className="codex-local-access-inline-audit-meta">
-                              <span>
-                                {getCodexLocalAccessRecentAuditPhaseLabel(
-                                  event.phase,
-                                  t,
-                                )}
-                              </span>
-                              <span>
-                                {t("codex.localAccess.logs.requestIdShort", {
-                                  id: formatCodexLocalAccessRequestIdShort(
-                                    event.requestId,
-                                  ),
-                                  defaultValue: "请求 ID {{id}}",
-                                })}
-                              </span>
-                              {requestIdSourceLabel && (
-                                <span>
-                                  {t("codex.localAccess.health.requestIdSource", "请求来源")}:{" "}
-                                  <code>{requestIdSourceLabel}</code>
-                                </span>
-                              )}
-                              {event.status != null && (
-                                <span>
-                                  <code>HTTP {event.status}</code>
-                                </span>
-                              )}
-                              {event.modelKey && (
-                                <span>
-                                  {t("codex.localAccess.health.selectorModel", "模型")}:{" "}
-                                  <code>{event.modelKey}</code>
-                                </span>
-                              )}
-                              {event.errorType && (
-                                <span>
-                                  {t("codex.localAccess.health.blockedType", "分类")}:{" "}
-                                  <code>{event.errorType}</code>
-                                </span>
-                              )}
-                              {sessionAffinitySourceLabel && (
-                                <span>
-                                  {t(
-                                    "codex.localAccess.health.sessionAffinitySource",
-                                    "亲和来源",
-                                  )}
-                                  : <code>{sessionAffinitySourceLabel}</code>
-                                </span>
-                              )}
-                              {eventRecoverActionLabel && (
-                                <span>
-                                  {t("codex.localAccess.health.recoverAction", "恢复动作")}:{" "}
-                                  {eventRecoverActionLabel}
-                                </span>
-                              )}
-                              {event.retryAfterMs != null && (
-                                <span>
-                                  {t("codex.localAccess.health.retryAfter", "建议等待")}:{" "}
-                                  {Math.max(
-                                    1,
-                                    Math.round(event.retryAfterMs / 1000),
-                                  )}
-                                  s
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
               </div>
             )}
 
