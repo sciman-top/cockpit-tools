@@ -14,9 +14,9 @@
 ## A. 项目基线
 ### A.1 事实边界
 - 本仓是本机 Cockpit Tools desktop app；核心职责是账户、provider、OAuth、quota、local hardened API、Tauri shell 与 React UI 的本机管理。
-- 本仓已纳入 `D:\CODE\governed-ai-coding-runtime` target catalog，`target_repo_id=cockpit-tools-local`。
-- 本项目规则由控制仓 `rules/manifest.json` 管理；目标仓现场修改必须先回写控制仓源文件，再通过同步入口下发。
-- 受管治理资产归 `.governed-ai/`、`.claude/`、`.ignore`、`AGENTS.md`、`CLAUDE.md`、`GEMINI.md`；应用代码、release 脚本、Tauri capabilities 和 live config 不由治理同步盲覆盖。
+- 本仓 `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` 由本仓直接维护。
+- 如存在 `.governed-ai/`、`.claude/`、`.ignore`、`.githooks/` 或 `scripts/hooks/`，仅按本仓当前事实维护；不要假定存在外部控制仓下发或统一同步。
+- 应用代码、release 脚本、Tauri capabilities 和 live config 变更以本仓门禁和证据为准，不依赖外部治理入口。
 
 ### A.2 执行锚点
 - 每轮先检查 `git status --short --branch`，区分用户改动、治理生成文件和本轮改动。
@@ -25,7 +25,6 @@
 - 需要 live UI、packaged exe 或“正在运行的 Cockpit 是否已是最新代码”验证时，先做只读进程、路径、hash、端口或配置探针；若仍需启动、重启、替换、覆盖、安装或单实例唤醒 Cockpit，先说明确切命令、原因、端口/窗口/单实例唤醒/资源占用/Codex 与 Cockpit 连续性影响，并询问：`是否允许我现在执行 <command> 进行实时验证？`
 - Codex API service、routing、quota、pool scheduling 或 failover 变更前，优先查本仓 `docs/reference-gateway-best-practices.md` 和 `D:\CODE\external\Cockpit-Tools-Local-references`；外部参考只作结构证据，不覆盖本仓运行事实。
 
-<!-- auto-merged target-local additions -->
 - Codex API service routing、quota continuity、pool scheduling, sorting, or risk-reduction changes 必须优先对照本机参考源；Official `openai-codex` source is the highest reference。若参考源陈旧，只允许非破坏性 `git fetch --prune` / `pull --ff-only` 刷新后再用作证据。
 
 ### A.3 N/A 分类与字段
@@ -38,7 +37,7 @@
 - Codex 直接读取本文件；不要假定 Codex 会自动读取 `CLAUDE.md`、`GEMINI.md` 或未配置的 fallback 文件。
 - 规则变更后用新 Codex run/session 复核，不假定当前会话热加载。
 - 诊断优先：`codex --version`、`codex --help`；加载链可疑时新会话询问已加载规则来源，并记录 `active_rule_path`。
-- `AGENTS.md` 是上下文规则；危险命令、权限、sandbox 和重复 allowlist 应落到 `.codex/rules/*.rules`、控制仓门禁、hooks 或 CI。
+- `AGENTS.md` 是上下文规则；危险命令、权限、sandbox 和重复 allowlist 应落到 `.codex/rules/*.rules`、本仓门禁、hooks 或 CI。
 - 修改 auth/provider/API service/live config 前先区分登录链路、执行权限、模型能力和仓库代码问题；先做文件级状态、dry-run、isolated probe 和 hash/进程稳定性证据。
 
 ## C. 项目差异
@@ -61,7 +60,6 @@
 ### C.3 快速反馈边界
 - quick test：`npm run typecheck`
 - quick contract：`node scripts/release/preflight.cjs --skip-typecheck --skip-build --skip-cargo --skip-cargo-test`
-- 控制仓 daily quick：`pwsh -NoProfile -ExecutionPolicy Bypass -File D:\CODE\governed-ai-coding-runtime\scripts\runtime-flow-preset.ps1 -Target cockpit-tools-local -FlowMode daily -Mode quick -Json`
 - quick 只证明 TypeScript 静态契约、locale completeness 和 local hardened API live-risk guard；不能替代 full build、Rust lib tests、release preflight 或 live UI smoke。
 
 ### C.4 失败分流与阻断
@@ -70,11 +68,10 @@
 - live upstream quota probe 默认不跑；只有当前任务明确要求并带 `-AcknowledgeLiveUpstreamRisk` 时才可执行。
 - Fallback continuity probe 默认使用 app-safe isolated/bypass 路径；不得为了 smoke 修改当前 active Codex CLI provider 或自动切换账号池。
 
-<!-- auto-merged target-local additions -->
 - 超过默认 drain 请求量、把 drain 间隔降到 20 秒以下，或扩大真实上游消耗范围时，还必须同时带 `-AcknowledgeExpandedLiveUpstreamRisk` 并在报告中解释为什么缓存/静态 reset 数据不足。
 - Cooldown recovery must be inferred from stored reset times/health registry by default；不得通过重复刷新/polling 冷却恢复来消耗账号池。
 ### C.5 证据与回滚
-- 治理接入证据落 `D:\CODE\governed-ai-coding-runtime\docs\change-evidence\`；本仓验证报告优先落 `reports/`。
+- 本仓验证报告优先落 `reports/`；如需额外变更证据，可落 `docs/change-evidence/`。
 - 最低字段：规则 ID、风险等级、执行命令、关键输出、兼容性判断、回滚动作。
 - 默认回滚优先 Git；live config、account/provider、release exe、updater/signing 或本机 state 变更必须额外记录备份路径、restore 命令和进程/会话连续性复测。
 
@@ -83,7 +80,7 @@
 - 协同链完整：`规则 -> 落点 -> 命令 -> 证据 -> 回滚`。
 - 仅凭全局 + 本项目规则，必须能推出当前落点、目标归宿、门禁顺序、证据路径和回滚入口。
 - `Global Rule -> Repo Action`：
-  - `R1`: 每轮声明 `目标归宿 -> 当前落点 -> 验证方式`，尤其区分控制仓治理、目标仓应用代码和 live runtime state。
+  - `R1`: 每轮声明 `目标归宿 -> 当前落点 -> 验证方式`，尤其区分本仓应用代码、规则/门禁与 live runtime state。
   - `R2`: 用 quick/full gate、isolated probe 和报告小步闭环。
   - `R3`: auth/provider/quota/routing 问题先追配置、projection、gateway、scheduler 和 runtime evidence 链。
   - `R4`: live dev/build、release exe、provider/auth/API service 和 upstream quota probe 按中高风险处理。
@@ -94,5 +91,5 @@
   - `E4`: `npm run build`、Rust lib tests、release preflight、risk guard 和 reports 承接健康指标。
   - `E5`: npm/Cargo/Tauri/updater/signing/provider 变化必须记录供应链和发布风险。
   - `E6`: account/provider/config/report schema、quota health registry、updater metadata 和 persisted state 结构变化必须记录迁移、兼容和回滚。
-- 本文件属于控制仓 manifest 管理；目标仓现场修改必须回写控制仓源文件后同步。
+- 本文件由本仓直接维护；如需跨工具协同，先在本仓更新根规则并复测。
 - 三工具协同约束：`AGENTS.md` 承载共同 A/C/D 项目事实；`CLAUDE.md` / `GEMINI.md` 通过 import 追加 B/D 平台差异，不复制共同正文。

@@ -22,7 +22,7 @@
 | Codex 本地能力 | Cockpit API Service、Local API Service 单账号/小池、跟随当前账号、provider 写入、session 可见性修复、托管实例状态 | 上游改动不得破坏本地 API service 连续性和账号池安全边界 |
 | 配额与冷却 | quota continuity、cooldown registry、stream/audit 证据、低刷新默认值 | 不通过重复刷新或扩大真实上游消耗来判断冷却恢复 |
 | 风险控制 | live upstream probe、drain、dev app/server、release exe 替换都需要显式确认 | 不自动停止、重启、kill、替换 Codex App、Cockpit release exe 或 live dev app |
-| 治理资产 | `AGENTS.md`、`.governed-ai/`、`.claude/`、`.ignore` 等由治理控制仓管理 | 上游同步不得删除或覆盖受管治理资产 |
+| 项目规则与本机辅助文件 | `AGENTS.md`、`CLAUDE.md`、`GEMINI.md`、本机运维说明等按本仓事实维护 | 上游同步不得删除或覆盖本仓规则与本机运维边界说明 |
 | 本机入口 | Windows-first 本机路径、desktop shortcut、self-build release path | 不把官方安装路径或 Store/官方 release 当作自用版运行事实 |
 
 ## 3. 可吸收的官方改动
