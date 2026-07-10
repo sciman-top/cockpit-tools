@@ -1,0 +1,332 @@
+name: Sync Fork
+on:
+  schedule:
+    - cron: "17 2 * * 0"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_PAT }}
+
+      - name: Resolve upstream
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          set -euo pipefail
+          UPSTREAM_FULL_NAME=$(gh api repos/${{ github.repository }} --jq '.parent.full_name // empty')
+          if [ -z "$UPSTREAM_FULL_NAME" ]; then
+            echo "::warning::Upstream repo metadata is missing. Sync skipped to preserve fork."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! gh api "repos/$UPSTREAM_FULL_NAME" >/dev/null 2>&1; then
+            echo "::warning::Upstream repo $UPSTREAM_FULL_NAME is unavailable or deleted. Sync skipped to preserve fork."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          UPSTREAM_BRANCH=$(gh api "repos/$UPSTREAM_FULL_NAME" --jq '.default_branch // empty')
+          UPSTREAM_URL=$(gh api "repos/$UPSTREAM_FULL_NAME" --jq '.clone_url')
+          echo "full_name=$UPSTREAM_FULL_NAME" >> "$GITHUB_OUTPUT"
+          echo "owner=${UPSTREAM_FULL_NAME%%/*}" >> "$GITHUB_OUTPUT"
+          echo "branch=$UPSTREAM_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "url=$UPSTREAM_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Self-use source policy guard
+        id: self_use_source_policy
+        if: steps.upstream.outputs.skip != 'true'
+        env:
+          SELF_USE_SOURCE_REPOS: ""
+          MIRROR_ONLY_SOURCE_BRANCH: "mirror/upstream-main"
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra REPOS <<< "$SELF_USE_SOURCE_REPOS"
+          for repo in "${REPOS[@]}"; do
+            repo=$(echo "$repo" | xargs)
+            if [ "$repo" = "${{ github.repository }}" ] && [ "${{ github.event.repository.default_branch }}" != "$MIRROR_ONLY_SOURCE_BRANCH" ]; then
+              echo "::notice::Self-use source policy is enabled for $repo. Default-branch merge-upstream is skipped; review locally against upstream/main in an isolated worktree instead."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Restore point policy guard
+        id: restore_point_policy
+        if: steps.upstream.outputs.skip != 'true' && steps.self_use_source_policy.outputs.skip != 'true'
+        env:
+          MIRROR_ONLY_SOURCE_REPOS: ""
+          MIRROR_ONLY_SOURCE_BRANCH: "mirror/upstream-main"
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra REPOS <<< "$MIRROR_ONLY_SOURCE_REPOS"
+          for repo in "${REPOS[@]}"; do
+            repo=$(echo "$repo" | xargs)
+            if [ "$repo" = "${{ github.repository }}" ] && [ "${{ github.event.repository.default_branch }}" = "$MIRROR_ONLY_SOURCE_BRANCH" ]; then
+              echo "::notice::Mirror-only source policy is enabled for $repo on $MIRROR_ONLY_SOURCE_BRANCH. Default-branch merge-upstream will not create backup/pre-sync."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Safety check - compare file counts
+        if: steps.upstream.outputs.skip != 'true' && steps.self_use_source_policy.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          set -euo pipefail
+          git remote add upstream "${{ steps.upstream.outputs.url }}"
+          git fetch upstream "${{ steps.upstream.outputs.branch }}"
+          FORK_FILES=$(git ls-tree -r --name-only HEAD | wc -l | tr -d '[:space:]')
+          UPSTREAM_FILES=$(git ls-tree -r --name-only "upstream/${{ steps.upstream.outputs.branch }}" | wc -l | tr -d '[:space:]')
+          THRESHOLD=$(( (FORK_FILES + 1) / 2 ))
+          echo "Fork files: $FORK_FILES"
+          echo "Upstream files: $UPSTREAM_FILES"
+          if [ "$UPSTREAM_FILES" -lt "$THRESHOLD" ]; then
+            echo "::error::SAFETY ABORT: Upstream has $UPSTREAM_FILES files vs fork's $FORK_FILES. Possible upstream deletion. Sync skipped."
+            exit 1
+          fi
+          echo "Safety check passed."
+
+      - name: Create restore point
+        if: steps.upstream.outputs.skip != 'true' && steps.self_use_source_policy.outputs.skip != 'true' && steps.restore_point_policy.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          BACKUP_BRANCH="backup/pre-sync"
+          git branch -f "$BACKUP_BRANCH" HEAD
+          git push origin "$BACKUP_BRANCH" --force
+
+      - name: Diff guard - inspect deletions
+        if: steps.upstream.outputs.skip != 'true' && steps.self_use_source_policy.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+          BASE_REF: ${{ github.event.repository.default_branch }}
+          HEAD_REF: ${{ steps.upstream.outputs.owner }}:${{ steps.upstream.outputs.branch }}
+        run: |
+          set -euo pipefail
+          FORK_FILES=$(git ls-tree -r --name-only HEAD | wc -l | tr -d '[:space:]')
+          COMPARE_BASE=$(python3 -c 'import os; from urllib.parse import quote; print(quote(os.environ["BASE_REF"], safe=":"))')
+          COMPARE_HEAD=$(python3 -c 'import os; from urllib.parse import quote; print(quote(os.environ["HEAD_REF"], safe=":"))')
+          COMPARE_JSON=$(gh api "repos/${{ github.repository }}/compare/${COMPARE_BASE}...${COMPARE_HEAD}")
+          TOTAL_DELETIONS=$(printf '%s' "$COMPARE_JSON" | jq -r '.total_deletions // 0')
+          DELETED_FILES=$(printf '%s' "$COMPARE_JSON" | jq -r '.files[]? | select(.status == "removed") | .filename')
+          DELETE_LIMIT=$(( 5 + (FORK_FILES / 10) ))
+          echo "Total deletions: $TOTAL_DELETIONS"
+          echo "Deletion limit: $DELETE_LIMIT"
+          if [ "$TOTAL_DELETIONS" -gt "$DELETE_LIMIT" ]; then
+            echo "::error::SAFETY ABORT: deletion volume is too large for a safe sync."
+            exit 1
+          fi
+          if printf '%s\n' "$DELETED_FILES" | grep -Eq '^(\.github/|README\.md$|LICENSE$|sync-fork\.yml$)'; then
+            echo "::error::SAFETY ABORT: critical path deletion detected."
+            exit 1
+          fi
+
+      - name: Merge upstream changes
+        if: steps.upstream.outputs.skip != 'true' && steps.self_use_source_policy.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+        run: |
+          set -euo pipefail
+          gh api repos/${{ github.repository }}/merge-upstream -X POST -f branch=${{ github.event.repository.default_branch }}
+
+      - name: Release retention policy
+        if: steps.upstream.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+          SELF_USE_RELEASE_REPOS: ""
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          self_use_repos = {
+              item.strip().lower()
+              for item in os.environ.get("SELF_USE_RELEASE_REPOS", "").split(",")
+              if item.strip()
+          }
+          if repo.lower() in self_use_repos:
+              print("::notice::self-use local releases policy is managed manually; weekly release retention is skipped.")
+              raise SystemExit(0)
+
+          installable_re = re.compile(r"\.(?:exe|msi|deb|rpm|appimage|dmg|pkg|zip|tar\.gz)$", re.IGNORECASE)
+          signed_re = re.compile(r"\.(?:sig|minisig|sigstore)$", re.IGNORECASE)
+
+          def gh_json(args):
+              cmd = ["gh", *args]
+              result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+              if result.returncode != 0:
+                  raise RuntimeError(result.stderr.strip() or "gh command failed")
+              return json.loads(result.stdout)
+
+          def gh_run(args):
+              cmd = ["gh", *args]
+              result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+              if result.returncode != 0:
+                  raise RuntimeError(result.stderr.strip() or "gh command failed")
+
+          def stable(releases):
+              return [
+                  release for release in releases
+                  if isinstance(release, dict)
+                  and not release.get("draft")
+                  and not release.get("prerelease")
+              ]
+
+          def required_asset_names(release):
+              assets = release.get("assets") or []
+              names = []
+              for asset in assets:
+                  name = asset.get("name")
+                  if not isinstance(name, str):
+                      continue
+                  lowered = name.lower()
+                  if (
+                      installable_re.search(name)
+                      or signed_re.search(name)
+                      or lowered in {
+                          "latest.json",
+                          "sha256sums",
+                          "sha256sums.txt",
+                          "sha512sums",
+                          "sha512sums.txt",
+                      }
+                  ):
+                      names.append(name)
+              return names
+
+          repo_meta = gh_json(["api", f"repos/{repo}"])
+          upstream = ((repo_meta.get("parent") or {}).get("full_name") or "").strip()
+          if not upstream:
+              print("::notice::Upstream repo metadata is missing; release retention skipped.")
+              raise SystemExit(0)
+
+          upstream_releases = gh_json(["api", f"repos/{upstream}/releases?per_page=100"])
+          fork_releases = gh_json(["api", f"repos/{repo}/releases?per_page=100"])
+          upstream_stable = stable(upstream_releases)
+          if not upstream_stable:
+              print("::notice::source-only release notes policy: upstream has no stable releases.")
+              raise SystemExit(0)
+
+          latest = upstream_stable[0]
+          tag = latest.get("tag_name")
+          if not tag:
+              print("::notice::Latest stable release has no tag; release retention skipped.")
+              raise SystemExit(0)
+
+          required = required_asset_names(latest)
+          if not required:
+              print("::notice::source-only release notes policy: upstream latest stable release has no mirrored assets.")
+              raise SystemExit(0)
+
+          latest_fork = None
+          for release in fork_releases:
+              if isinstance(release, dict) and release.get("tag_name") == tag:
+                  latest_fork = release
+                  break
+
+          if latest_fork is None:
+              payload_path = None
+              try:
+                  with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as handle:
+                      json.dump({
+                          "tag_name": tag,
+                          "target_commitish": os.environ["GITHUB_REF_NAME"],
+                          "name": latest.get("name") or tag,
+                          "body": latest.get("body") or "",
+                          "draft": False,
+                          "prerelease": False,
+                      }, handle, ensure_ascii=False)
+                      payload_path = handle.name
+                  gh_run(["api", f"repos/{repo}/releases", "-X", "POST", "--input", payload_path])
+                  latest_fork = {"tag_name": tag, "assets": []}
+              finally:
+                  if payload_path and os.path.exists(payload_path):
+                      os.unlink(payload_path)
+
+          fork_asset_names = {
+              asset.get("name")
+              for asset in (latest_fork.get("assets") or [])
+              if isinstance(asset, dict) and isinstance(asset.get("name"), str)
+          }
+          missing = [name for name in required if name not in fork_asset_names]
+
+          if missing:
+              with tempfile.TemporaryDirectory() as tmpdir:
+                  for asset_name in missing:
+                      gh_run([
+                          "release", "download", tag,
+                          "-R", upstream,
+                          "-D", tmpdir,
+                          "-p", asset_name,
+                          "--clobber",
+                      ])
+
+                  latest_json = pathlib.Path(tmpdir) / "latest.json"
+                  if latest_json.exists():
+                      upstream_prefix = f"https://github.com/{upstream}/releases/download/{tag}/"
+                      fork_prefix = f"https://github.com/{repo}/releases/download/{tag}/"
+                      text = latest_json.read_text(encoding="utf-8")
+                      latest_json.write_text(text.replace(upstream_prefix, fork_prefix), encoding="utf-8")
+
+                  sha_sums = pathlib.Path(tmpdir) / "SHA256SUMS.txt"
+                  if sha_sums.exists() and latest_json.exists():
+                      latest_hash = hashlib.sha256(latest_json.read_bytes()).hexdigest()
+                      updated = []
+                      for line in sha_sums.read_text(encoding="utf-8").splitlines():
+                          stripped = line.rstrip("\n")
+                          if stripped.strip().endswith("latest.json"):
+                              filename = stripped.split()[-1]
+                              updated.append(f"{latest_hash}  {filename}")
+                          else:
+                              updated.append(stripped)
+                      sha_sums.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+                  upload_files = [str(pathlib.Path(tmpdir) / asset_name) for asset_name in missing]
+                  gh_run(["release", "upload", tag, *upload_files, "-R", repo])
+
+          old_stable = [
+              release for release in stable(fork_releases)
+              if release.get("tag_name") != tag
+          ]
+          for release in old_stable:
+              old_tag = release.get("tag_name")
+              if not old_tag:
+                  continue
+              for asset in release.get("assets") or []:
+                  name = asset.get("name")
+                  if not isinstance(name, str):
+                      continue
+                  lowered = name.lower()
+                  if (
+                      installable_re.search(name)
+                      or signed_re.search(name)
+                      or lowered in {
+                          "latest.json",
+                          "sha256sums",
+                          "sha256sums.txt",
+                          "sha512sums",
+                          "sha512sums.txt",
+                      }
+                  ):
+                      gh_run(["release", "delete-asset", old_tag, name, "-R", repo, "--yes"])
+          PY
