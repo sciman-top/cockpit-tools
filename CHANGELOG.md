@@ -7,6 +7,46 @@ All notable changes to Cockpit Tools will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
+## [1.2.0] - 2026-07-12
+
+### Added
+
+- **Added ZCode platform account management**: supports Z.ai and BigModel OAuth and API Key accounts, local and JSON import/export, real account switching, quota queries, tags, filters, batch operations, launch-path settings, and isolated multi-instance management on macOS, Windows, and Linux.
+- **Antigravity accounts can now use a persistent custom order**: select custom sorting to arrange accounts by dragging or with move buttons, reopen the editor from the toolbar, and keep the order across reloads as accounts are added or removed. Thanks @khanra17 for #1501.
+- **Codex model providers can enable Responses WebSocket per provider**: each provider can persist its WebSocket transport capability, which is synchronized to the account and Codex configuration when adding accounts, editing credentials, switching providers, or starting instances; Chat Completions and built-in OpenAI remain disabled. Thanks @longwQaQ for #1512.
+
+### Changed
+
+- **Codex model loading now uses dynamic discovery**: removed the CDP-based `codex_model_injector` and Cockpit-managed static model catalog overrides; the official client now discovers models from the active provider or profile-local gateway, while user-defined model catalogs remain intact.
+- **Codex Chat Completions providers now use stable client model aliases**: upstream models are mapped to official-client-compatible model slots and translated back before requests are sent, with generated profile overrides cleaned up when no longer needed.
+- **Codex OAuth offers an in-app incognito WebView on macOS**: Windows and Linux continue to use the regular browser and manual callback flow without showing this option.
+
+### Fixed
+
+- **Fixed legacy Antigravity launch fallback opening Antigravity IDE on Windows**: taskbar shortcut matching now excludes Antigravity IDE when Cockpit is launching the legacy Antigravity app. Thanks @khanra17 for #1453.
+
+---
+## [1.1.5] - 2026-07-11
+
+### Added
+
+- **Codex API Service can protect quota on its bound OAuth account**: separate 1-100% reserves can be configured for the 5-hour and weekly windows; HTTP, WebSocket, embedded-gateway, sidecar, and session-affinity routing remove only the bound account from the eligible pool when either remaining quota reaches its reserve, while missing, stale, invalid, or failed quota snapshots fail closed.
+- **OAuth quota protection is continuously monitored and visible**: while API Service is running, the bound account quota refreshes every minute and after successful use with request throttling; sidecar mode hot-reloads the dynamic quota snapshot without restarting, and the Codex account card shows the effective window, remaining quota, and reserve when quota is near or below the configured threshold.
+
+### Changed
+
+- **Announcement popups now work across the entire app**: announcements are checked from a persistent app-level host instead of only when the dashboard is open, with throttled background, focus, and visibility refreshes; popups wait for existing dialogs to close and do not repeat when navigating between pages.
+- **Codex account selectors now share the account-overview behavior**: overview search state is persisted, and the API Service member picker plus OAuth binding selector reuse the same search, plan and validity, tag, group, sort direction, and custom-order rules; OAuth accounts without a usable `refresh_token` remain visible but disabled with an explanation instead of disappearing from the picker.
+- **Codex API Key usage refresh is centralized across account views**: scheduled refreshes update eligible API Key accounts, and cached usage is shared between the dashboard, account overview, and model provider manager; providers without usage-query support are remembered to avoid repeated requests, while manual refresh can force a retry.
+- **Desktop updates and release assets now resolve the exact target**: Windows MSI and NSIS, macOS Apple Silicon and Intel, and Linux AppImage, DEB, and RPM packages for x86_64 and ARM64 receive separate signed manifests and stable asset names; legacy `latest.json` remains available until all target builds finish so older clients do not receive incomplete release metadata.
+
+### Fixed
+
+- **Fixed Codex 5.6 Responses Lite request compatibility**: `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` now advertise and enforce disabled parallel tool calls, the Responses Lite header is preserved across `/responses`, `/responses/compact`, HTTP, and WebSocket paths, and non-Lite models retain an explicit `parallel_tool_calls: false` setting.
+- **Fixed Windows official ChatGPT launch-path migration**: discovery now prefers the ChatGPT Store package over legacy Codex packages, migrates saved official Codex Store paths when ChatGPT is available, rejects keyword-matching helper executables, and preserves custom executable paths.
+- **Fixed invalid Codex quota responses being treated as fully available**: missing or out-of-range `used_percent` values and account-preparation failures are persisted as refresh errors instead of producing misleading remaining quota or bypassing quota protection.
+
+---
 ## [1.1.4] - 2026-07-10
 
 ### Changed

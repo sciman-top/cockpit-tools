@@ -124,6 +124,8 @@
         "failed": "Yetkilendirme başarısız",
         "hint": "Yetkilendirme tamamlanınca bu pencere otomatik güncellenir",
         "openBrowser": "Tarayıcıda aç",
+        "normalWindow": "Normal pencere",
+        "incognitoWindow": "Gizli pencere",
         "success": "Yetkilendirme başarılı",
         "meta": "Süre bitimine: {{expires}}s; yoklama aralığı: {{interval}}s",
         "preparing": "Yetkilendirme bağlantısı hazırlanıyor...",
@@ -759,9 +761,13 @@
       "codebuddyCnPathReset": "Varsayılana Sıfırla",
       "codebuddyCnPathSelect": "Seç",
       "codebuddyCnSettingsTitle": "CodeBuddy CN Ayarları",
+      "zcodeAppPath": "ZCode Başlatma Yolu",
+      "zcodeAppPathDesc": "Varsayılan yol için boş bırakın",
       "qoderAppPath": "Qoder Uygulama Yolu",
       "qoderAppPathDesc": "Boş bırakırsanız varsayılan yol kullanılır",
       "qoderAppPathPlaceholder": "Varsayılan yol",
+      "zcodeAutoRefresh": "ZCode Otomatik Yenileme",
+      "zcodeAutoRefreshDesc": "Arka planda kota yenileme aralığı",
       "qoderAutoRefresh": "Qoder Otomatik Kota Yenileme",
       "qoderAutoRefreshDesc": "Arka planda otomatik yenileme sıklığı",
       "qoderPathSelect": "Seç",
@@ -1940,6 +1946,11 @@
       "oauthBinding": {
         "desc": "İsteğe bağlı. Yalnızca refresh_token içeren OAuth hesapları seçilebilir. Bağlantı yoksa API hizmeti eski API Key akışıyla çalışır; bağlanınca oturum OAuth hesabını, Provider ise API hizmeti yapılandırmasını kullanır.",
         "currentService": "API hizmeti: {{name}}",
+        "quotaReserveToggle": "OAuth kotasını koru",
+        "quotaReserveDesc": "API hizmeti bu OAuth hesabını yalnızca kalan 5 saatlik ve haftalık kotalar koruma değerlerinin üzerindeyken kullanır.",
+        "quotaReserveHourlyLabel": "5 saatlik koruma",
+        "quotaReserveWeeklyLabel": "Haftalık koruma",
+        "quotaReserveInvalid": "1 ile 100 arasında bir tam sayı girin.",
         "imageGenerationTooltip": "Açılınca API hizmeti, normal metin sohbetlerini iletmeden önce yerel ağ geçidinde image_generation araç bildirimini kaldırır; görsel modeller silinmez.",
         "imageGenerationConfirm": {
           "title": "image_generation kapat",
@@ -2124,6 +2135,7 @@
       "hourlyReset": "5 saatlik sıfırlama zamanı",
       "subscriptionExpiry": "Abonelik bitişi",
       "custom": "Özel sıra",
+      "customSettingsTooltip": "Özel sırayı yapılandır",
       "customModalTitle": "Özel hesap sırası",
       "customModalDesc": "Hesapları sürükleyin veya yukarı/aşağı düğmeleriyle görünüm sırasını ayarlayın.",
       "customDragHandle": "Sürükle",
@@ -2711,7 +2723,8 @@
         "modelCatalog": "Model Kataloğu",
         "visionCapability": "Görsel girişi",
         "visionModels": "Görsel modeller",
-        "visionRoutingModel": "Görsel rota modeli"
+        "visionRoutingModel": "Görsel rota modeli",
+        "supportsWebsockets": "WebSocket aktarımı"
       },
       "validation": {
         "nameRequired": "Sağlayıcı adı gerekli.",
@@ -2947,6 +2960,12 @@
         "customMoveUp": "Yukarı taşı",
         "customMoveDown": "Aşağı taşı",
         "customReset": "Sıralamayı sıfırla"
+      },
+      "websockets": {
+        "title": "Codex’in Responses için WebSocket kullanmasına izin ver",
+        "help": "Yalnızca sağlayıcı Responses için WebSocket desteğini açıkça sunuyorsa etkinleştirin; bağlantı türünü Codex veya proxy hizmeti günlüklerinden doğrulayın.",
+        "enabled": "Etkin",
+        "disabled": "Devre dışı"
       }
     },
     "quickSwitch": {
@@ -3593,6 +3612,10 @@
     "workbuddy": {
       "title": "WorkBuddy Ayarları",
       "appPath": "WorkBuddy Yolu"
+    },
+    "zcode": {
+      "title": "ZCode Ayarları",
+      "appPath": "ZCode Yolu"
     },
     "zed": {
       "title": "Zed Ayarları",
@@ -4583,6 +4606,62 @@
       "streakRewardCountdown": "Bonus ödüle {{days}} gün kaldı",
       "streakRewardToday": "Bonus ödül bugün kullanılabilir!",
       "recentDates": "Son: "
+    }
+  },
+  "zcode": {
+    "search": "ZCode hesaplarını ara...",
+    "flowNotice": {
+      "title": "ZCode hesap yönetimi",
+      "desc": "Cockpit, gerçek hesap geçişi ve örnek bağlama için ZCode'un şifreli yerel kimlik bilgilerini okur ve geri yazar.",
+      "permission": "Yerel kapsam: ~/.zcode/v2/credentials.json ve yönetilen örnek dizinleri.",
+      "network": "Ağ kapsamı: OAuth, kullanıcı, abonelik ve kota API'leri. Hesaplar Cockpit hizmetine yüklenmez."
+    },
+    "empty": "ZCode hesabı yok",
+    "addAccount": "ZCode Hesabı Ekle",
+    "oauth": {
+      "desc": "ZCode'u kapatıp Cockpit yetkilendirme penceresinde oturum açın; geri çağrıyı Cockpit doğrudan alır.",
+      "title": "ZCode OAuth Yetkilendirmesi",
+      "item1": "Resmî Z.ai ve BigModel oturumu.",
+      "item2": "Hesabı kaydeder, planı ve model kotalarını yeniler.",
+      "item3": "Hesapları istemci geçişi ve çoklu örnek bağlama için kullanın.",
+      "urlPlaceholder": "ZCode OAuth URL'si",
+      "waiting": "ZCode OAuth geri çağrısı bekleniyor...",
+      "openWindow": "Yetkilendirme penceresini aç",
+      "provider": "Oturum hizmeti",
+      "success": "ZCode OAuth oturumu açıldı"
+    },
+    "token": {
+      "desc": "Cockpit tarafından dışa aktarılan ZCode hesap JSON'unu yapıştırın."
+    },
+    "apiKey": {
+      "tab": "API Anahtarı",
+      "desc": "Resmî bir Z.ai veya BigModel API Anahtarı ekleyin. Hesap değiştirme ve yönetilen örnekler anahtarı kendi config.json dosyasına yazar.",
+      "placeholder": "API Anahtarını yapıştırın",
+      "add": "API Anahtarı ekle",
+      "provider": "API Anahtarı hizmeti"
+    },
+    "import": {
+      "localDesc": "Şifreli yerel ZCode kimlik bilgilerini veya JSON dosyasını içe aktarın.",
+      "localClient": "Yerel ZCode'dan Aktar"
+    },
+  "usageNormal": "Sorunsuz",
+    "usageAbnormal": "Hata",
+    "usageViewDetail": "Ayrıntılar",
+    "usageDetailTitle": "Kullanım Ayrıntıları",
+    "usage": "Kullanım",
+    "quota": {
+      "models": "Model Kotası",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "Güncellendi: {{time}}",
+      "expireAt": "Bitiş: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "Kota sorgusu başarısız",
+      "empty": "Kota verisi yok",
+      "sectionTitle": "Kota"
+    },
+    "instances": {
+      "unsupported": "ZCode çoklu örnekleri yalnızca macOS, Windows ve Linux'ta kullanılabilir."
     }
   },
   "zed": {

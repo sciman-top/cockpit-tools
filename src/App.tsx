@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { FileText, FolderOpen, RefreshCw, X } from 'lucide-react';
 import { SideNav } from './components/layout/SideNav';
 import { GlobalModal } from './components/GlobalModal';
+import { AnnouncementHost } from './components/AnnouncementCenter';
 import { TopCenterPromoBanner } from './components/TopCenterPromoBanner';
 import type { QuickSettingsType } from './components/QuickSettingsPopover';
 import type { Page } from './types/navigation';
@@ -111,6 +112,9 @@ const CodebuddyCnAccountsPage = lazy(() =>
 const QoderAccountsPage = lazy(() =>
   import('./pages/QoderAccountsPage').then((module) => ({ default: module.QoderAccountsPage })),
 );
+const ZcodeAccountsPage = lazy(() =>
+  import('./pages/ZcodeAccountsPage').then((module) => ({ default: module.ZcodeAccountsPage })),
+);
 const TraeAccountsPage = lazy(() =>
   import('./pages/TraeAccountsPage').then((module) => ({ default: module.TraeAccountsPage })),
 );
@@ -181,6 +185,7 @@ const RENDERABLE_PAGE_VALUES: readonly Page[] = [
   'codebuddy',
   'codebuddy-cn',
   'qoder',
+  'zcode',
   'trae',
   'trae-solo',
   'trae-cn',
@@ -216,6 +221,7 @@ const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> 
   codebuddy: ['codebuddy'],
   'codebuddy-cn': ['codebuddy-cn'],
   qoder: ['qoder'],
+  zcode: ['zcode'],
   trae: ['trae', 'trae-suite'],
   'trae-solo': ['trae-solo', 'trae-suite'],
   'trae-cn': ['trae-cn', 'trae-suite'],
@@ -1299,10 +1305,7 @@ function MainApp() {
     && updateRuntimeInfo.linux_managed_install_supported;
 
   const getUpdaterCheckTarget = useCallback((): string | undefined => {
-    if (updateRuntimeInfo?.platform !== 'windows') {
-      return undefined;
-    }
-    if (typeof updateRuntimeInfo.updater_target !== 'string') {
+    if (typeof updateRuntimeInfo?.updater_target !== 'string') {
       return undefined;
     }
 
@@ -2926,6 +2929,10 @@ function MainApp() {
         errorMessage: 'Failed to refresh Qoder:',
       },
       {
+        command: 'refresh_all_zcode_accounts',
+        errorMessage: 'Failed to refresh ZCode:',
+      },
+      {
         command: 'refresh_all_trae_tokens',
         errorMessage: 'Failed to refresh Trae:',
       },
@@ -3842,6 +3849,8 @@ function MainApp() {
         onOpenLogViewer={() => setShowLogViewer(true)}
       />
 
+      <AnnouncementHost onNavigate={setPage} />
+
       {sideNavLayoutMode !== 'classic' && (
         <button
           className="log-entry-fab"
@@ -3897,6 +3906,7 @@ function MainApp() {
           {page === 'codebuddy' && <CodebuddyAccountsPage />}
           {page === 'codebuddy-cn' && <CodebuddyCnAccountsPage />}
           {page === 'qoder' && <QoderAccountsPage />}
+          {page === 'zcode' && <ZcodeAccountsPage />}
           {page === 'trae' && <TraeAccountsPage platformId="trae" />}
           {page === 'trae-solo' && <TraeAccountsPage platformId="trae_solo" />}
           {page === 'trae-cn' && <TraeAccountsPage platformId="trae_cn" />}

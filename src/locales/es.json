@@ -124,6 +124,8 @@
         "failed": "Autorización fallida",
         "hint": "Cuando finalice la autorización, esta ventana se actualizará automáticamente",
         "openBrowser": "Abrir en el navegador",
+        "normalWindow": "Ventana normal",
+        "incognitoWindow": "Ventana privada",
         "success": "Autorización exitosa",
         "meta": "Caduca en: {{expires}}s; Intervalo de consulta: {{interval}}s",
         "preparing": "Preparando información de autorización...",
@@ -759,9 +761,13 @@
       "codebuddyCnPathReset": "Restablecer a predeterminado",
       "codebuddyCnPathSelect": "Seleccionar",
       "codebuddyCnSettingsTitle": "Configuración de CodeBuddy CN",
+      "zcodeAppPath": "Ruta de inicio de ZCode",
+      "zcodeAppPathDesc": "Déjalo vacío para usar la ruta predeterminada",
       "qoderAppPath": "Ruta de la aplicación Qoder",
       "qoderAppPathDesc": "Dejar en blanco para usar la ruta predeterminada",
       "qoderAppPathPlaceholder": "Ruta predeterminada",
+      "zcodeAutoRefresh": "Actualización automática de ZCode",
+      "zcodeAutoRefreshDesc": "Intervalo de actualización de cuota en segundo plano",
       "qoderAutoRefresh": "Actualización automática de cuota Qoder",
       "qoderAutoRefreshDesc": "Frecuencia de actualización automática en segundo plano",
       "qoderPathSelect": "Seleccionar",
@@ -1940,6 +1946,11 @@
       "oauthBinding": {
         "desc": "Opcional. Solo se pueden seleccionar cuentas OAuth con refresh_token. Sin enlace, el servicio API mantiene el flujo de API Key anterior; al enlazar, la sesión usa la cuenta OAuth y el Provider usa la configuración del servicio API.",
         "currentService": "Servicio API: {{name}}",
+        "quotaReserveToggle": "Reservar cuota OAuth",
+        "quotaReserveDesc": "El servicio API usa esta cuenta OAuth solo mientras las cuotas restantes de 5 horas y semanal sean superiores a los valores reservados.",
+        "quotaReserveHourlyLabel": "Reserva de 5 h",
+        "quotaReserveWeeklyLabel": "Reserva semanal",
+        "quotaReserveInvalid": "Introduce un entero del 1 al 100.",
         "imageGenerationTooltip": "Al activarlo, el servicio API elimina la declaración de herramienta image_generation en la puerta de enlace local antes de reenviar los chats de texto; no elimina modelos de imagen.",
         "imageGenerationConfirm": {
           "title": "Desactivar image_generation",
@@ -2124,6 +2135,7 @@
       "hourlyReset": "Hora de restablecimiento de 5 horas",
       "subscriptionExpiry": "Vencimiento de suscripción",
       "custom": "Orden personalizado",
+      "customSettingsTooltip": "Configurar orden personalizado",
       "customModalTitle": "Orden de cuentas",
       "customModalDesc": "Arrastra cuentas o usa los botones arriba/abajo para ajustar el orden.",
       "customDragHandle": "Arrastrar para ordenar",
@@ -2711,7 +2723,8 @@
         "modelCatalog": "Catálogo de modelos",
         "visionCapability": "Entrada de imagen",
         "visionModels": "Modelos con visión",
-        "visionRoutingModel": "Modelo para imágenes"
+        "visionRoutingModel": "Modelo para imágenes",
+        "supportsWebsockets": "Transporte WebSocket"
       },
       "validation": {
         "nameRequired": "El nombre del proveedor es obligatorio.",
@@ -2947,6 +2960,12 @@
         "customMoveUp": "Subir",
         "customMoveDown": "Bajar",
         "customReset": "Restablecer orden"
+      },
+      "websockets": {
+        "title": "Permitir que Codex use Responses mediante WebSocket",
+        "help": "Actívalo solo si el proveedor admite explícitamente Responses mediante WebSocket; confirma el transporte en los registros de Codex o del servicio proxy.",
+        "enabled": "Activado",
+        "disabled": "Desactivado"
       }
     },
     "quickSwitch": {
@@ -3593,6 +3612,10 @@
     "workbuddy": {
       "title": "Configuración de WorkBuddy",
       "appPath": "Ruta de WorkBuddy"
+    },
+    "zcode": {
+      "title": "Configuración de ZCode",
+      "appPath": "Ruta de ZCode"
     },
     "zed": {
       "title": "Configuración de Zed",
@@ -4583,6 +4606,62 @@
       "streakRewardCountdown": "Faltan {{days}} días para la recompensa extra",
       "streakRewardToday": "¡Recompensa extra disponible hoy!",
       "recentDates": "Reciente: "
+    }
+  },
+  "zcode": {
+    "search": "Buscar cuentas de ZCode...",
+    "flowNotice": {
+      "title": "Guía de cuentas de ZCode",
+      "desc": "Cockpit lee y reescribe las credenciales locales cifradas de ZCode para cambiar de cuenta y vincular instancias.",
+      "permission": "Ámbito local: ~/.zcode/v2/credentials.json y directorios de instancias administradas.",
+      "network": "Ámbito de red: APIs de OAuth, usuario, suscripción y cuota. Las cuentas no se suben a un servicio de Cockpit."
+    },
+    "empty": "No hay cuentas de ZCode",
+    "addAccount": "Añadir cuenta de ZCode",
+    "oauth": {
+      "desc": "Cierra ZCode e inicia sesión en la ventana de autorización de Cockpit; Cockpit recibirá la devolución directamente.",
+      "title": "OAuth de ZCode",
+      "item1": "Inicio de sesión oficial con Z.ai y BigModel.",
+      "item2": "Guarda la cuenta y actualiza el plan y las cuotas de modelos.",
+      "item3": "Usa cuentas para cambiar el cliente y vincular varias instancias.",
+      "urlPlaceholder": "URL OAuth de ZCode",
+      "waiting": "Esperando la devolución OAuth de ZCode...",
+      "openWindow": "Abrir ventana de autorización",
+      "provider": "Servicio de acceso",
+      "success": "Inicio de sesión OAuth de ZCode correcto"
+    },
+    "token": {
+      "desc": "Pega el JSON de una cuenta de ZCode exportado por Cockpit."
+    },
+    "apiKey": {
+      "tab": "Clave API",
+      "desc": "Añade una clave API oficial de Z.ai o BigModel. Al cambiar de cuenta y en las instancias administradas se escribe en su propio config.json.",
+      "placeholder": "Pega la clave API",
+      "add": "Añadir clave API",
+      "provider": "Servicio de clave API"
+    },
+    "import": {
+      "localDesc": "Importa credenciales locales cifradas de ZCode o un archivo JSON.",
+      "localClient": "Importar desde ZCode local"
+    },
+  "usageNormal": "Correcto",
+    "usageAbnormal": "Error",
+    "usageViewDetail": "Detalles",
+    "usageDetailTitle": "Detalles de uso",
+    "usage": "Uso",
+    "quota": {
+      "models": "Cuota de modelos",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "Actualizado: {{time}}",
+      "expireAt": "Caduca: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "Error al consultar la cuota",
+      "empty": "Sin datos de cuota",
+      "sectionTitle": "Cuota"
+    },
+    "instances": {
+      "unsupported": "Las múltiples instancias de ZCode solo están disponibles en macOS, Windows y Linux."
     }
   },
   "zed": {

@@ -124,6 +124,8 @@
         "failed": "Autorizace selhala",
         "hint": "Po autorizaci se toto okno automaticky aktualizuje",
         "openBrowser": "Otevřít v prohlížeči",
+        "normalWindow": "Běžné okno",
+        "incognitoWindow": "Anonymní okno",
         "success": "Autorizace úspěšná",
         "meta": "Platnost vyprší za: {{expires}}s; interval dotazování: {{interval}}s",
         "preparing": "Připravuje se autorizační odkaz...",
@@ -759,9 +761,13 @@
       "codebuddyCnPathReset": "Obnovit výchozí",
       "codebuddyCnPathSelect": "Vybrat",
       "codebuddyCnSettingsTitle": "Nastavení CodeBuddy CN",
+      "zcodeAppPath": "Spouštěcí cesta ZCode",
+      "zcodeAppPathDesc": "Ponechte prázdné pro výchozí cestu",
       "qoderAppPath": "Cesta k aplikaci Qoder",
       "qoderAppPathDesc": "Pokud je prázdné, použije se výchozí cesta",
       "qoderAppPathPlaceholder": "Výchozí cesta",
+      "zcodeAutoRefresh": "Automatická aktualizace ZCode",
+      "zcodeAutoRefreshDesc": "Interval aktualizace kvóty na pozadí",
       "qoderAutoRefresh": "Automatické obnovení kvóty Qoder",
       "qoderAutoRefreshDesc": "Frekvence automatického obnovení na pozadí",
       "qoderPathSelect": "Vybrat",
@@ -1940,6 +1946,11 @@
       "oauthBinding": {
         "desc": "Volitelné. Vybrat lze pouze účty OAuth s refresh_token. Bez propojení služba API používá původní logiku API Key; po propojení se přihlášení bere z účtu OAuth a Provider z konfigurace služby API.",
         "currentService": "Služba API: {{name}}",
+        "quotaReserveToggle": "Rezervovat kvótu OAuth",
+        "quotaReserveDesc": "Služba API používá tento účet OAuth jen tehdy, když je zbývající 5hodinová i týdenní kvóta vyšší než rezervovaná hodnota.",
+        "quotaReserveHourlyLabel": "Rezerva 5 hodin",
+        "quotaReserveWeeklyLabel": "Týdenní rezerva",
+        "quotaReserveInvalid": "Zadejte celé číslo od 1 do 100.",
         "imageGenerationTooltip": "Po zapnutí služba API v místní bráně před přeposláním běžných textových konverzací odstraní deklaraci nástroje image_generation; obrazové modely se nemažou.",
         "imageGenerationConfirm": {
           "title": "Zakázat image_generation",
@@ -2124,6 +2135,7 @@
       "hourlyReset": "Čas resetu 5 hodin",
       "subscriptionExpiry": "Konec předplatného",
       "custom": "Vlastní pořadí",
+      "customSettingsTooltip": "Nastavit vlastní pořadí",
       "customModalTitle": "Vlastní pořadí účtů",
       "customModalDesc": "Přetažením účtů nebo tlačítky nahoru/dolů upravte pořadí zobrazení.",
       "customDragHandle": "Přetáhnout",
@@ -2711,7 +2723,8 @@
         "modelCatalog": "Katalog modelů",
         "visionCapability": "Vstup obrázků",
         "visionModels": "Vizuální modely",
-        "visionRoutingModel": "Model pro obrázky"
+        "visionRoutingModel": "Model pro obrázky",
+        "supportsWebsockets": "Přenos přes WebSocket"
       },
       "validation": {
         "nameRequired": "Název poskytovatele je povinný.",
@@ -2947,6 +2960,12 @@
         "customMoveUp": "Posunout nahoru",
         "customMoveDown": "Posunout dolů",
         "customReset": "Obnovit pořadí"
+      },
+      "websockets": {
+        "title": "Povolit Codexu používat Responses přes WebSocket",
+        "help": "Zapněte pouze tehdy, když poskytovatel výslovně podporuje Responses přes WebSocket; způsob připojení ověřte v protokolech Codexu nebo proxy služby.",
+        "enabled": "Zapnuto",
+        "disabled": "Vypnuto"
       }
     },
     "quickSwitch": {
@@ -3593,6 +3612,10 @@
     "workbuddy": {
       "title": "Nastavení WorkBuddy",
       "appPath": "Cesta WorkBuddy"
+    },
+    "zcode": {
+      "title": "Nastavení ZCode",
+      "appPath": "Cesta k ZCode"
     },
     "zed": {
       "title": "Nastavení Zed",
@@ -4583,6 +4606,62 @@
       "streakRewardCountdown": "Do bonusové odměny zbývá {{days}} dní",
       "streakRewardToday": "Bonusová odměna je dnes dostupná!",
       "recentDates": "Nedávno: "
+    }
+  },
+  "zcode": {
+    "search": "Hledat účty ZCode...",
+    "flowNotice": {
+      "title": "Správa účtů ZCode",
+      "desc": "Cockpit čte a zapisuje šifrované místní přihlašovací údaje ZCode pro skutečné přepínání účtů a propojení instancí.",
+      "permission": "Místní rozsah: ~/.zcode/v2/credentials.json a adresáře spravovaných instancí.",
+      "network": "Síťový rozsah: API OAuth, uživatele, předplatného a kvót. Účty se neodesílají do služby Cockpit."
+    },
+    "empty": "Žádné účty ZCode",
+    "addAccount": "Přidat účet ZCode",
+    "oauth": {
+      "desc": "Zavřete ZCode a přihlaste se v autorizačním okně Cockpit; zpětné volání převezme Cockpit přímo.",
+      "title": "OAuth ZCode",
+      "item1": "Oficiální přihlášení přes Z.ai a BigModel.",
+      "item2": "Uloží účet a obnoví tarif a kvóty modelů.",
+      "item3": "Účty lze použít pro přepnutí klienta a vazbu více instancí.",
+      "urlPlaceholder": "Adresa OAuth ZCode",
+      "waiting": "Čeká se na zpětné volání OAuth ZCode...",
+      "openWindow": "Otevřít autorizační okno",
+      "provider": "Přihlašovací služba",
+      "success": "Přihlášení OAuth ZCode bylo úspěšné"
+    },
+    "token": {
+      "desc": "Vložte JSON účtu ZCode exportovaný z Cockpit."
+    },
+    "apiKey": {
+      "tab": "Klíč API",
+      "desc": "Přidejte oficiální klíč API pro Z.ai nebo BigModel. Při přepnutí účtu a ve spravovaných instancích se zapíše do jejich config.json.",
+      "placeholder": "Vložte klíč API",
+      "add": "Přidat klíč API",
+      "provider": "Služba klíče API"
+    },
+    "import": {
+      "localDesc": "Importujte šifrované místní údaje ZCode nebo soubor JSON.",
+      "localClient": "Importovat z místního ZCode"
+    },
+    "usageNormal": "V pořádku",
+    "usageAbnormal": "Chyba",
+    "usageViewDetail": "Podrobnosti",
+    "usageDetailTitle": "Podrobnosti využití",
+    "usage": "Využití",
+    "quota": {
+      "models": "Kvóta modelů",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "Aktualizováno: {{time}}",
+      "expireAt": "Vyprší: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "Dotaz na kvótu selhal",
+      "empty": "Žádná data kvóty",
+      "sectionTitle": "Kvóta"
+    },
+    "instances": {
+      "unsupported": "Více instancí ZCode je dostupných pouze v systémech macOS, Windows a Linux."
     }
   },
   "zed": {

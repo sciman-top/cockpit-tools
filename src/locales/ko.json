@@ -124,6 +124,8 @@
         "failed": "인증 실패",
         "hint": "인증이 완료되면 이 창이 자동으로 업데이트됩니다",
         "openBrowser": "브라우저에서 열기",
+        "normalWindow": "일반 창",
+        "incognitoWindow": "시크릿 창",
         "success": "인증 성공",
         "meta": "만료까지: {{expires}}s; 폴링 간격: {{interval}}s",
         "preparing": "인증 링크 준비 중...",
@@ -759,9 +761,13 @@
       "codebuddyCnPathReset": "기본값으로 초기화",
       "codebuddyCnPathSelect": "선택",
       "codebuddyCnSettingsTitle": "CodeBuddy CN 설정",
+      "zcodeAppPath": "ZCode 실행 경로",
+      "zcodeAppPathDesc": "비워 두면 기본 경로를 사용합니다",
       "qoderAppPath": "Qoder 앱 경로",
       "qoderAppPathDesc": "비워두면 기본 경로를 사용합니다",
       "qoderAppPathPlaceholder": "기본 경로",
+      "zcodeAutoRefresh": "ZCode 자동 새로 고침",
+      "zcodeAutoRefreshDesc": "백그라운드 할당량 갱신 간격",
       "qoderAutoRefresh": "Qoder 자동 할당량 갱신",
       "qoderAutoRefreshDesc": "백그라운드 자동 갱신 빈도",
       "qoderPathSelect": "선택",
@@ -1940,6 +1946,11 @@
       "oauthBinding": {
         "desc": "선택 사항입니다. refresh_token이 있어 자동 갱신할 수 있는 OAuth 계정만 선택할 수 있습니다. 연결하지 않으면 API 서비스는 기존 API Key 로직으로 실행됩니다. 연결하면 로그인 상태는 OAuth 계정을 사용하고 Provider는 현재 API 서비스 설정을 사용합니다.",
         "currentService": "API 서비스: {{name}}",
+        "quotaReserveToggle": "OAuth 할당량 보존",
+        "quotaReserveDesc": "API 서비스는 5시간 및 주간 잔여 할당량이 모두 보존 값보다 높을 때만 이 OAuth 계정을 사용합니다.",
+        "quotaReserveHourlyLabel": "5시간 보존",
+        "quotaReserveWeeklyLabel": "주간 보존",
+        "quotaReserveInvalid": "1에서 100 사이의 정수를 입력하세요.",
         "imageGenerationTooltip": "켜면 API 서비스가 일반 텍스트 대화를 전달하기 전에 로컬 게이트웨이에서 image_generation 도구 선언을 제거합니다. 이미지 모델은 삭제하지 않습니다.",
         "imageGenerationConfirm": {
           "title": "image_generation 비활성화",
@@ -2124,6 +2135,7 @@
       "hourlyReset": "5시간 할당량 재설정 시간",
       "subscriptionExpiry": "구독 만료",
       "custom": "사용자 순서",
+      "customSettingsTooltip": "사용자 순서 설정",
       "customModalTitle": "계정 순서 설정",
       "customModalDesc": "계정을 끌거나 위/아래 버튼으로 표시 순서를 조정하세요.",
       "customDragHandle": "끌어서 정렬",
@@ -2711,7 +2723,8 @@
         "modelCatalog": "모델 카탈로그",
         "visionCapability": "이미지 입력",
         "visionModels": "비전 모델",
-        "visionRoutingModel": "이미지 라우팅 모델"
+        "visionRoutingModel": "이미지 라우팅 모델",
+        "supportsWebsockets": "WebSocket 전송"
       },
       "validation": {
         "nameRequired": "공급자 이름은 필수입니다.",
@@ -2947,6 +2960,12 @@
         "customMoveUp": "위로",
         "customMoveDown": "아래로",
         "customReset": "순서 초기화"
+      },
+      "websockets": {
+        "title": "Codex가 WebSocket을 통해 Responses를 사용하도록 허용",
+        "help": "공급자가 WebSocket을 통한 Responses를 명시적으로 지원하는 경우에만 켜세요. 연결 방식은 Codex 또는 프록시 서비스 로그에서 확인할 수 있습니다.",
+        "enabled": "사용",
+        "disabled": "사용 안 함"
       }
     },
     "quickSwitch": {
@@ -3593,6 +3612,10 @@
     "workbuddy": {
       "title": "WorkBuddy 설정",
       "appPath": "WorkBuddy 경로"
+    },
+    "zcode": {
+      "title": "ZCode 설정",
+      "appPath": "ZCode 경로"
     },
     "zed": {
       "title": "Zed 설정",
@@ -4583,6 +4606,62 @@
       "streakRewardCountdown": "보너스 보상까지 {{days}}일 남음",
       "streakRewardToday": "오늘 보너스 보상을 받을 수 있습니다!",
       "recentDates": "최근: "
+    }
+  },
+  "zcode": {
+    "search": "ZCode 계정 검색...",
+    "flowNotice": {
+      "title": "ZCode 계정 관리 안내",
+      "desc": "Cockpit은 실제 계정 전환과 인스턴스 연결을 위해 ZCode의 암호화된 로컬 자격 증명을 읽고 다시 씁니다.",
+      "permission": "로컬 범위: ~/.zcode/v2/credentials.json 및 관리형 인스턴스 디렉터리.",
+      "network": "네트워크 범위: OAuth, 사용자 정보, 구독 및 할당량 API. 계정을 Cockpit 서비스에 업로드하지 않습니다."
+    },
+    "empty": "ZCode 계정 없음",
+    "addAccount": "ZCode 계정 추가",
+    "oauth": {
+      "desc": "ZCode를 종료한 뒤 Cockpit 인증 창에서 로그인하세요. 콜백은 Cockpit이 직접 수신합니다.",
+      "title": "ZCode OAuth 인증",
+      "item1": "Z.ai 및 BigModel 공식 로그인 지원.",
+      "item2": "인증 후 계정을 저장하고 요금제와 모델 할당량을 새로 고칩니다.",
+      "item3": "기본 클라이언트 전환과 다중 인스턴스 연결에 사용할 수 있습니다.",
+      "urlPlaceholder": "ZCode OAuth 인증 URL",
+      "waiting": "ZCode OAuth 콜백 대기 중...",
+      "openWindow": "인증 창 열기",
+      "provider": "로그인 서비스",
+      "success": "ZCode OAuth 로그인 성공"
+    },
+    "token": {
+      "desc": "Cockpit에서 내보낸 ZCode 계정 JSON을 붙여 넣으세요."
+    },
+    "apiKey": {
+      "tab": "API 키",
+      "desc": "Z.ai 또는 BigModel 공식 API 키를 추가합니다. 계정 전환과 관리형 인스턴스는 각자의 config.json에 키를 기록합니다.",
+      "placeholder": "API 키 붙여넣기",
+      "add": "API 키 추가",
+      "provider": "API 키 서비스"
+    },
+    "import": {
+      "localDesc": "암호화된 로컬 ZCode 자격 증명 또는 JSON 파일에서 가져옵니다.",
+      "localClient": "로컬 ZCode에서 가져오기"
+    },
+    "usageNormal": "정상",
+    "usageAbnormal": "오류",
+    "usageViewDetail": "상세",
+    "usageDetailTitle": "사용량 상세",
+    "usage": "사용량",
+    "quota": {
+      "models": "모델 할당량",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "업데이트: {{time}}",
+      "expireAt": "만료: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "할당량 조회 실패",
+      "empty": "할당량 데이터 없음",
+      "sectionTitle": "할당량"
+    },
+    "instances": {
+      "unsupported": "ZCode 다중 인스턴스는 macOS, Windows, Linux에서만 지원됩니다."
     }
   },
   "zed": {

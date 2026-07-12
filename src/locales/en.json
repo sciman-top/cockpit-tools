@@ -131,6 +131,8 @@
         "failed": "Authorization failed",
         "hint": "Once authorized, this window will update automatically",
         "openBrowser": "Open in Browser",
+        "normalWindow": "Standard Window",
+        "incognitoWindow": "Incognito Window",
         "success": "Authorization successful",
         "meta": "Expires in: {{expires}}s; Poll interval: {{interval}}s",
         "preparing": "Preparing authorization info...",
@@ -1130,9 +1132,13 @@
       "codebuddyCnPathReset": "Reset to Default",
       "codebuddyCnPathSelect": "Select",
       "codebuddyCnSettingsTitle": "CodeBuddy CN Settings",
+      "zcodeAppPath": "ZCode Launch Path",
+      "zcodeAppPathDesc": "Leave blank to use the default path",
       "qoderAppPath": "Qoder App Path",
       "qoderAppPathDesc": "Leave blank to use the default path",
       "qoderAppPathPlaceholder": "Default path",
+      "zcodeAutoRefresh": "ZCode Auto Refresh",
+      "zcodeAutoRefreshDesc": "Background quota refresh interval",
       "qoderAutoRefresh": "Qoder Auto Refresh",
       "qoderAutoRefreshDesc": "Background auto-refresh frequency",
       "qoderPathSelect": "Select",
@@ -2262,6 +2268,11 @@
       "oauthBinding": {
         "desc": "Optional. Only OAuth accounts with a refresh_token can be selected. Without a link, the API service keeps the original API-key flow; after linking, sign-in uses the OAuth account and Provider uses the API service config.",
         "currentService": "API Service: {{name}}",
+        "quotaReserveToggle": "Reserve OAuth quota",
+        "quotaReserveDesc": "The API service uses this OAuth account only while both the 5-hour and weekly remaining quotas are above the reserved values.",
+        "quotaReserveHourlyLabel": "5-hour reserve",
+        "quotaReserveWeeklyLabel": "Weekly reserve",
+        "quotaReserveInvalid": "Enter an integer from 1 to 100.",
         "imageGenerationTooltip": "When enabled, the API service removes the image_generation tool declaration in the local gateway before forwarding normal text chats; image models are not removed.",
         "imageGenerationConfirm": {
           "title": "Disable image_generation",
@@ -2490,7 +2501,8 @@
         "newApiKey": "New API Key",
         "visionCapability": "Image Input",
         "visionModels": "Vision Models",
-        "visionRoutingModel": "Image Route Model"
+        "visionRoutingModel": "Image Route Model",
+        "supportsWebsockets": "WebSocket Transport"
       },
       "validation": {
         "nameRequired": "Provider name is required.",
@@ -2722,6 +2734,12 @@
         "customMoveUp": "Move up",
         "customMoveDown": "Move down",
         "customReset": "Reset custom order"
+      },
+      "websockets": {
+        "title": "Allow Codex to use Responses over WebSocket",
+        "help": "Enable only when the provider explicitly supports Responses over WebSocket; confirm the transport in Codex or proxy service logs.",
+        "enabled": "Enabled",
+        "disabled": "Disabled"
       }
     },
     "quickSwitch": {
@@ -2845,6 +2863,7 @@
       "hourlyReset": "5-hour reset time",
       "subscriptionExpiry": "Subscription term",
       "custom": "Custom order",
+      "customSettingsTooltip": "Configure custom order",
       "customModalTitle": "Custom account order",
       "customModalDesc": "Drag accounts or use the up and down buttons to adjust the display order.",
       "customDragHandle": "Drag to sort",
@@ -3886,6 +3905,10 @@
       "title": "Qoder Settings",
       "appPath": "Qoder Path"
     },
+    "zcode": {
+      "title": "ZCode Settings",
+      "appPath": "ZCode Path"
+    },
     "zed": {
       "title": "Zed Settings",
       "appPath": "Zed Path"
@@ -4576,6 +4599,62 @@
     },
     "empty": {
       "desc": "Click \"Add Account\" to use auth login, local import, or JSON import."
+    }
+  },
+  "zcode": {
+    "search": "Search ZCode accounts...",
+    "flowNotice": {
+      "title": "ZCode account guide",
+      "desc": "Cockpit reads and writes ZCode's encrypted local credentials for real account switching and instance binding.",
+      "permission": "Local scope: ~/.zcode/v2/credentials.json and managed instance directories.",
+      "network": "Network scope: OAuth, user info, subscription, and quota APIs. Accounts are not uploaded to a Cockpit service."
+    },
+    "empty": "No ZCode accounts",
+    "addAccount": "Add ZCode Account",
+    "oauth": {
+      "desc": "Close ZCode, then sign in through the Cockpit authorization window. Cockpit will capture the callback directly.",
+      "title": "ZCode OAuth",
+      "item1": "Official Z.ai and BigModel sign-in.",
+      "item2": "Saves the account and refreshes plan and model quotas after authorization.",
+      "item3": "Use accounts for default-client switching and multi-instance binding.",
+      "urlPlaceholder": "ZCode OAuth URL",
+      "waiting": "Waiting for ZCode OAuth callback...",
+      "openWindow": "Open authorization window",
+      "provider": "Sign-in service",
+      "success": "ZCode OAuth sign-in successful"
+    },
+    "token": {
+      "desc": "Paste a ZCode account JSON exported by Cockpit."
+    },
+    "apiKey": {
+      "tab": "API Key",
+      "desc": "Add an official Z.ai or BigModel API Key. Account switching and managed instances write it to their own config.json.",
+      "placeholder": "Paste API Key",
+      "add": "Add API Key",
+      "provider": "API Key service"
+    },
+    "import": {
+      "localDesc": "Import from encrypted local ZCode credentials or a JSON file.",
+      "localClient": "Import from Local ZCode"
+    },
+    "usageNormal": "Normal",
+    "usageAbnormal": "Error",
+    "usageViewDetail": "Details",
+    "usageDetailTitle": "Usage Details",
+    "usage": "Usage",
+    "quota": {
+      "models": "Model Quota",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "Updated: {{time}}",
+      "expireAt": "Expires: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "Quota query failed",
+      "empty": "No quota data",
+      "sectionTitle": "Quota"
+    },
+    "instances": {
+      "unsupported": "ZCode multi-instance is available only on macOS, Windows, and Linux."
     }
   },
   "zed": {

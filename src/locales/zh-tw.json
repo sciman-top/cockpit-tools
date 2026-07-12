@@ -124,6 +124,8 @@
         "failed": "授權失敗",
         "hint": "完成授權後，此視窗將自動更新",
         "openBrowser": "在瀏覽器中開啟",
+        "normalWindow": "一般視窗",
+        "incognitoWindow": "無痕視窗",
         "success": "授權成功",
         "meta": "有效期限：{{expires}}s；輪詢間隔：{{interval}}s",
         "preparing": "正在準備授權連結...",
@@ -759,9 +761,13 @@
       "codebuddyCnPathReset": "重設為預設",
       "codebuddyCnPathSelect": "選擇",
       "codebuddyCnSettingsTitle": "CodeBuddy CN 設定",
+      "zcodeAppPath": "ZCode 啟動路徑",
+      "zcodeAppPathDesc": "留空則使用預設路徑",
       "qoderAppPath": "Qoder 應用程式路徑",
       "qoderAppPathDesc": "留白則使用預設路徑",
       "qoderAppPathPlaceholder": "預設路徑",
+      "zcodeAutoRefresh": "ZCode 自動更新",
+      "zcodeAutoRefreshDesc": "背景配額更新間隔",
       "qoderAutoRefresh": "Qoder 自動刷新配額",
       "qoderAutoRefreshDesc": "背景自動更新頻率",
       "qoderPathSelect": "選擇",
@@ -1940,6 +1946,11 @@
       "oauthBinding": {
         "desc": "可選綁定。只能選擇帶 refresh_token、可自動續期的 OAuth 帳號；未綁定時 API 服務會沿用原 API Key 邏輯；綁定後登入狀態使用 OAuth 帳號，Provider 使用目前 API 服務設定。",
         "currentService": "API 服務：{{name}}",
+        "quotaReserveToggle": "保留 OAuth 額度",
+        "quotaReserveDesc": "API 服務只會在 5 小時與每週剩餘額度皆高於保留值時使用此 OAuth 帳號。",
+        "quotaReserveHourlyLabel": "5 小時保留",
+        "quotaReserveWeeklyLabel": "每週保留",
+        "quotaReserveInvalid": "請輸入 1 到 100 的整數",
         "imageGenerationTooltip": "開啟後，API 服務會在本機閘道轉發普通文字對話前移除 image_generation 工具宣告；不會刪除生圖模型。",
         "imageGenerationConfirm": {
           "title": "停用 image_generation 能力",
@@ -2241,6 +2252,7 @@
       "hourlyReset": "按5小時配額重置時間",
       "subscriptionExpiry": "按訂閱到期",
       "custom": "自訂順序",
+      "customSettingsTooltip": "設定自訂順序",
       "customModalTitle": "自訂帳號排序",
       "customModalDesc": "拖曳帳號或使用上下按鈕調整顯示順序。",
       "customDragHandle": "拖曳排序",
@@ -2711,7 +2723,8 @@
         "modelCatalog": "模型目錄",
         "visionCapability": "圖片輸入能力",
         "visionModels": "支援圖片的模型",
-        "visionRoutingModel": "圖片請求預設模型"
+        "visionRoutingModel": "圖片請求預設模型",
+        "supportsWebsockets": "WebSocket 傳輸"
       },
       "validation": {
         "nameRequired": "供應商名稱不能為空",
@@ -2947,6 +2960,12 @@
         "customMoveUp": "上移",
         "customMoveDown": "下移",
         "customReset": "重設自訂順序"
+      },
+      "websockets": {
+        "title": "允許 Codex 使用 Responses WebSocket",
+        "help": "僅在供應商明確支援 Responses WebSocket 時開啟；連線方式可透過 Codex 或代理服務日誌確認。",
+        "enabled": "已啟用",
+        "disabled": "已停用"
       }
     },
     "quickSwitch": {
@@ -3593,6 +3612,10 @@
     "workbuddy": {
       "title": "WorkBuddy 設定",
       "appPath": "WorkBuddy 路徑"
+    },
+    "zcode": {
+      "title": "ZCode 設定",
+      "appPath": "ZCode 路徑"
     },
     "zed": {
       "title": "Zed 設定",
@@ -4583,6 +4606,62 @@
       "streakRewardCountdown": "再簽 {{days}} 天可得大禮包",
       "streakRewardToday": "今日可獲得大禮包！",
       "recentDates": "近期簽到："
+    }
+  },
+  "zcode": {
+    "search": "搜尋 ZCode 帳號...",
+    "flowNotice": {
+      "title": "ZCode 帳號管理說明",
+      "desc": "Cockpit 讀取並回寫 ZCode 本機加密憑證，用於實際切換帳號與執行個體綁定。",
+      "permission": "本機範圍：~/.zcode/v2/credentials.json 與受管理的執行個體目錄。",
+      "network": "網路範圍：OAuth、使用者資訊、訂閱與配額介面；不會將帳號上傳至 Cockpit 服務。"
+    },
+    "empty": "尚無 ZCode 帳號",
+    "addAccount": "新增 ZCode 帳號",
+    "oauth": {
+      "desc": "關閉 ZCode 後，請在 Cockpit 授權視窗完成登入；回呼將由 Cockpit 直接接收。",
+      "title": "ZCode 授權登入",
+      "item1": "支援 Z.ai 與 BigModel 官方登入。",
+      "item2": "授權後自動儲存帳號並更新方案與模型配額。",
+      "item3": "帳號可用於預設用戶端切換與多開綁定。",
+      "urlPlaceholder": "ZCode OAuth 授權網址",
+      "waiting": "正在等待 ZCode OAuth 回呼...",
+      "openWindow": "開啟授權視窗",
+      "provider": "登入服務",
+      "success": "ZCode OAuth 登入成功"
+    },
+    "token": {
+      "desc": "貼上由 Cockpit 匯出的 ZCode 帳號 JSON。"
+    },
+    "apiKey": {
+      "tab": "API 金鑰",
+      "desc": "新增 Z.ai 或 BigModel 官方 API Key。切換帳號與受管執行個體會寫入各自的 config.json。",
+      "placeholder": "貼上 API Key",
+      "add": "新增 API Key",
+      "provider": "API Key 服務"
+    },
+    "import": {
+      "localDesc": "從本機 ZCode 加密憑證或 JSON 檔案匯入帳號。",
+      "localClient": "從本機 ZCode 匯入"
+    },
+    "usageNormal": "正常",
+    "usageAbnormal": "異常",
+    "usageViewDetail": "查看詳情",
+    "usageDetailTitle": "用量狀態詳情",
+    "usage": "用量狀態",
+    "quota": {
+      "models": "模型配額",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "更新：{{time}}",
+      "expireAt": "到期：{{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "配額查詢失敗",
+      "empty": "尚無配額資料",
+      "sectionTitle": "配額"
+    },
+    "instances": {
+      "unsupported": "ZCode 多開僅支援 macOS、Windows 與 Linux。"
     }
   },
   "zed": {

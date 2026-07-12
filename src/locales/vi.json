@@ -124,6 +124,8 @@
         "failed": "Ủy quyền thất bại",
         "hint": "Sau khi ủy quyền, cửa sổ này sẽ tự cập nhật",
         "openBrowser": "Mở trong trình duyệt",
+        "normalWindow": "Cửa sổ thường",
+        "incognitoWindow": "Cửa sổ riêng tư",
         "success": "Ủy quyền thành công",
         "meta": "Hết hạn sau: {{expires}}s; chu kỳ thăm dò: {{interval}}s",
         "preparing": "Đang chuẩn bị liên kết ủy quyền...",
@@ -759,9 +761,13 @@
       "codebuddyCnPathReset": "Đặt lại mặc định",
       "codebuddyCnPathSelect": "Chọn",
       "codebuddyCnSettingsTitle": "Cài đặt CodeBuddy CN",
+      "zcodeAppPath": "Đường dẫn khởi chạy ZCode",
+      "zcodeAppPathDesc": "Để trống để dùng đường dẫn mặc định",
       "qoderAppPath": "Đường dẫn ứng dụng Qoder",
       "qoderAppPathDesc": "Để trống để sử dụng đường dẫn mặc định",
       "qoderAppPathPlaceholder": "Đường dẫn mặc định",
+      "zcodeAutoRefresh": "Tự động làm mới ZCode",
+      "zcodeAutoRefreshDesc": "Khoảng làm mới hạn mức trong nền",
       "qoderAutoRefresh": "Tự động làm mới hạn ngạch Qoder",
       "qoderAutoRefreshDesc": "Tần suất tự động làm mới nền",
       "qoderPathSelect": "Chọn",
@@ -1940,6 +1946,11 @@
       "oauthBinding": {
         "desc": "Tùy chọn. Chỉ có thể chọn tài khoản OAuth có refresh_token. Khi chưa liên kết, dịch vụ API chạy theo luồng API Key cũ; sau khi liên kết, trạng thái đăng nhập dùng tài khoản OAuth và Provider dùng cấu hình dịch vụ API hiện tại.",
         "currentService": "Dịch vụ API: {{name}}",
+        "quotaReserveToggle": "Giữ lại hạn mức OAuth",
+        "quotaReserveDesc": "Dịch vụ API chỉ dùng tài khoản OAuth này khi hạn mức còn lại của 5 giờ và tuần đều cao hơn mức giữ lại.",
+        "quotaReserveHourlyLabel": "Giữ lại 5 giờ",
+        "quotaReserveWeeklyLabel": "Giữ lại theo tuần",
+        "quotaReserveInvalid": "Nhập số nguyên từ 1 đến 100.",
         "imageGenerationTooltip": "Khi bật, dịch vụ API sẽ bỏ khai báo công cụ image_generation trong cổng cục bộ trước khi chuyển tiếp hội thoại văn bản; không xóa mô hình tạo ảnh.",
         "imageGenerationConfirm": {
           "title": "Tắt image_generation",
@@ -2124,6 +2135,7 @@
       "hourlyReset": "Thời gian đặt lại 5 giờ",
       "subscriptionExpiry": "Hạn gói",
       "custom": "Thứ tự tùy chỉnh",
+      "customSettingsTooltip": "Thiết lập thứ tự tùy chỉnh",
       "customModalTitle": "Thứ tự tài khoản",
       "customModalDesc": "Kéo tài khoản hoặc dùng nút lên/xuống để chỉnh thứ tự hiển thị.",
       "customDragHandle": "Kéo để sắp xếp",
@@ -2711,7 +2723,8 @@
         "modelCatalog": "Danh mục mô hình",
         "visionCapability": "Nhập ảnh",
         "visionModels": "Mẫu hỗ trợ ảnh",
-        "visionRoutingModel": "Mẫu xử lý ảnh"
+        "visionRoutingModel": "Mẫu xử lý ảnh",
+        "supportsWebsockets": "Truyền tải WebSocket"
       },
       "validation": {
         "nameRequired": "Tên nhà cung cấp là bắt buộc.",
@@ -2947,6 +2960,12 @@
         "customMoveUp": "Chuyển lên",
         "customMoveDown": "Chuyển xuống",
         "customReset": "Đặt lại thứ tự"
+      },
+      "websockets": {
+        "title": "Cho phép Codex dùng Responses qua WebSocket",
+        "help": "Chỉ bật khi nhà cung cấp hỗ trợ rõ ràng Responses qua WebSocket; hãy xác nhận phương thức truyền trong nhật ký Codex hoặc dịch vụ proxy.",
+        "enabled": "Đã bật",
+        "disabled": "Đã tắt"
       }
     },
     "quickSwitch": {
@@ -3593,6 +3612,10 @@
     "workbuddy": {
       "title": "Cài đặt WorkBuddy",
       "appPath": "Đường dẫn WorkBuddy"
+    },
+    "zcode": {
+      "title": "Cài đặt ZCode",
+      "appPath": "Đường dẫn ZCode"
     },
     "zed": {
       "title": "Cài đặt Zed",
@@ -4583,6 +4606,62 @@
       "streakRewardCountdown": "Còn {{days}} ngày nữa để nhận thưởng bonus",
       "streakRewardToday": "Hôm nay có thể nhận thưởng bonus!",
       "recentDates": "Gần đây: "
+    }
+  },
+  "zcode": {
+    "search": "Tìm tài khoản ZCode...",
+    "flowNotice": {
+      "title": "Hướng dẫn quản lý ZCode",
+      "desc": "Cockpit đọc và ghi lại thông tin đăng nhập ZCode cục bộ đã mã hóa để chuyển tài khoản thực và liên kết phiên bản.",
+      "permission": "Phạm vi cục bộ: ~/.zcode/v2/credentials.json và thư mục phiên bản được quản lý.",
+      "network": "Phạm vi mạng: API OAuth, người dùng, gói đăng ký và hạn mức. Tài khoản không được tải lên dịch vụ Cockpit."
+    },
+    "empty": "Chưa có tài khoản ZCode",
+    "addAccount": "Thêm tài khoản ZCode",
+    "oauth": {
+      "desc": "Đóng ZCode rồi đăng nhập trong cửa sổ ủy quyền của Cockpit; Cockpit sẽ nhận callback trực tiếp.",
+      "title": "OAuth ZCode",
+      "item1": "Đăng nhập chính thức qua Z.ai và BigModel.",
+      "item2": "Lưu tài khoản và làm mới gói cùng hạn mức mô hình.",
+      "item3": "Dùng tài khoản để đổi trình khách và liên kết nhiều phiên bản.",
+      "urlPlaceholder": "URL OAuth ZCode",
+      "waiting": "Đang chờ callback OAuth ZCode...",
+      "openWindow": "Mở cửa sổ ủy quyền",
+      "provider": "Dịch vụ đăng nhập",
+      "success": "Đăng nhập OAuth ZCode thành công"
+    },
+    "token": {
+      "desc": "Dán JSON tài khoản ZCode đã xuất từ Cockpit."
+    },
+    "apiKey": {
+      "tab": "Khóa API",
+      "desc": "Thêm Khóa API chính thức của Z.ai hoặc BigModel. Khi chuyển tài khoản và dùng phiên bản được quản lý, khóa được ghi vào config.json riêng.",
+      "placeholder": "Dán Khóa API",
+      "add": "Thêm Khóa API",
+      "provider": "Dịch vụ Khóa API"
+    },
+    "import": {
+      "localDesc": "Nhập thông tin ZCode cục bộ đã mã hóa hoặc tệp JSON.",
+      "localClient": "Nhập từ ZCode cục bộ"
+    },
+    "usageNormal": "Bình thường",
+    "usageAbnormal": "Lỗi",
+    "usageViewDetail": "Chi tiết",
+    "usageDetailTitle": "Chi tiết sử dụng",
+    "usage": "Mức dùng",
+    "quota": {
+      "models": "Hạn mức mô hình",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "Đã cập nhật: {{time}}",
+      "expireAt": "Hết hạn: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "Truy vấn hạn mức thất bại",
+      "empty": "Chưa có dữ liệu hạn mức",
+      "sectionTitle": "Hạn mức"
+    },
+    "instances": {
+      "unsupported": "Nhiều phiên bản ZCode chỉ hỗ trợ macOS, Windows và Linux."
     }
   },
   "zed": {

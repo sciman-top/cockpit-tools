@@ -124,6 +124,8 @@
         "failed": "Autorisierung fehlgeschlagen",
         "hint": "Nach der Autorisierung wird dieses Fenster automatisch aktualisiert",
         "openBrowser": "Im Browser öffnen",
+        "normalWindow": "Normales Fenster",
+        "incognitoWindow": "Inkognitofenster",
         "success": "Autorisierung erfolgreich",
         "meta": "Läuft ab in: {{expires}}s; Abfrageintervall: {{interval}}s",
         "preparing": "Autorisierungslink wird vorbereitet...",
@@ -759,9 +761,13 @@
       "codebuddyCnPathReset": "Auf Standard zurücksetzen",
       "codebuddyCnPathSelect": "Auswählen",
       "codebuddyCnSettingsTitle": "CodeBuddy CN Einstellungen",
+      "zcodeAppPath": "ZCode-Startpfad",
+      "zcodeAppPathDesc": "Leer lassen, um den Standardpfad zu verwenden",
       "qoderAppPath": "Qoder App-Pfad",
       "qoderAppPathDesc": "Wenn leer, wird der Standardpfad verwendet",
       "qoderAppPathPlaceholder": "Standardpfad",
+      "zcodeAutoRefresh": "ZCode automatisch aktualisieren",
+      "zcodeAutoRefreshDesc": "Intervall der Kontingentaktualisierung im Hintergrund",
       "qoderAutoRefresh": "Qoder Auto-Aktualisierung",
       "qoderAutoRefreshDesc": "Häufigkeit der automatischen Aktualisierung im Hintergrund",
       "qoderPathSelect": "Auswählen",
@@ -1940,6 +1946,11 @@
       "oauthBinding": {
         "desc": "Optional. Es können nur OAuth-Konten mit refresh_token ausgewählt werden. Ohne Verknüpfung nutzt der API-Dienst weiter den bisherigen API-Key-Ablauf; nach der Verknüpfung verwendet die Anmeldung das OAuth-Konto und der Provider die API-Dienst-Konfiguration.",
         "currentService": "API-Dienst: {{name}}",
+        "quotaReserveToggle": "OAuth-Kontingent reservieren",
+        "quotaReserveDesc": "Der API-Dienst nutzt dieses OAuth-Konto nur, solange sowohl das verbleibende 5-Stunden- als auch das Wochenkontingent über dem jeweiligen Reservewert liegt.",
+        "quotaReserveHourlyLabel": "5-Std.-Reserve",
+        "quotaReserveWeeklyLabel": "Wochenreserve",
+        "quotaReserveInvalid": "Geben Sie eine ganze Zahl von 1 bis 100 ein.",
         "imageGenerationTooltip": "Bei Aktivierung entfernt der API-Dienst im lokalen Gateway vor dem Weiterleiten normaler Textchats die Tool-Deklaration image_generation; Bildmodelle werden nicht entfernt.",
         "imageGenerationConfirm": {
           "title": "image_generation deaktivieren",
@@ -2124,6 +2135,7 @@
       "hourlyReset": "5-Stunden-Reset-Zeit",
       "subscriptionExpiry": "Abo-Ablauf",
       "custom": "Eigene Reihenfolge",
+      "customSettingsTooltip": "Eigene Reihenfolge konfigurieren",
       "customModalTitle": "Eigene Kontoreihenfolge",
       "customModalDesc": "Ziehen Sie Konten oder nutzen Sie die Hoch-/Runter-Tasten, um die Reihenfolge anzupassen.",
       "customDragHandle": "Zum Sortieren ziehen",
@@ -2711,7 +2723,8 @@
         "modelCatalog": "Modellkatalog",
         "visionCapability": "Bildeingabe",
         "visionModels": "Vision-Modelle",
-        "visionRoutingModel": "Bild-Routing-Modell"
+        "visionRoutingModel": "Bild-Routing-Modell",
+        "supportsWebsockets": "WebSocket-Übertragung"
       },
       "validation": {
         "nameRequired": "Der Name des Anbieters ist erforderlich.",
@@ -2947,6 +2960,12 @@
         "customMoveUp": "Nach oben",
         "customMoveDown": "Nach unten",
         "customReset": "Eigene Reihenfolge zurücksetzen"
+      },
+      "websockets": {
+        "title": "Codex die Nutzung von Responses über WebSocket erlauben",
+        "help": "Nur aktivieren, wenn der Anbieter Responses über WebSocket ausdrücklich unterstützt; die Verbindungsart lässt sich in den Codex- oder Proxy-Dienst-Protokollen prüfen.",
+        "enabled": "Aktiviert",
+        "disabled": "Deaktiviert"
       }
     },
     "quickSwitch": {
@@ -3593,6 +3612,10 @@
     "workbuddy": {
       "title": "WorkBuddy-Einstellungen",
       "appPath": "WorkBuddy-Pfad"
+    },
+    "zcode": {
+      "title": "ZCode-Einstellungen",
+      "appPath": "ZCode-Pfad"
     },
     "zed": {
       "title": "Zed-Einstellungen",
@@ -4583,6 +4606,62 @@
       "streakRewardCountdown": "Noch {{days}} Tage bis zur Bonusbelohnung",
       "streakRewardToday": "Bonusbelohnung heute verfügbar!",
       "recentDates": "Kürzlich: "
+    }
+  },
+  "zcode": {
+    "search": "ZCode-Konten suchen...",
+    "flowNotice": {
+      "title": "Hinweise zur ZCode-Kontoverwaltung",
+      "desc": "Cockpit liest und schreibt die verschlüsselten lokalen ZCode-Zugangsdaten für echten Kontowechsel und Instanzbindung.",
+      "permission": "Lokaler Umfang: ~/.zcode/v2/credentials.json und verwaltete Instanzverzeichnisse.",
+      "network": "Netzwerkumfang: OAuth-, Benutzer-, Abonnement- und Kontingent-APIs. Konten werden nicht an einen Cockpit-Dienst hochgeladen."
+    },
+    "empty": "Keine ZCode-Konten",
+    "addAccount": "ZCode-Konto hinzufügen",
+    "oauth": {
+      "desc": "Schließen Sie ZCode und melden Sie sich im Autorisierungsfenster von Cockpit an; Cockpit empfängt den Rückruf direkt.",
+      "title": "OAuth-Anmeldung für ZCode",
+      "item1": "Offizielle Anmeldung über Z.ai und BigModel.",
+      "item2": "Speichert das Konto und aktualisiert Tarif und Modellkontingente.",
+      "item3": "Konten für Clientwechsel und Mehrinstanzbindung verwenden.",
+      "urlPlaceholder": "ZCode-OAuth-URL",
+      "waiting": "Warte auf ZCode-OAuth-Rückruf...",
+      "openWindow": "Autorisierungsfenster öffnen",
+      "provider": "Anmeldedienst",
+      "success": "ZCode-OAuth-Anmeldung erfolgreich"
+    },
+    "token": {
+      "desc": "Fügen Sie ein von Cockpit exportiertes ZCode-Konto-JSON ein."
+    },
+    "apiKey": {
+      "tab": "API-Schlüssel",
+      "desc": "Fügen Sie einen offiziellen API-Schlüssel von Z.ai oder BigModel hinzu. Beim Kontowechsel und in verwalteten Instanzen wird er in deren config.json geschrieben.",
+      "placeholder": "API-Schlüssel einfügen",
+      "add": "API-Schlüssel hinzufügen",
+      "provider": "API-Schlüsseldienst"
+    },
+    "import": {
+      "localDesc": "Aus verschlüsselten lokalen ZCode-Zugangsdaten oder einer JSON-Datei importieren.",
+      "localClient": "Aus lokalem ZCode importieren"
+    },
+  "usageNormal": "In Ordnung",
+    "usageAbnormal": "Fehler",
+    "usageViewDetail": "Details",
+    "usageDetailTitle": "Nutzungsdetails",
+    "usage": "Nutzung",
+    "quota": {
+      "models": "Modellkontingent",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "Aktualisiert: {{time}}",
+      "expireAt": "Läuft ab: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "Kontingentabfrage fehlgeschlagen",
+      "empty": "Keine Kontingentdaten",
+      "sectionTitle": "Kontingent"
+    },
+    "instances": {
+      "unsupported": "ZCode-Mehrinstanzen sind nur unter macOS, Windows und Linux verfügbar."
     }
   },
   "zed": {

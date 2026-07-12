@@ -131,6 +131,8 @@
         "failed": "授权失败",
         "hint": "完成授权后，此窗口将自动更新",
         "openBrowser": "在浏览器中打开",
+        "normalWindow": "普通窗口",
+        "incognitoWindow": "无痕窗口",
         "success": "授权成功",
         "meta": "授权有效期：{{expires}}s；轮询间隔：{{interval}}s",
         "preparing": "正在准备授权信息...",
@@ -1130,9 +1132,13 @@
       "codebuddyCnPathReset": "重置默认",
       "codebuddyCnPathSelect": "选择",
       "codebuddyCnSettingsTitle": "CodeBuddy CN 设置",
+      "zcodeAppPath": "ZCode 启动路径",
+      "zcodeAppPathDesc": "留空则使用默认路径",
       "qoderAppPath": "Qoder 启动路径",
       "qoderAppPathDesc": "留空则使用默认路径",
       "qoderAppPathPlaceholder": "默认路径",
+      "zcodeAutoRefresh": "ZCode 自动刷新",
+      "zcodeAutoRefreshDesc": "后台配额刷新间隔",
       "qoderAutoRefresh": "Qoder 自动刷新配额",
       "qoderAutoRefreshDesc": "后台自动更新频率",
       "qoderPathSelect": "选择",
@@ -2262,6 +2268,11 @@
       "oauthBinding": {
         "desc": "可选绑定。只要 OAuth 账号带 refresh_token 即可选择；未绑定时 API 服务按原 API Key 逻辑运行；绑定后登录态使用 OAuth 账号，Provider 使用当前 API 服务配置。",
         "currentService": "API 服务：{{name}}",
+        "quotaReserveToggle": "保留 OAuth 额度",
+        "quotaReserveDesc": "API 服务仅在 5 小时和周剩余额度均高于保留值时使用该 OAuth 账号。",
+        "quotaReserveHourlyLabel": "5 小时保留",
+        "quotaReserveWeeklyLabel": "周保留",
+        "quotaReserveInvalid": "请输入 1 到 100 的整数",
         "imageGenerationTooltip": "开启后，API 服务会在本地网关转发普通文本对话前移除 image_generation 工具声明；不会删除生图模型。",
         "imageGenerationConfirm": {
           "title": "禁用 image_generation 能力",
@@ -2490,7 +2501,8 @@
         "newApiKey": "新增 API Key",
         "visionCapability": "图片输入能力",
         "visionModels": "支持图片的模型",
-        "visionRoutingModel": "图片请求默认模型"
+        "visionRoutingModel": "图片请求默认模型",
+        "supportsWebsockets": "WebSocket 传输"
       },
       "validation": {
         "nameRequired": "供应商名称不能为空",
@@ -2722,6 +2734,12 @@
         "customMoveUp": "上移",
         "customMoveDown": "下移",
         "customReset": "重置自定义顺序"
+      },
+      "websockets": {
+        "title": "允许 Codex 使用 Responses WebSocket",
+        "help": "仅在供应商明确支持 Responses WebSocket 时开启；连接方式可通过 Codex 或代理服务日志确认。",
+        "enabled": "已启用",
+        "disabled": "已停用"
       }
     },
     "quickSwitch": {
@@ -2845,6 +2863,7 @@
       "hourlyReset": "按5小时配额重置时间",
       "subscriptionExpiry": "按订阅有效期",
       "custom": "自定义顺序",
+      "customSettingsTooltip": "配置自定义顺序",
       "customModalTitle": "自定义账号排序",
       "customModalDesc": "拖动账号或使用上下按钮调整展示顺序。",
       "customDragHandle": "拖拽排序",
@@ -3886,6 +3905,10 @@
       "title": "Qoder 设置",
       "appPath": "Qoder 路径"
     },
+    "zcode": {
+      "title": "ZCode 设置",
+      "appPath": "ZCode 路径"
+    },
     "zed": {
       "title": "Zed 设置",
       "appPath": "Zed 路径"
@@ -4576,6 +4599,62 @@
     },
     "empty": {
       "desc": "点击“添加账号”，可使用授权登录、本机导入或 JSON 导入。"
+    }
+  },
+  "zcode": {
+    "search": "搜索 ZCode 账号...",
+    "flowNotice": {
+      "title": "ZCode 账号管理说明",
+      "desc": "Cockpit 按 ZCode 官方格式管理 OAuth 凭据与 API Key，用于真实切号与实例绑定。",
+      "permission": "本地范围：~/.zcode/v2/credentials.json、config.json、setting.json 与受管实例目录。",
+      "network": "网络范围：OAuth、用户信息、订阅与配额接口；不会将账号上传到 Cockpit 服务。"
+    },
+    "empty": "暂无 ZCode 账号",
+    "addAccount": "添加 ZCode 账号",
+    "oauth": {
+      "desc": "关闭 ZCode 后，在 Cockpit 授权窗口完成登录；回调将由 Cockpit 直接接收。",
+      "title": "ZCode 授权登录",
+      "item1": "支持 Z.ai 与 BigModel 官方登录。",
+      "item2": "授权后自动保存账号并刷新套餐与模型额度。",
+      "item3": "账号可用于默认客户端切号和多开实例绑定。",
+      "urlPlaceholder": "ZCode OAuth 授权地址",
+      "waiting": "等待 ZCode OAuth 回调...",
+      "openWindow": "打开授权窗口",
+      "provider": "登录服务",
+      "success": "ZCode OAuth 登录成功"
+    },
+    "token": {
+      "desc": "粘贴由 Cockpit 导出的 ZCode 账号 JSON。"
+    },
+    "apiKey": {
+      "tab": "API 密钥",
+      "desc": "添加 ZCode 官方支持的 Z.ai 或 BigModel API Key。切号和多开实例会写入各自的 config.json。",
+      "placeholder": "粘贴 API Key",
+      "add": "添加 API Key",
+      "provider": "API Key 服务"
+    },
+    "import": {
+      "localDesc": "从本机 ZCode 加密凭据或 JSON 文件导入账号。",
+      "localClient": "从本机 ZCode 导入"
+    },
+    "usageNormal": "正常",
+    "usageAbnormal": "异常",
+    "usageViewDetail": "查看详情",
+    "usageDetailTitle": "用量状态详情",
+    "usage": "用量状态",
+    "quota": {
+      "models": "模型额度",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "更新：{{time}}",
+      "expireAt": "到期：{{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "配额查询失败",
+      "empty": "暂无配额数据",
+      "sectionTitle": "配额"
+    },
+    "instances": {
+      "unsupported": "ZCode 多开仅支持 macOS、Windows 和 Linux。"
     }
   },
   "zed": {

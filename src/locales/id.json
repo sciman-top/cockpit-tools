@@ -131,6 +131,8 @@
         "failed": "Otorisasi gagal",
         "hint": "Setelah diotorisasi, jendela ini akan diperbarui secara otomatis",
         "openBrowser": "Buka di Peramban",
+        "normalWindow": "Jendela biasa",
+        "incognitoWindow": "Jendela privat",
         "success": "Otorisasi berhasil",
         "meta": "Kedaluwarsa dalam: {{expires}} detik; Interval polling: {{interval}} detik",
         "preparing": "Menyiapkan informasi otorisasi...",
@@ -805,9 +807,13 @@
       "codebuddyCnPathReset": "Reset ke Default",
       "codebuddyCnPathSelect": "Pilih",
       "codebuddyCnSettingsTitle": "Pengaturan CodeBuddy CN",
+      "zcodeAppPath": "Jalur peluncuran ZCode",
+      "zcodeAppPathDesc": "Kosongkan untuk memakai jalur bawaan",
       "qoderAppPath": "Path Aplikasi Qoder",
       "qoderAppPathDesc": "Kosongkan untuk menggunakan path default",
       "qoderAppPathPlaceholder": "Path default",
+      "zcodeAutoRefresh": "Pembaruan Otomatis ZCode",
+      "zcodeAutoRefreshDesc": "Interval pembaruan kuota di latar belakang",
       "qoderAutoRefresh": "Auto Refresh Kuota Qoder",
       "qoderAutoRefreshDesc": "Frekuensi auto-refresh di latar belakang",
       "qoderPathSelect": "Pilih",
@@ -1989,6 +1995,11 @@
       "oauthBinding": {
         "desc": "Opsional. Hanya akun OAuth dengan refresh_token yang dapat dipilih. Tanpa tautan, layanan API tetap memakai alur API Key lama; setelah ditautkan, status masuk memakai akun OAuth dan Provider memakai konfigurasi layanan API.",
         "currentService": "Layanan API: {{name}}",
+        "quotaReserveToggle": "Simpan kuota OAuth",
+        "quotaReserveDesc": "Layanan API hanya memakai akun OAuth ini selama sisa kuota 5 jam dan mingguan lebih tinggi dari nilai simpanan.",
+        "quotaReserveHourlyLabel": "Simpanan 5 jam",
+        "quotaReserveWeeklyLabel": "Simpanan mingguan",
+        "quotaReserveInvalid": "Masukkan bilangan bulat dari 1 sampai 100.",
         "imageGenerationTooltip": "Jika aktif, layanan API menghapus deklarasi alat image_generation di gateway lokal sebelum meneruskan percakapan teks; model gambar tidak dihapus.",
         "imageGenerationConfirm": {
           "title": "Nonaktifkan image_generation",
@@ -2298,6 +2309,7 @@
       "hourlyReset": "5-hour reset time​",
       "subscriptionExpiry": "Akhir langganan",
       "custom": "Urutan kustom",
+      "customSettingsTooltip": "Atur urutan kustom",
       "customModalTitle": "Urutan akun kustom",
       "customModalDesc": "Seret akun atau gunakan tombol naik/turun untuk mengatur urutan tampilan.",
       "customDragHandle": "Seret untuk urutkan",
@@ -2757,7 +2769,8 @@
         "modelCatalog": "Katalog Model",
         "visionCapability": "Input gambar",
         "visionModels": "Model visual",
-        "visionRoutingModel": "Model gambar"
+        "visionRoutingModel": "Model gambar",
+        "supportsWebsockets": "Transport WebSocket"
       },
       "validation": {
         "nameRequired": "Nama penyedia wajib diisi.",
@@ -2993,6 +3006,12 @@
         "customMoveUp": "Naikkan",
         "customMoveDown": "Turunkan",
         "customReset": "Reset urutan"
+      },
+      "websockets": {
+        "title": "Izinkan Codex menggunakan Responses melalui WebSocket",
+        "help": "Aktifkan hanya jika penyedia secara eksplisit mendukung Responses melalui WebSocket; pastikan transport melalui log Codex atau layanan proksi.",
+        "enabled": "Aktif",
+        "disabled": "Nonaktif"
       }
     },
     "quickSwitch": {
@@ -3729,6 +3748,10 @@
       "title": "Qoder Settings​",
       "appPath": "Qoder Path​"
     },
+    "zcode": {
+      "title": "Pengaturan ZCode",
+      "appPath": "Jalur ZCode"
+    },
     "zed": {
       "title": "Zed Settings​",
       "appPath": "Zed Path​"
@@ -4424,6 +4447,62 @@
     },
     "empty": {
       "desc": "Klik \"Tambah Akun\" untuk menggunakan login auth, import lokal, atau import JSON."
+    }
+  },
+  "zcode": {
+    "search": "Cari akun ZCode...",
+    "flowNotice": {
+      "title": "Panduan akun ZCode",
+      "desc": "Cockpit membaca dan menulis ulang kredensial lokal terenkripsi ZCode untuk pergantian akun nyata dan pengikatan instans.",
+      "permission": "Cakupan lokal: ~/.zcode/v2/credentials.json dan direktori instans terkelola.",
+      "network": "Cakupan jaringan: API OAuth, pengguna, langganan, dan kuota. Akun tidak diunggah ke layanan Cockpit."
+    },
+    "empty": "Belum ada akun ZCode",
+    "addAccount": "Tambah Akun ZCode",
+    "oauth": {
+      "desc": "Tutup ZCode, lalu masuk melalui jendela otorisasi Cockpit; Cockpit akan menerima callback secara langsung.",
+      "title": "OAuth ZCode",
+      "item1": "Login resmi melalui Z.ai dan BigModel.",
+      "item2": "Menyimpan akun dan memperbarui paket serta kuota model.",
+      "item3": "Gunakan akun untuk berganti klien dan mengikat banyak instans.",
+      "urlPlaceholder": "URL OAuth ZCode",
+      "waiting": "Menunggu callback OAuth ZCode...",
+      "openWindow": "Buka jendela otorisasi",
+      "provider": "Layanan login",
+      "success": "Login OAuth ZCode berhasil"
+    },
+    "token": {
+      "desc": "Tempel JSON akun ZCode yang diekspor oleh Cockpit."
+    },
+    "apiKey": {
+      "tab": "Kunci API",
+      "desc": "Tambahkan Kunci API resmi Z.ai atau BigModel. Pergantian akun dan instans terkelola menuliskannya ke config.json masing-masing.",
+      "placeholder": "Tempel Kunci API",
+      "add": "Tambah Kunci API",
+      "provider": "Layanan Kunci API"
+    },
+    "import": {
+      "localDesc": "Impor kredensial lokal ZCode terenkripsi atau berkas JSON.",
+      "localClient": "Impor dari ZCode Lokal"
+    },
+  "usageNormal": "Baik",
+    "usageAbnormal": "Galat",
+    "usageViewDetail": "Detail",
+    "usageDetailTitle": "Detail Penggunaan",
+    "usage": "Penggunaan",
+    "quota": {
+      "models": "Kuota Model",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "Diperbarui: {{time}}",
+      "expireAt": "Berakhir: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "Kueri kuota gagal",
+      "empty": "Belum ada data kuota",
+      "sectionTitle": "Kuota"
+    },
+    "instances": {
+      "unsupported": "Multi-instans ZCode hanya tersedia di macOS, Windows, dan Linux."
     }
   },
   "zed": {

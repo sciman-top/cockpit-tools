@@ -124,6 +124,8 @@
         "failed": "Ошибка авторизации",
         "hint": "После авторизации это окно обновится автоматически",
         "openBrowser": "Открыть в браузере",
+        "normalWindow": "Обычное окно",
+        "incognitoWindow": "Приватное окно",
         "success": "Авторизация успешна",
         "meta": "Истекает через: {{expires}}с; интервал опроса: {{interval}}с",
         "preparing": "Подготовка ссылки авторизации...",
@@ -759,9 +761,13 @@
       "codebuddyCnPathReset": "Сбросить по умолчанию",
       "codebuddyCnPathSelect": "Выбрать",
       "codebuddyCnSettingsTitle": "Настройки CodeBuddy CN",
+      "zcodeAppPath": "Путь запуска ZCode",
+      "zcodeAppPathDesc": "Оставьте пустым для пути по умолчанию",
       "qoderAppPath": "Путь приложения Qoder",
       "qoderAppPathDesc": "Оставьте пустым для использования пути по умолчанию",
       "qoderAppPathPlaceholder": "Путь по умолчанию",
+      "zcodeAutoRefresh": "Автообновление ZCode",
+      "zcodeAutoRefreshDesc": "Интервал фонового обновления квоты",
       "qoderAutoRefresh": "Автообновление квоты Qoder",
       "qoderAutoRefreshDesc": "Частота автоматического обновления в фоне",
       "qoderPathSelect": "Выбрать",
@@ -1940,6 +1946,11 @@
       "oauthBinding": {
         "desc": "Необязательно. Можно выбрать только OAuth-аккаунты с refresh_token. Без привязки API-сервис работает по прежней логике API Key; после привязки вход использует OAuth-аккаунт, а Provider — настройки API-сервиса.",
         "currentService": "API-сервис: {{name}}",
+        "quotaReserveToggle": "Сохранить квоту OAuth",
+        "quotaReserveDesc": "API-сервис использует этот OAuth-аккаунт, только пока остатки 5-часовой и недельной квот выше заданных резервов.",
+        "quotaReserveHourlyLabel": "Резерв на 5 часов",
+        "quotaReserveWeeklyLabel": "Недельный резерв",
+        "quotaReserveInvalid": "Введите целое число от 1 до 100.",
         "imageGenerationTooltip": "Если включено, API-сервис удаляет объявление инструмента image_generation в локальном шлюзе перед пересылкой обычных текстовых диалогов; модели изображений не удаляются.",
         "imageGenerationConfirm": {
           "title": "Отключить image_generation",
@@ -2124,6 +2135,7 @@
       "hourlyReset": "Время сброса 5-часовой квоты",
       "subscriptionExpiry": "Срок подписки",
       "custom": "Свой порядок",
+      "customSettingsTooltip": "Настроить свой порядок",
       "customModalTitle": "Свой порядок аккаунтов",
       "customModalDesc": "Перетаскивайте аккаунты или используйте кнопки вверх/вниз, чтобы изменить порядок.",
       "customDragHandle": "Перетащить",
@@ -2711,7 +2723,8 @@
         "modelCatalog": "Каталог моделей",
         "visionCapability": "Ввод изображений",
         "visionModels": "Модели с vision",
-        "visionRoutingModel": "Модель для изображений"
+        "visionRoutingModel": "Модель для изображений",
+        "supportsWebsockets": "Передача WebSocket"
       },
       "validation": {
         "nameRequired": "Укажите название провайдера.",
@@ -2947,6 +2960,12 @@
         "customMoveUp": "Вверх",
         "customMoveDown": "Вниз",
         "customReset": "Сбросить порядок"
+      },
+      "websockets": {
+        "title": "Разрешить Codex использовать Responses через WebSocket",
+        "help": "Включайте только при явной поддержке Responses через WebSocket поставщиком; тип соединения можно проверить в журналах Codex или прокси-сервиса.",
+        "enabled": "Включено",
+        "disabled": "Отключено"
       }
     },
     "quickSwitch": {
@@ -3593,6 +3612,10 @@
     "workbuddy": {
       "title": "Настройки WorkBuddy",
       "appPath": "Путь WorkBuddy"
+    },
+    "zcode": {
+      "title": "Настройки ZCode",
+      "appPath": "Путь ZCode"
     },
     "zed": {
       "title": "Настройки Zed",
@@ -4583,6 +4606,62 @@
       "streakRewardCountdown": "До бонусной награды осталось {{days}} дней",
       "streakRewardToday": "Бонусная награда доступна сегодня!",
       "recentDates": "Недавние: "
+    }
+  },
+  "zcode": {
+    "search": "Поиск аккаунтов ZCode...",
+    "flowNotice": {
+      "title": "Управление аккаунтами ZCode",
+      "desc": "Cockpit читает и перезаписывает зашифрованные локальные данные ZCode для реального переключения аккаунтов и привязки экземпляров.",
+      "permission": "Локальный доступ: ~/.zcode/v2/credentials.json и каталоги управляемых экземпляров.",
+      "network": "Сетевой доступ: API OAuth, профиля, подписки и квот. Аккаунты не отправляются в сервис Cockpit."
+    },
+    "empty": "Нет аккаунтов ZCode",
+    "addAccount": "Добавить аккаунт ZCode",
+    "oauth": {
+      "desc": "Закройте ZCode и войдите через окно авторизации Cockpit; Cockpit получит обратный вызов напрямую.",
+      "title": "OAuth ZCode",
+      "item1": "Официальный вход через Z.ai и BigModel.",
+      "item2": "Сохраняет аккаунт и обновляет тариф и квоты моделей.",
+      "item3": "Используйте аккаунты для смены клиента и привязки экземпляров.",
+      "urlPlaceholder": "URL OAuth ZCode",
+      "waiting": "Ожидание обратного вызова OAuth ZCode...",
+      "openWindow": "Открыть окно авторизации",
+      "provider": "Сервис входа",
+      "success": "Вход через OAuth ZCode выполнен"
+    },
+    "token": {
+      "desc": "Вставьте JSON аккаунта ZCode, экспортированный из Cockpit."
+    },
+    "apiKey": {
+      "tab": "Ключ API",
+      "desc": "Добавьте официальный ключ API Z.ai или BigModel. При смене аккаунта и для управляемых экземпляров он записывается в их config.json.",
+      "placeholder": "Вставьте ключ API",
+      "add": "Добавить ключ API",
+      "provider": "Сервис ключа API"
+    },
+    "import": {
+      "localDesc": "Импортируйте зашифрованные локальные данные ZCode или файл JSON.",
+      "localClient": "Импорт из локального ZCode"
+    },
+    "usageNormal": "Норма",
+    "usageAbnormal": "Ошибка",
+    "usageViewDetail": "Подробнее",
+    "usageDetailTitle": "Сведения об использовании",
+    "usage": "Использование",
+    "quota": {
+      "models": "Квота моделей",
+      "usedOfTotal": "{{used}} / {{total}}",
+      "updatedAt": "Обновлено: {{time}}",
+      "expireAt": "Истекает: {{time}}"
+    },
+    "quotaQuery": {
+      "failedRefreshCompact": "Не удалось получить квоту",
+      "empty": "Нет данных о квоте",
+      "sectionTitle": "Квота"
+    },
+    "instances": {
+      "unsupported": "Несколько экземпляров ZCode доступны только в macOS, Windows и Linux."
     }
   },
   "zed": {

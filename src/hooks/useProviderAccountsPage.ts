@@ -95,7 +95,7 @@ export interface OAuthService {
   completeLogin: (loginId: string) => Promise<unknown>;
   cancelLogin: (loginId?: string) => Promise<void>;
   submitCallbackUrl?: (loginId: string, callbackUrl: string) => Promise<void>;
-  openAuthUrl?: (url: string) => Promise<void>;
+  openAuthUrl?: (url: string, incognito?: boolean) => Promise<void>;
 }
 
 export interface OAuthStartResponse {
@@ -165,6 +165,8 @@ export interface ProviderPageConfig<TAccount extends ProviderAccountBase> {
   }) => void | Promise<void>;
   /** OAuth 成功后的提示文案（可选） */
   resolveOauthSuccessMessage?: () => string;
+  /** 首次渲染时使用的搜索内容 */
+  initialSearchQuery?: string;
   defaultSortBy?: string;
 }
 
@@ -726,6 +728,7 @@ export interface UseProviderAccountsPageReturn {
   handleRetryOauth: () => void;
   handleRetryOauthComplete: () => void;
   handleOpenOauthUrl: () => Promise<void>;
+  handleOpenOauthUrlWithMode: (incognito: boolean) => Promise<void>;
   handleSubmitOauthCallbackUrl: () => Promise<void>;
 
   // Inject / Switch
@@ -767,6 +770,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     oauthService,
     oauthTabKeys: oauthTabKeysConfig,
     dataService,
+    initialSearchQuery: initialSearchQueryConfig,
     defaultSortBy: defaultSortByConfig,
   } = config;
   const defaultSortBy = defaultSortByConfig?.trim() || DEFAULT_SORT_BY;
@@ -863,7 +867,9 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
   });
 
   // ─── Search & Filter ──────────────────────────────────────────────────
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = useState(
+    () => initialSearchQueryConfig ?? '',
+  );
   const [filterType, setFilterType] = useState<string>(() => {
     if (!readAccountsOverviewFilterPersistenceEnabled(filterPersistenceScope)) {
       return 'all';
@@ -2233,25 +2239,34 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     handleOauthCompleteError,
   ]);
 
-  const handleOpenOauthUrl = useCallback(async () => {
+  const handleOpenOauthUrlWithMode = useCallback(async (incognito: boolean) => {
     if (!oauthUrl) return;
+    setOauthCompleteError(null);
     oauthLog('用户点击打开授权链接', {
       loginId: oauthLoginIdRef.current,
       authUrl: oauthUrl,
+      incognito,
     });
     try {
       if (oauthService?.openAuthUrl) {
-        await oauthService.openAuthUrl(oauthUrl);
+        await oauthService.openAuthUrl(oauthUrl, incognito);
       } else {
         await openUrl(oauthUrl);
       }
     } catch (e) {
       console.error('打开授权链接失败:', e);
+      const msg = String(e).replace(/^Error:\s*/, '');
+      setOauthCompleteError(`${t('common.shared.oauth.failed', '授权失败')}: ${msg}`);
       await navigator.clipboard.writeText(oauthUrl).catch(() => {});
       setOauthUrlCopied(true);
       setTimeout(() => setOauthUrlCopied(false), 1200);
     }
-  }, [oauthUrl, oauthLog, oauthService]);
+  }, [oauthUrl, oauthLog, oauthService, t]);
+
+  const handleOpenOauthUrl = useCallback(
+    () => handleOpenOauthUrlWithMode(false),
+    [handleOpenOauthUrlWithMode],
+  );
 
   const oauthSupportsManualCallback = useMemo(
     () => Boolean(oauthService?.submitCallbackUrl && oauthCallbackUrl),
@@ -2495,6 +2510,7 @@ export function useProviderAccountsPage<TAccount extends ProviderAccountBase>(
     handleRetryOauth,
     handleRetryOauthComplete,
     handleOpenOauthUrl,
+    handleOpenOauthUrlWithMode,
     handleSubmitOauthCallbackUrl,
     handleInjectToVSCode,
     isFlowNoticeCollapsed,

@@ -12,6 +12,7 @@ import { useCodebuddyAccountStore } from '../stores/useCodebuddyAccountStore';
 import { useCodebuddyCnAccountStore } from '../stores/useCodebuddyCnAccountStore';
 import { useWorkbuddyAccountStore } from '../stores/useWorkbuddyAccountStore';
 import { useQoderAccountStore } from '../stores/useQoderAccountStore';
+import { useZcodeAccountStore } from '../stores/useZcodeAccountStore';
 import { useTraeAccountStore } from '../stores/useTraeAccountStore';
 import { useZedAccountStore } from '../stores/useZedAccountStore';
 import { getGitHubCopilotAccountDisplayEmail } from '../types/githubCopilot';
@@ -23,6 +24,7 @@ import { getClaudeAccountDisplayEmail } from '../types/claude';
 import { getCodebuddyAccountDisplayEmail } from '../types/codebuddy';
 import { getWorkbuddyAccountDisplayEmail } from '../types/workbuddy';
 import { getQoderAccountDisplayEmail } from '../types/qoder';
+import { getZcodeAccountDisplayEmail } from '../types/zcode';
 import {
   getTraeAccountDisplayEmail,
   getTraeAccountPlatformId,
@@ -39,6 +41,7 @@ import {
   type AutoRefreshSchedulerHandle,
   type AutoRefreshSchedulerTask,
 } from '../utils/autoRefreshScheduler';
+import { refreshCodexApiKeyUsageForAccounts } from '../services/codexApiKeyUsageRefreshService';
 
 interface GeneralConfig {
   language: string;
@@ -58,6 +61,7 @@ interface GeneralConfig {
   codebuddy_cn_auto_refresh_minutes: number;
   workbuddy_auto_refresh_minutes: number;
   qoder_auto_refresh_minutes: number;
+  zcode_auto_refresh_minutes: number;
   trae_auto_refresh_minutes: number;
   trae_solo_auto_refresh_minutes: number;
   trae_cn_auto_refresh_minutes: number;
@@ -77,6 +81,7 @@ interface GeneralConfig {
   codebuddy_app_path?: string;
   codebuddy_cn_app_path?: string;
   qoder_app_path?: string;
+  zcode_app_path?: string;
   trae_app_path?: string;
   zed_app_path?: string;
   opencode_sync_on_switch?: boolean;
@@ -185,6 +190,7 @@ function getCurrentAccountEmails(): Record<CurrentAccountRefreshPlatform, string
     codebuddy_cn: getProviderEmail(useCodebuddyCnAccountStore, getCodebuddyAccountDisplayEmail),
     workbuddy: getProviderEmail(useWorkbuddyAccountStore, getWorkbuddyAccountDisplayEmail),
     qoder: getProviderEmail(useQoderAccountStore, getQoderAccountDisplayEmail),
+    zcode: getProviderEmail(useZcodeAccountStore, getZcodeAccountDisplayEmail),
     trae: getTraeProviderEmail('trae'),
     trae_solo: getTraeProviderEmail('trae_solo'),
     trae_cn: getTraeProviderEmail('trae_cn'),
@@ -231,6 +237,9 @@ export function useAutoRefresh() {
   const refreshAllQoderTokens = useQoderAccountStore((state) => state.refreshAllTokens);
   const fetchCurrentQoderAccountId = useQoderAccountStore((state) => state.fetchCurrentAccountId);
   const refreshQoderToken = useQoderAccountStore((state) => state.refreshToken);
+  const refreshAllZcodeTokens = useZcodeAccountStore((state) => state.refreshAllTokens);
+  const fetchCurrentZcodeAccountId = useZcodeAccountStore((state) => state.fetchCurrentAccountId);
+  const refreshZcodeToken = useZcodeAccountStore((state) => state.refreshToken);
   const fetchTraeAccounts = useTraeAccountStore((state) => state.fetchAccounts);
   const refreshTraeToken = useTraeAccountStore((state) => state.refreshToken);
   const refreshAllZedTokens = useZedAccountStore((state) => state.refreshAllTokens);
@@ -261,6 +270,8 @@ export function useAutoRefresh() {
   const workbuddyCurrentRefreshingRef = useRef(false);
   const qoderRefreshingRef = useRef(false);
   const qoderCurrentRefreshingRef = useRef(false);
+  const zcodeRefreshingRef = useRef(false);
+  const zcodeCurrentRefreshingRef = useRef(false);
   const traeRefreshingRef = useRef(false);
   const traeCurrentRefreshingRef = useRef(false);
   const traeSoloRefreshingRef = useRef(false);
@@ -382,6 +393,7 @@ export function useAutoRefresh() {
                     codebuddyCnAutoRefreshMinutes: config.codebuddy_cn_auto_refresh_minutes,
                     workbuddyAutoRefreshMinutes: config.workbuddy_auto_refresh_minutes,
                     qoderAutoRefreshMinutes: config.qoder_auto_refresh_minutes,
+                    zcodeAutoRefreshMinutes: config.zcode_auto_refresh_minutes,
                     traeAutoRefreshMinutes: config.trae_auto_refresh_minutes,
                     zedAutoRefreshMinutes: config.zed_auto_refresh_minutes,
                     closeBehavior: config.close_behavior || 'ask',
@@ -395,6 +407,7 @@ export function useAutoRefresh() {
                     codebuddyAppPath: config.codebuddy_app_path ?? '',
                     codebuddyCnAppPath: config.codebuddy_cn_app_path ?? '',
                     qoderAppPath: config.qoder_app_path ?? '',
+                    zcodeAppPath: config.zcode_app_path ?? '',
                     traeAppPath: config.trae_app_path ?? '',
                     zedAppPath: config.zed_app_path ?? '',
                     opencodeSyncOnSwitch: config.opencode_sync_on_switch ?? false,
@@ -468,7 +481,15 @@ export function useAutoRefresh() {
               fullRefreshingRef: codexRefreshingRef,
               currentRefreshingRef: codexCurrentRefreshingRef,
               runFullRefresh: async () => {
-                await refreshAllCodexQuotas();
+                try {
+                  await refreshAllCodexQuotas();
+                } finally {
+                  await refreshCodexApiKeyUsageForAccounts(
+                    useCodexAccountStore.getState().accounts,
+                  ).catch((error) => {
+                    console.error('[AutoRefresh] Codex API Key usage refresh failed:', error);
+                  });
+                }
               },
               runCurrentRefresh: async () => {
                 if (!useCodexAccountStore.getState().currentAccount?.id) {
@@ -477,9 +498,18 @@ export function useAutoRefresh() {
                 if (!useCodexAccountStore.getState().currentAccount?.id) {
                   return;
                 }
-                await invoke('refresh_current_codex_quota');
-                await fetchCodexAccounts();
-                await fetchCurrentCodexAccount();
+                try {
+                  await invoke('refresh_current_codex_quota');
+                  await fetchCodexAccounts();
+                  await fetchCurrentCodexAccount();
+                } finally {
+                  const currentAccount = useCodexAccountStore.getState().currentAccount;
+                  if (currentAccount) {
+                    await refreshCodexApiKeyUsageForAccounts([currentAccount]).catch((error) => {
+                      console.error('[AutoRefresh] Codex API Key usage refresh failed:', error);
+                    });
+                  }
+                }
               },
             },
             {
@@ -632,6 +662,20 @@ export function useAutoRefresh() {
               },
               runCurrentRefresh: async () => {
                 await runProviderCurrentRefresh(fetchCurrentQoderAccountId, refreshQoderToken);
+              },
+            },
+            {
+              key: 'zcode',
+              label: 'ZCode',
+              intervalMinutes: config.zcode_auto_refresh_minutes,
+              currentMinutes: resolveCurrentMinutes('zcode', currentAccountEmails.zcode, currentRefreshMinutesMap),
+              fullRefreshingRef: zcodeRefreshingRef,
+              currentRefreshingRef: zcodeCurrentRefreshingRef,
+              runFullRefresh: async () => {
+                await refreshAllZcodeTokens();
+              },
+              runCurrentRefresh: async () => {
+                await runProviderCurrentRefresh(fetchCurrentZcodeAccountId, refreshZcodeToken);
               },
             },
             {
@@ -802,6 +846,7 @@ export function useAutoRefresh() {
     fetchCurrentGhcpAccountId,
     fetchCurrentKiroAccountId,
     fetchCurrentQoderAccountId,
+    fetchCurrentZcodeAccountId,
     fetchTraeAccounts,
     fetchCurrentWindsurfAccountId,
     fetchCurrentWorkbuddyAccountId,
@@ -817,6 +862,7 @@ export function useAutoRefresh() {
     refreshAllKiroTokens,
     refreshAllQuotas,
     refreshAllQoderTokens,
+    refreshAllZcodeTokens,
     refreshAllWindsurfTokens,
     refreshAllWorkbuddyTokens,
     refreshAllZedTokens,
@@ -828,6 +874,7 @@ export function useAutoRefresh() {
     refreshGhcpToken,
     refreshKiroToken,
     refreshQoderToken,
+    refreshZcodeToken,
     refreshTraeToken,
     refreshWindsurfToken,
     refreshWorkbuddyToken,
