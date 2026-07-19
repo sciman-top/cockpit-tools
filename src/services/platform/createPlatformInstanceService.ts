@@ -16,7 +16,7 @@ type PlatformInstanceCommandPrefix =
   | "windsurf"
   | "kiro"
   | "cursor"
-  | "gemini"
+  | "grok"
   | "codebuddy"
   | "codebuddy_cn"
   | "qoder"

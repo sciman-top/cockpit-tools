@@ -63,6 +63,47 @@ pub struct UpdateRuntimeInfo {
     pub updater_target: Option<String>,
 }
 
+#[cfg(target_os = "windows")]
+fn is_current_exe_dir_writable() -> bool {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(parent) = current_exe.parent() {
+            let temp_file = parent.join(format!(
+                ".tauri-updater-write-test-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            if std::fs::write(&temp_file, b"").is_ok() {
+                return std::fs::remove_file(temp_file).is_ok();
+            }
+        }
+    }
+    false
+}
+
+/// Map Windows arch and install state to an updater target key.
+///
+/// The bundle metadata is authoritative when available. Older or unbundled executables can lack
+/// that metadata, so a writable executable directory is used as a fallback signal for a per-user
+/// NSIS installation. Protected directories keep the conservative MSI fallback.
+#[cfg(any(target_os = "windows", test))]
+fn windows_updater_target_for_bundle(
+    arch: &str,
+    bundle: Option<&str>,
+    current_exe_dir_writable: bool,
+) -> String {
+    let arch = match arch {
+        "x86_64" | "aarch64" => arch,
+        _ => "x86_64",
+    };
+    let suffix = match bundle {
+        Some("nsis") => "nsis",
+        Some("msi") => "msi",
+        _ if current_exe_dir_writable => "nsis",
+        _ => "msi",
+    };
+    format!("windows-{}-{}", arch, suffix)
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use super::{expand_updater_endpoint, LatestManifest, UpdateRuntimeInfo};
@@ -638,19 +679,34 @@ mod imp {
         use tauri::utils::config::BundleType;
         use tauri::utils::platform::bundle_type;
 
-        let arch = match std::env::consts::ARCH {
-            "x86_64" => "x86_64",
-            "aarch64" => "aarch64",
-            _ => "x86_64",
+        let arch = std::env::consts::ARCH;
+        let bundle = match bundle_type() {
+            Some(BundleType::Nsis) => Some("nsis"),
+            Some(BundleType::Msi) => Some("msi"),
+            _ => None,
         };
-        let base = format!("windows-{}", arch);
-        let installer_suffix = match bundle_type() {
-            Some(BundleType::Nsis) => "nsis",
-            Some(BundleType::Msi) => "msi",
-            _ => "nsis",
-        };
+        let current_exe_dir_writable = bundle
+            .is_none()
+            .then(super::is_current_exe_dir_writable)
+            .unwrap_or(false);
+        let target =
+            super::windows_updater_target_for_bundle(arch, bundle, current_exe_dir_writable);
 
-        Some(format!("{}-{}", base, installer_suffix))
+        tracing::info!(
+            "[Updater] Windows updater target resolved: arch={}, bundle={}, exe_dir_writable={}, target={}",
+            arch,
+            bundle.unwrap_or("unknown"),
+            if bundle.is_some() {
+                "not_checked"
+            } else if current_exe_dir_writable {
+                "true"
+            } else {
+                "false"
+            },
+            target
+        );
+
+        Some(target)
     }
 
     #[cfg(target_os = "macos")]
@@ -697,7 +753,29 @@ pub use imp::{get_update_runtime_info, install_linux_update};
 
 #[cfg(test)]
 mod tests {
-    use super::{expand_updater_endpoint, LatestManifest, LatestPlatform};
+    use super::{
+        expand_updater_endpoint, windows_updater_target_for_bundle, LatestManifest, LatestPlatform,
+    };
+
+    #[test]
+    fn windows_updater_target_uses_bundle_then_directory_writability() {
+        let cases = [
+            ("x86_64", Some("nsis"), false, "windows-x86_64-nsis"),
+            ("x86_64", Some("nsis"), true, "windows-x86_64-nsis"),
+            ("x86_64", Some("msi"), false, "windows-x86_64-msi"),
+            ("x86_64", Some("msi"), true, "windows-x86_64-msi"),
+            ("x86_64", None, true, "windows-x86_64-nsis"),
+            ("x86_64", None, false, "windows-x86_64-msi"),
+            ("x86", None, true, "windows-x86_64-nsis"),
+        ];
+
+        for (arch, bundle, writable, expected) in cases {
+            assert_eq!(
+                windows_updater_target_for_bundle(arch, bundle, writable),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn expands_target_and_current_version_placeholders() {

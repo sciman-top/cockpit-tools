@@ -1142,8 +1142,11 @@ fn resolve_macos_exec_path(path_str: &str, _binary_name: &str) -> Option<std::pa
     }
 }
 
-fn update_app_path_in_config(app: &str, path: &Path) {
-    let mut current = config::get_user_config();
+fn app_path_matches_snapshot(current: &str, expected: &str) -> bool {
+    current.trim() == expected.trim()
+}
+
+fn update_app_path_in_config(app: &str, path: &Path, expected_current: &str) {
     let normalized = {
         #[cfg(target_os = "macos")]
         {
@@ -1154,80 +1157,38 @@ fn update_app_path_in_config(app: &str, path: &Path) {
             path.to_string_lossy().to_string()
         }
     };
-    match app {
-        "antigravity" => {
-            if current.antigravity_app_path != normalized {
-                current.antigravity_app_path = normalized;
-            } else {
-                return;
-            }
+    let _ = config::patch_user_config(move |current| {
+        let target = match app {
+            "antigravity" => &mut current.antigravity_app_path,
+            "codex" => &mut current.codex_app_path,
+            "zed" => &mut current.zed_app_path,
+            "vscode" => &mut current.vscode_app_path,
+            "opencode" => &mut current.opencode_app_path,
+            "codebuddy" => &mut current.codebuddy_app_path,
+            "codebuddy_cn" => &mut current.codebuddy_cn_app_path,
+            "qoder" => &mut current.qoder_app_path,
+            "trae" => &mut current.trae_app_path,
+            "workbuddy" => &mut current.workbuddy_app_path,
+            _ => return Ok(()),
+        };
+        if app_path_matches_snapshot(target, expected_current) && *target != normalized {
+            *target = normalized;
         }
-        "codex" => {
-            if current.codex_app_path != normalized {
-                current.codex_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "zed" => {
-            if current.zed_app_path != normalized {
-                current.zed_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "vscode" => {
-            if current.vscode_app_path != normalized {
-                current.vscode_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "opencode" => {
-            if current.opencode_app_path != normalized {
-                current.opencode_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "codebuddy" => {
-            if current.codebuddy_app_path != normalized {
-                current.codebuddy_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "codebuddy_cn" => {
-            if current.codebuddy_cn_app_path != normalized {
-                current.codebuddy_cn_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "qoder" => {
-            if current.qoder_app_path != normalized {
-                current.qoder_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "trae" => {
-            if current.trae_app_path != normalized {
-                current.trae_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "workbuddy" => {
-            if current.workbuddy_app_path != normalized {
-                current.workbuddy_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        _ => return,
+        Ok(())
+    });
+}
+
+#[cfg(test)]
+mod app_path_config_guard_tests {
+    use super::app_path_matches_snapshot;
+
+    #[test]
+    fn detected_path_only_replaces_the_snapshot_it_was_detected_for() {
+        assert!(app_path_matches_snapshot("", ""));
+        assert!(app_path_matches_snapshot(" /old/path ", "/old/path"));
+        assert!(!app_path_matches_snapshot("/manual/path", ""));
+        assert!(!app_path_matches_snapshot("/new/path", "/old/path"));
     }
-    let _ = config::save_user_config(&current);
 }
 
 #[cfg(target_os = "macos")]
@@ -2723,6 +2684,86 @@ fn detect_codex_exec_path() -> Option<std::path::PathBuf> {
     None
 }
 
+#[cfg(any(test, target_os = "macos"))]
+fn normalized_macos_codex_path_text(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim()
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn is_official_legacy_codex_macos_path(path: &Path) -> bool {
+    matches!(
+        normalized_macos_codex_path_text(path).as_str(),
+        "/applications/codex.app" | "/applications/codex.app/contents/macos/codex"
+    )
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn is_official_chatgpt_macos_path(path: &Path) -> bool {
+    matches!(
+        normalized_macos_codex_path_text(path).as_str(),
+        "/applications/chatgpt.app" | "/applications/chatgpt.app/contents/macos/chatgpt"
+    )
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn should_migrate_legacy_codex_launch_path(current: &Path, detected: &Path) -> bool {
+    is_official_legacy_codex_macos_path(current) && is_official_chatgpt_macos_path(detected)
+}
+
+#[cfg(target_os = "macos")]
+fn migrate_legacy_codex_launch_path(custom_path: &str) -> Option<std::path::PathBuf> {
+    let current_path = std::path::PathBuf::from(custom_path);
+    let detected = detect_codex_exec_path()?;
+    if !should_migrate_legacy_codex_launch_path(&current_path, &detected) {
+        return None;
+    }
+
+    update_app_path_in_config("codex", &detected, custom_path);
+    crate::modules::logger::log_info(&format!(
+        "[Path Detect] migrated legacy Codex launch path to ChatGPT: old={} new={}",
+        current_path.to_string_lossy(),
+        detected.to_string_lossy()
+    ));
+    Some(detected)
+}
+
+#[cfg(test)]
+mod codex_path_migration_tests {
+    use super::should_migrate_legacy_codex_launch_path;
+    use std::path::Path;
+
+    #[test]
+    fn migrates_official_macos_codex_path_when_chatgpt_exists() {
+        assert!(should_migrate_legacy_codex_launch_path(
+            Path::new("/Applications/Codex.app"),
+            Path::new("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"),
+        ));
+        assert!(should_migrate_legacy_codex_launch_path(
+            Path::new("/Applications/Codex.app/Contents/MacOS/Codex"),
+            Path::new("/Applications/ChatGPT.app"),
+        ));
+    }
+
+    #[test]
+    fn keeps_macos_legacy_path_when_chatgpt_is_not_detected() {
+        assert!(!should_migrate_legacy_codex_launch_path(
+            Path::new("/Applications/Codex.app"),
+            Path::new("/Applications/Codex.app/Contents/MacOS/Codex"),
+        ));
+    }
+
+    #[test]
+    fn does_not_replace_custom_macos_codex_path() {
+        assert!(!should_migrate_legacy_codex_launch_path(
+            Path::new("/Users/test/Applications/Codex.app"),
+            Path::new("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"),
+        ));
+    }
+}
+
 fn detect_opencode_exec_path() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -2781,13 +2822,12 @@ fn detect_opencode_exec_path() -> Option<std::path::PathBuf> {
 }
 
 fn resolve_antigravity_launch_path() -> Result<std::path::PathBuf, String> {
-    if let Some(custom) =
-        normalize_custom_path(Some(&config::get_user_config().antigravity_app_path))
-    {
+    let configured_path = config::get_user_config().antigravity_app_path;
+    if let Some(custom) = normalize_custom_path(Some(&configured_path)) {
         #[cfg(target_os = "macos")]
         if is_legacy_antigravity_macos_path(&custom) {
             if let Some(detected) = detect_antigravity_exec_path() {
-                update_app_path_in_config("antigravity", &detected);
+                update_app_path_in_config("antigravity", &detected, &configured_path);
                 return Ok(detected);
             }
         }
@@ -2796,14 +2836,14 @@ fn resolve_antigravity_launch_path() -> Result<std::path::PathBuf, String> {
             return Ok(exec);
         }
         if let Some(detected) = detect_antigravity_exec_path() {
-            update_app_path_in_config("antigravity", &detected);
+            update_app_path_in_config("antigravity", &detected, &configured_path);
             return Ok(detected);
         }
         return Err(app_path_missing_error("antigravity"));
     }
 
     if let Some(detected) = detect_antigravity_exec_path() {
-        update_app_path_in_config("antigravity", &detected);
+        update_app_path_in_config("antigravity", &detected, &configured_path);
         return Ok(detected);
     }
 
@@ -3042,19 +3082,23 @@ fn resolve_workbuddy_launch_path() -> Result<std::path::PathBuf, String> {
 
 #[cfg(target_os = "macos")]
 fn resolve_codex_launch_path() -> Result<std::path::PathBuf, String> {
-    if let Some(custom) = normalize_custom_path(Some(&config::get_user_config().codex_app_path)) {
+    let configured_path = config::get_user_config().codex_app_path;
+    if let Some(custom) = normalize_custom_path(Some(&configured_path)) {
+        if let Some(migrated) = migrate_legacy_codex_launch_path(&custom) {
+            return Ok(migrated);
+        }
         if let Some(exec) = resolve_codex_macos_exec_path(&custom) {
             return Ok(exec);
         }
         if let Some(detected) = detect_codex_exec_path() {
-            update_app_path_in_config("codex", &detected);
+            update_app_path_in_config("codex", &detected, &configured_path);
             return Ok(detected);
         }
         return Err(app_path_missing_error("codex"));
     }
 
     if let Some(detected) = detect_codex_exec_path() {
-        update_app_path_in_config("codex", &detected);
+        update_app_path_in_config("codex", &detected, &configured_path);
         return Ok(detected);
     }
 
@@ -3088,16 +3132,20 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.antigravity_app_path);
             }
             if let Some(detected) = detect_antigravity_exec_path() {
-                update_app_path_in_config("antigravity", &detected);
+                update_app_path_in_config("antigravity", &detected, &current.antigravity_app_path);
                 return Some(config::get_user_config().antigravity_app_path);
             }
         }
         "codex" => {
             if !force && !current.codex_app_path.trim().is_empty() {
+                #[cfg(target_os = "macos")]
+                if migrate_legacy_codex_launch_path(&current.codex_app_path).is_some() {
+                    return Some(config::get_user_config().codex_app_path);
+                }
                 return Some(current.codex_app_path);
             }
             if let Some(detected) = detect_codex_exec_path() {
-                update_app_path_in_config("codex", &detected);
+                update_app_path_in_config("codex", &detected, &current.codex_app_path);
                 return Some(config::get_user_config().codex_app_path);
             }
         }
@@ -3106,7 +3154,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.zed_app_path);
             }
             if let Some(detected) = detect_zed_exec_path() {
-                update_app_path_in_config("zed", &detected);
+                update_app_path_in_config("zed", &detected, &current.zed_app_path);
                 return Some(config::get_user_config().zed_app_path);
             }
         }
@@ -3115,7 +3163,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.vscode_app_path);
             }
             if let Some(detected) = detect_vscode_exec_path() {
-                update_app_path_in_config("vscode", &detected);
+                update_app_path_in_config("vscode", &detected, &current.vscode_app_path);
                 return Some(config::get_user_config().vscode_app_path);
             }
         }
@@ -3124,7 +3172,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.codebuddy_app_path);
             }
             if let Some(detected) = detect_codebuddy_exec_path() {
-                update_app_path_in_config("codebuddy", &detected);
+                update_app_path_in_config("codebuddy", &detected, &current.codebuddy_app_path);
                 return Some(config::get_user_config().codebuddy_app_path);
             }
         }
@@ -3133,7 +3181,11 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.codebuddy_cn_app_path);
             }
             if let Some(detected) = detect_codebuddy_cn_exec_path() {
-                update_app_path_in_config("codebuddy_cn", &detected);
+                update_app_path_in_config(
+                    "codebuddy_cn",
+                    &detected,
+                    &current.codebuddy_cn_app_path,
+                );
                 return Some(config::get_user_config().codebuddy_cn_app_path);
             }
         }
@@ -3142,7 +3194,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.qoder_app_path);
             }
             if let Some(detected) = detect_qoder_exec_path() {
-                update_app_path_in_config("qoder", &detected);
+                update_app_path_in_config("qoder", &detected, &current.qoder_app_path);
                 return Some(config::get_user_config().qoder_app_path);
             }
         }
@@ -3151,7 +3203,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.trae_app_path);
             }
             if let Some(detected) = detect_trae_exec_path() {
-                update_app_path_in_config("trae", &detected);
+                update_app_path_in_config("trae", &detected, &current.trae_app_path);
                 return Some(config::get_user_config().trae_app_path);
             }
         }
@@ -3160,7 +3212,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.opencode_app_path);
             }
             if let Some(detected) = detect_opencode_exec_path() {
-                update_app_path_in_config("opencode", &detected);
+                update_app_path_in_config("opencode", &detected, &current.opencode_app_path);
                 return Some(config::get_user_config().opencode_app_path);
             }
         }
@@ -3169,7 +3221,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.workbuddy_app_path);
             }
             if let Some(detected) = detect_workbuddy_exec_path() {
-                update_app_path_in_config("workbuddy", &detected);
+                update_app_path_in_config("workbuddy", &detected, &current.workbuddy_app_path);
                 return Some(config::get_user_config().workbuddy_app_path);
             }
         }
@@ -6827,11 +6879,10 @@ pub fn is_codex_running() -> bool {
 pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<u32, String> {
     #[cfg(target_os = "macos")]
     {
-        let app_root = resolve_macos_app_root_from_config("codex").or_else(|| {
-            resolve_codex_launch_path()
-                .ok()
-                .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
-        });
+        let app_root = resolve_codex_launch_path()
+            .ok()
+            .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
+            .or_else(|| resolve_macos_app_root_from_config("codex"));
         let app_root = app_root.ok_or_else(|| app_path_missing_error("codex"))?;
 
         let codex_home_trimmed = codex_home.trim();
@@ -6964,11 +7015,10 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
 pub fn start_codex_default(extra_args: &[String]) -> Result<u32, String> {
     #[cfg(target_os = "macos")]
     {
-        let app_root = resolve_macos_app_root_from_config("codex").or_else(|| {
-            resolve_codex_launch_path()
-                .ok()
-                .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
-        });
+        let app_root = resolve_codex_launch_path()
+            .ok()
+            .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
+            .or_else(|| resolve_macos_app_root_from_config("codex"));
         let app_root = app_root.ok_or_else(|| app_path_missing_error("codex"))?;
 
         let mut args: Vec<String> = Vec::new();

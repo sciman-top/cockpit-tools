@@ -145,13 +145,6 @@ mod imp {
         on_demand_percent: Option<i32>,
     }
 
-    #[derive(Debug, Clone)]
-    struct GeminiBucketRemaining {
-        model_id: String,
-        remaining_percent: i32,
-        reset_at: Option<i64>,
-    }
-
     #[derive(Debug, Clone, Default)]
     struct ResourceQuotaEntry {
         package_code: Option<String>,
@@ -417,7 +410,7 @@ mod imp {
             PlatformId::Windsurf => "#21c7b7",
             PlatformId::Kiro => "#8b92a1",
             PlatformId::Cursor => "#21c7b7",
-            PlatformId::Gemini => "#a972ff",
+            PlatformId::Grok => "#6b7280",
             PlatformId::Codebuddy => "#4b74ff",
             PlatformId::CodebuddyCn => "#4b74ff",
             PlatformId::Qoder => "#5664ff",
@@ -2155,74 +2148,6 @@ mod imp {
         }
     }
 
-    fn collect_gemini_bucket_remaining(
-        account: &crate::models::gemini::GeminiAccount,
-    ) -> Vec<GeminiBucketRemaining> {
-        let Some(raw_usage) = account.gemini_usage_raw.as_ref() else {
-            return Vec::new();
-        };
-        let Some(groups) = raw_usage.get("groups").and_then(|value| value.as_array()) else {
-            return Vec::new();
-        };
-
-        let mut values = Vec::new();
-        for group in groups {
-            let Some(buckets) = group.get("buckets").and_then(|value| value.as_array()) else {
-                continue;
-            };
-            for bucket in buckets {
-                let model_id = bucket
-                    .get("bucketId")
-                    .and_then(|value| value.as_str())
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-                let remaining = bucket
-                    .get("remainingFraction")
-                    .and_then(parse_json_number)
-                    .map(|value| clamp_percent(value * 100.0));
-                let reset_at = bucket.get("resetTime").and_then(parse_timestamp_like);
-                let (Some(model_id), Some(remaining_percent)) = (model_id, remaining) else {
-                    continue;
-                };
-                values.push(GeminiBucketRemaining {
-                    model_id,
-                    remaining_percent,
-                    reset_at,
-                });
-            }
-        }
-
-        values.sort_by(|left, right| left.model_id.cmp(&right.model_id));
-        values
-    }
-
-    fn pick_lowest_gemini_bucket<'a, F>(
-        buckets: &'a [GeminiBucketRemaining],
-        matcher: F,
-    ) -> Option<&'a GeminiBucketRemaining>
-    where
-        F: Fn(&str) -> bool,
-    {
-        let mut matched = buckets.iter().filter(|bucket| matcher(&bucket.model_id));
-        let mut best = matched.next()?;
-        for current in matched {
-            if current.remaining_percent < best.remaining_percent {
-                best = current;
-                continue;
-            }
-            if current.remaining_percent > best.remaining_percent {
-                continue;
-            }
-            match (best.reset_at, current.reset_at) {
-                (None, Some(_)) => best = current,
-                (Some(best_ts), Some(current_ts)) if current_ts < best_ts => best = current,
-                _ => {}
-            }
-        }
-        Some(best)
-    }
-
     fn resource_account_roots<'a>(
         quota_raw: Option<&'a Value>,
         usage_raw: Option<&'a Value>,
@@ -2901,7 +2826,7 @@ mod imp {
             PlatformId::Windsurf => build_windsurf_cards(lang),
             PlatformId::Kiro => build_kiro_cards(lang),
             PlatformId::Cursor => build_cursor_cards(lang),
-            PlatformId::Gemini => build_gemini_cards(lang),
+            PlatformId::Grok => build_grok_cards(lang),
             PlatformId::Qoder => build_qoder_cards(lang),
             PlatformId::Zcode => build_zcode_cards(lang),
             PlatformId::Trae
@@ -3653,59 +3578,133 @@ mod imp {
         (cards, current_id, recommended)
     }
 
-    fn build_gemini_cards(lang: &str) -> (Vec<AccountCard>, Option<String>, Option<String>) {
-        let mut accounts = modules::gemini_account::list_accounts();
-        let current = modules::gemini_account::resolve_current_account(&accounts);
-        let current_id = current.map(|account| account.id);
+    fn build_grok_cards(lang: &str) -> (Vec<AccountCard>, Option<String>, Option<String>) {
+        let mut accounts = modules::grok_account::list_accounts_checked().unwrap_or_default();
+        let current_id = modules::grok_account::current_account_id().ok().flatten();
         accounts
             .sort_by_key(|account| std::cmp::Reverse(account.last_used.max(account.created_at)));
+
+        let remaining_metrics = |account: &crate::models::grok::GrokAccountView| {
+            let Some(quota) = account.quota.as_ref() else {
+                return Vec::new();
+            };
+            let mut values = Vec::new();
+            if let Some(used) = quota.weekly_limit_percent {
+                values.push((100 - clamp_percent(used)).clamp(0, 100));
+            }
+            values.extend(quota.products.iter().filter_map(|product| {
+                product
+                    .usage_percent
+                    .map(|used| (100 - clamp_percent(used)).clamp(0, 100))
+            }));
+            if let (Some(used), Some(cap)) = (quota.on_demand_used, quota.on_demand_cap) {
+                if cap > 0.0 {
+                    values.push((100 - clamp_percent(used / cap * 100.0)).clamp(0, 100));
+                }
+            }
+            values
+        };
+
         let recommended = current_id.as_deref().and_then(|id| {
             accounts
                 .iter()
                 .filter(|account| account.id != id)
-                .filter_map(|account| {
-                    let metrics = modules::gemini_account::extract_account_model_remaining(account);
-                    let lowest = metrics.iter().map(|(_, pct)| *pct).min()?;
-                    Some((account.id.clone(), lowest))
+                .filter(|account| {
+                    account.quota_query_last_error.is_none()
+                        && account
+                            .status
+                            .as_deref()
+                            .map(|status| matches!(status, "normal" | "ok"))
+                            .unwrap_or(true)
                 })
-                .max_by_key(|item| item.1)
+                .filter_map(|account| {
+                    let minimum = remaining_metrics(account).into_iter().min()?;
+                    if minimum <= 0 {
+                        return None;
+                    }
+                    Some((account.id.clone(), minimum, account.last_used))
+                })
+                .max_by_key(|item| (item.1, item.2))
                 .map(|item| item.0)
         });
+
         let cards = accounts
             .into_iter()
             .map(|account| {
-                let buckets = collect_gemini_bucket_remaining(&account);
                 let mut rows = Vec::new();
-                for (bucket_id, label_key, default_label) in [
-                    ("gemini-5h", "gemini.quota.gemini5h", "Gemini 5h"),
-                    (
-                        "gemini-weekly",
-                        "gemini.quota.geminiweekly",
-                        "Gemini Weekly",
-                    ),
-                    ("3p-5h", "gemini.quota.3p5h", "Claude 5h"),
-                    ("3p-weekly", "gemini.quota.3pweekly", "Claude Weekly"),
-                ] {
-                    if let Some(bucket) = buckets.iter().find(|b| b.model_id == bucket_id) {
-                        let value = translate_or(
+                if let Some(quota) = account.quota.as_ref() {
+                    let reset_at = quota
+                        .period_end
+                        .as_ref()
+                        .and_then(|value| parse_timestamp_like(&Value::String(value.clone())));
+                    let reset_subtext = format_reset_subtext(lang, reset_at);
+                    let left_value = |remaining: i32| {
+                        translate_or(
                             lang,
-                            "gemini.quota.left",
+                            "common.shared.quota.leftPercent",
                             "{{value}}% left",
-                            &[("value", &bucket.remaining_percent.to_string())],
-                        );
+                            &[("value", &remaining.to_string())],
+                        )
+                    };
+
+                    if let Some(used) = quota.weekly_limit_percent {
+                        let remaining = (100 - clamp_percent(used)).clamp(0, 100);
                         rows.push(make_progress_row(
-                            translate_or(lang, label_key, default_label, &[]),
-                            value,
-                            bucket.remaining_percent,
-                            format_reset_subtext(lang, bucket.reset_at),
-                            cursor_usage_tone((100 - bucket.remaining_percent).clamp(0, 100)),
+                            translate_or(lang, "grok.quota.weekly", "Weekly usage", &[]),
+                            left_value(remaining),
+                            remaining,
+                            reset_subtext.clone(),
+                            remaining_balance_tone(remaining),
+                        ));
+                    }
+                    for product in &quota.products {
+                        if let Some(used) = product.usage_percent {
+                            let remaining = (100 - clamp_percent(used)).clamp(0, 100);
+                            rows.push(make_progress_row(
+                                product.product.clone(),
+                                left_value(remaining),
+                                remaining,
+                                reset_subtext.clone(),
+                                remaining_balance_tone(remaining),
+                            ));
+                        }
+                    }
+                    if let (Some(used), Some(cap)) = (quota.on_demand_used, quota.on_demand_cap) {
+                        let remaining = if cap > 0.0 {
+                            (100 - clamp_percent(used / cap * 100.0)).clamp(0, 100)
+                        } else {
+                            0
+                        };
+                        rows.push(make_progress_row(
+                            translate_or(lang, "grok.quota.onDemand", "On-demand", &[]),
+                            format!(
+                                "{} / {}",
+                                format_quota_number(used),
+                                format_quota_number(cap)
+                            ),
+                            remaining,
+                            reset_subtext,
+                            remaining_balance_tone(remaining),
+                        ));
+                    }
+                    if let Some(balance) = quota.prepaid_balance {
+                        rows.push(make_text_row(
+                            translate_or(lang, "grok.quota.balance", "Balance", &[]),
+                            format_quota_number(balance),
+                            None,
                         ));
                     }
                 }
+
                 AccountCard {
                     id: account.id,
                     title: account.email,
-                    plan: account.plan_name.or(account.tier_id),
+                    plan: account.plan_type.or_else(|| {
+                        account
+                            .quota
+                            .as_ref()
+                            .and_then(|quota| quota.subscription_tier.clone())
+                    }),
                     updated_at: display_updated_at(
                         account.usage_updated_at,
                         account.last_used,
@@ -4583,13 +4582,13 @@ mod imp {
                 (PlatformId::Cursor, None) => {
                     commands::cursor::refresh_all_cursor_tokens(app.clone()).await
                 }
-                (PlatformId::Gemini, Some(account_id)) => {
-                    commands::gemini::refresh_gemini_token(app.clone(), account_id)
+                (PlatformId::Grok, Some(account_id)) => {
+                    commands::grok::refresh_grok_account(app.clone(), account_id)
                         .await
                         .map(|_| 0)
                 }
-                (PlatformId::Gemini, None) => {
-                    commands::gemini::refresh_all_gemini_tokens(app.clone()).await
+                (PlatformId::Grok, None) => {
+                    commands::grok::refresh_all_grok_accounts(app.clone()).await
                 }
                 (PlatformId::Codebuddy, Some(account_id)) => {
                     commands::codebuddy::refresh_codebuddy_token(app.clone(), account_id)
@@ -4704,8 +4703,8 @@ mod imp {
                 PlatformId::Cursor => commands::cursor::inject_cursor_account(app, account_id)
                     .await
                     .map(|_| ()),
-                PlatformId::Gemini => {
-                    commands::gemini::inject_gemini_account(app, account_id).map(|_| ())
+                PlatformId::Grok => {
+                    commands::grok::switch_grok_account(app, account_id).map(|_| ())
                 }
                 PlatformId::Codebuddy => {
                     commands::codebuddy::inject_codebuddy_to_vscode(app, account_id)

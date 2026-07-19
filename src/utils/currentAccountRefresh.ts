@@ -11,7 +11,7 @@ export type CurrentAccountRefreshPlatform =
   | 'windsurf'
   | 'kiro'
   | 'cursor'
-  | 'gemini'
+  | 'grok'
   | 'codebuddy'
   | 'codebuddy_cn'
   | 'workbuddy'
@@ -31,7 +31,7 @@ export const CURRENT_ACCOUNT_REFRESH_PLATFORMS: CurrentAccountRefreshPlatform[] 
   'windsurf',
   'kiro',
   'cursor',
-  'gemini',
+  'grok',
   'codebuddy',
   'codebuddy_cn',
   'workbuddy',
@@ -70,7 +70,7 @@ export function buildDefaultCurrentAccountRefreshMinutesMap(): CurrentAccountRef
     windsurf: DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,
     kiro: DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,
     cursor: DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,
-    gemini: DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,
+    grok: DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,
     codebuddy: DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,
     codebuddy_cn: DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,
     workbuddy: DEFAULT_CURRENT_ACCOUNT_REFRESH_MINUTES,

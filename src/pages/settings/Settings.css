@@ -20,6 +20,33 @@
   padding: 0;
 }
 
+.settings-general-fieldset {
+  display: contents;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.settings-general-fieldset:disabled {
+  cursor: wait;
+}
+
+.settings-load-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 8px 12px;
+  color: var(--error-color, #c24141);
+  border: 1px solid color-mix(in srgb, currentColor 32%, transparent);
+  border-radius: 6px;
+}
+
+.settings-load-error .btn {
+  margin-left: auto;
+}
+
 /* Tab Navigation - Left Aligned Pill */
 .settings-tabs-wrapper {
   display: flex;
@@ -261,6 +288,14 @@
   line-height: 1.45;
 }
 
+.settings-app-path-error {
+  width: 100%;
+  margin: 0;
+  color: var(--danger, #ef4444);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* Controls */
 .settings-select {
   padding: 6px 12px;
@@ -480,7 +515,7 @@ input:checked + .slider:before {
 }
 
 .settings-release-history-modal {
-  max-width: min(920px, calc(100vw - 56px));
+  max-width: min(690px, calc(100vw - 56px));
   max-height: min(86vh, 860px);
 }
 

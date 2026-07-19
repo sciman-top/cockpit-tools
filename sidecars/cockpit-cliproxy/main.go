@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +34,7 @@ import (
 	responsesconverter "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
+	sdkhandlers "github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	sdkopenai "github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers/openai"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
@@ -47,9 +50,11 @@ import (
 type contextKey string
 
 const (
-	clientAPIKeyContextKey contextKey = "cockpitClientAPIKey"
-	requestKindContextKey  contextKey = "cockpitRequestKind"
-	requestModelContextKey contextKey = "cockpitRequestModel"
+	clientAPIKeyContextKey     contextKey = "cockpitClientAPIKey"
+	requestKindContextKey      contextKey = "cockpitRequestKind"
+	requestModelContextKey     contextKey = "cockpitRequestModel"
+	clientInstanceIDContextKey contextKey = "cockpitClientInstanceId"
+	clientInstanceIDHeaderName            = "X-Cockpit-Instance-Id"
 )
 
 const ginUserAPIKeyKey = "userApiKey"
@@ -57,6 +62,8 @@ const ginUserAPIKeyKey = "userApiKey"
 const defaultStreamKeepAliveSeconds = 15
 const quotaReserveMaxSnapshotAge = 3 * time.Minute
 const codexAutoReviewModel = "codex-auto-review"
+const codexSparkModel = "gpt-5.3-codex-spark"
+const codexSparkCatalogTemplateModel = "gpt-5.3-codex"
 const defaultImagesMainModel = "gpt-5.4-mini"
 const defaultImagesToolModel = "gpt-image-2"
 const imagesGenerationsPath = "/v1/images/generations"
@@ -70,6 +77,12 @@ const ollamaShowPath = "/api/show"
 const ollamaChatPath = "/api/chat"
 const ollamaBridgeVersion = "0.18.3"
 const maxImageUploadBytes int64 = 64 * 1024 * 1024
+const codexAlphaSearchPath = "/v1/alpha/search"
+const codexDirectAlphaSearchPath = "/backend-api/codex/alpha/search"
+const cockpitQuotaPath = "/v1/cockpit/quota"
+const defaultCodexAlphaSearchURL = "https://chatgpt.com/backend-api/codex/alpha/search"
+const maxCodexAlphaSearchRequestBytes = 16 << 20
+const maxCodexAlphaSearchResponseBytes = 32 << 20
 
 var (
 	streamOpenTimeout      = 10 * time.Second
@@ -80,32 +93,130 @@ var (
 )
 
 type manifest struct {
-	APIKeys            []apiKeySpec        `json:"apiKeys"`
-	Accounts           []accountSpec       `json:"accounts"`
-	ModelIDs           []string            `json:"modelIds"`
-	ModelAliases       []modelAliasSpec    `json:"modelAliases"`
-	ExcludedModels     []string            `json:"excludedModels"`
-	RoutingStrategy    string              `json:"routingStrategy"`
-	CustomRoutingRules []customRoutingRule `json:"customRoutingRules"`
-	DebugLogs          *bool               `json:"debugLogs,omitempty"`
+	APIKeys                    []apiKeySpec        `json:"apiKeys"`
+	Accounts                   []accountSpec       `json:"accounts"`
+	ModelIDs                   []string            `json:"modelIds"`
+	ModelAliases               []modelAliasSpec    `json:"modelAliases"`
+	ExcludedModels             []string            `json:"excludedModels"`
+	RoutingStrategy            string              `json:"routingStrategy"`
+	CustomRoutingRules         []customRoutingRule `json:"customRoutingRules"`
+	ImmediateSSEResponse       bool                `json:"immediateSseResponse"`
+	MaxConcurrentImageRequests int                 `json:"maxConcurrentImageRequests"`
+	DebugLogs                  *bool               `json:"debugLogs,omitempty"`
 
 	apiKeyByValue     map[string]*apiKeySpec
 	accountByID       map[string]*accountSpec
 	accountByAuthID   map[string]*accountSpec
 	accountByAPIKey   map[string]*accountSpec
+	accountByChatGPT  map[string]*accountSpec
+	accountByEmail    map[string]*accountSpec
 	aliasToSource     map[string]string
 	originalIndexByID map[string]int
 }
 
 type apiKeySpec struct {
-	ID              string               `json:"id"`
-	Label           string               `json:"label"`
-	Key             string               `json:"key"`
-	ProviderGateway *providerGatewaySpec `json:"providerGateway,omitempty"`
-	ModelPrefix     string               `json:"modelPrefix,omitempty"`
-	AllowedModels   []string             `json:"allowedModels"`
-	ExcludedModels  []string             `json:"excludedModels"`
-	Enabled         bool                 `json:"enabled"`
+	ID                  string               `json:"id"`
+	Label               string               `json:"label"`
+	Key                 string               `json:"key"`
+	ProviderGateway     *providerGatewaySpec `json:"providerGateway,omitempty"`
+	BoundOAuth          bool                 `json:"boundOAuth,omitempty"`
+	AccountIDs          []string             `json:"accountIds"`
+	ModelPrefix         string               `json:"modelPrefix,omitempty"`
+	ResponsesWebsockets bool                 `json:"responsesWebsockets,omitempty"`
+	AllowedModels       []string             `json:"allowedModels"`
+	ExcludedModels      []string             `json:"excludedModels"`
+	Enabled             bool                 `json:"enabled"`
+}
+
+type apiKeyPriorityState struct {
+	PriorityAccountIDs  map[string][]string `json:"priorityAccountIds"`
+	PreferredAccountIDs map[string]string   `json:"preferredAccountIds"`
+}
+
+type apiKeyPriorityStateStore struct {
+	path            string
+	mu              sync.RWMutex
+	lastModUnixNano int64
+	priorities      map[string][]string
+}
+
+func newAPIKeyPriorityStateStore(manifestPath string) *apiKeyPriorityStateStore {
+	store := &apiKeyPriorityStateStore{
+		path:       filepath.Join(filepath.Dir(manifestPath), "api-key-priorities.json"),
+		priorities: make(map[string][]string),
+	}
+	store.reloadIfChanged()
+	return store
+}
+
+func (s *apiKeyPriorityStateStore) priorityAccountIDs(apiKeyID string) []string {
+	if s == nil {
+		return nil
+	}
+	s.reloadIfChanged()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]string(nil), s.priorities[strings.TrimSpace(apiKeyID)]...)
+}
+
+func (s *apiKeyPriorityStateStore) reloadIfChanged() {
+	if s == nil || strings.TrimSpace(s.path) == "" {
+		return
+	}
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return
+	}
+	modifiedAt := info.ModTime().UnixNano()
+	s.mu.RLock()
+	unchanged := modifiedAt == s.lastModUnixNano
+	s.mu.RUnlock()
+	if unchanged {
+		return
+	}
+
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return
+	}
+	var state apiKeyPriorityState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return
+	}
+	next := make(map[string][]string, len(state.PriorityAccountIDs))
+	for apiKeyID, accountIDs := range state.PriorityAccountIDs {
+		apiKeyID = strings.TrimSpace(apiKeyID)
+		if apiKeyID == "" {
+			continue
+		}
+		seen := make(map[string]struct{}, len(accountIDs))
+		priorities := make([]string, 0, len(accountIDs))
+		for _, accountID := range accountIDs {
+			accountID = strings.TrimSpace(accountID)
+			if accountID == "" {
+				continue
+			}
+			if _, exists := seen[accountID]; exists {
+				continue
+			}
+			seen[accountID] = struct{}{}
+			priorities = append(priorities, accountID)
+		}
+		if len(priorities) > 0 {
+			next[apiKeyID] = priorities
+		}
+	}
+	for apiKeyID, accountID := range state.PreferredAccountIDs {
+		apiKeyID = strings.TrimSpace(apiKeyID)
+		accountID = strings.TrimSpace(accountID)
+		if apiKeyID != "" && accountID != "" && len(next[apiKeyID]) == 0 {
+			next[apiKeyID] = []string{accountID}
+		}
+	}
+	s.mu.Lock()
+	s.lastModUnixNano = modifiedAt
+	s.priorities = next
+	s.mu.Unlock()
 }
 
 type providerGatewaySpec struct {
@@ -127,6 +238,9 @@ type accountSpec struct {
 	ID                   string            `json:"id"`
 	Email                string            `json:"email"`
 	AuthID               string            `json:"authId,omitempty"`
+	AuthKind             string            `json:"authKind,omitempty"`
+	AccessTokenOnly      bool              `json:"accessTokenOnly,omitempty"`
+	ChatGPTAccountID     string            `json:"chatgptAccountId,omitempty"`
 	UpstreamAPIKey       string            `json:"upstreamApiKey,omitempty"`
 	PlanRank             *int              `json:"planRank,omitempty"`
 	RemainingQuota       *int              `json:"remainingQuota,omitempty"`
@@ -174,27 +288,30 @@ type customRoutingRule struct {
 	AccountID string `json:"accountId"`
 	Priority  int    `json:"priority"`
 	Weight    int    `json:"weight"`
+	IsBackup  bool   `json:"isBackup"`
 }
 
 type usagePayload struct {
-	Type          string       `json:"type"`
-	RequestID     string       `json:"requestId,omitempty"`
-	Provider      string       `json:"provider,omitempty"`
-	Model         string       `json:"model,omitempty"`
-	Alias         string       `json:"alias,omitempty"`
-	AccountID     string       `json:"accountId,omitempty"`
-	AccountEmail  string       `json:"accountEmail,omitempty"`
-	AuthID        string       `json:"authId,omitempty"`
-	APIKeyID      string       `json:"apiKeyId,omitempty"`
-	APIKeyLabel   string       `json:"apiKeyLabel,omitempty"`
-	RequestKind   string       `json:"requestKind,omitempty"`
-	Success       bool         `json:"success"`
-	Status        int          `json:"status,omitempty"`
-	ErrorCategory string       `json:"errorCategory,omitempty"`
-	ErrorMessage  string       `json:"errorMessage,omitempty"`
-	LatencyMS     int64        `json:"latencyMs,omitempty"`
-	Usage         usageDetails `json:"usage"`
-	RequestedAtMS int64        `json:"requestedAtMs,omitempty"`
+	Type             string       `json:"type"`
+	RequestID        string       `json:"requestId,omitempty"`
+	Provider         string       `json:"provider,omitempty"`
+	Model            string       `json:"model,omitempty"`
+	Alias            string       `json:"alias,omitempty"`
+	AccountID        string       `json:"accountId,omitempty"`
+	AccountEmail     string       `json:"accountEmail,omitempty"`
+	AuthID           string       `json:"authId,omitempty"`
+	APIKeyID         string       `json:"apiKeyId,omitempty"`
+	APIKeyLabel      string       `json:"apiKeyLabel,omitempty"`
+	ClientInstanceID string       `json:"clientInstanceId,omitempty"`
+	RequestKind      string       `json:"requestKind,omitempty"`
+	ServiceTier      string       `json:"serviceTier,omitempty"`
+	Success          bool         `json:"success"`
+	Status           int          `json:"status,omitempty"`
+	ErrorCategory    string       `json:"errorCategory,omitempty"`
+	ErrorMessage     string       `json:"errorMessage,omitempty"`
+	LatencyMS        int64        `json:"latencyMs,omitempty"`
+	Usage            usageDetails `json:"usage"`
+	RequestedAtMS    int64        `json:"requestedAtMs,omitempty"`
 }
 
 type requestDiagnosticPayload struct {
@@ -225,6 +342,9 @@ type requestDiagnosticPayload struct {
 	HTTPStatus      int    `json:"httpStatus,omitempty"`
 	Retryable       *bool  `json:"retryable,omitempty"`
 	RetryAfterMS    int64  `json:"retryAfterMs,omitempty"`
+	AuthAvailable   *bool  `json:"authAvailable,omitempty"`
+	NextRetryAtMS   int64  `json:"nextRetryAtMs,omitempty"`
+	AuthStateReason string `json:"authStateReason,omitempty"`
 }
 
 const executorWaitLogInterval = 30 * time.Second
@@ -279,13 +399,107 @@ type usageFinalizeInput struct {
 	errorMessage  string
 }
 
+type selectedAccountRecord struct {
+	AccountID    string
+	AccountEmail string
+	AuthID       string
+}
+
 type requestUsageTracker struct {
-	mu      sync.Mutex
-	records map[string][]usagePayload
+	mu               sync.Mutex
+	records          map[string][]usagePayload
+	selectedAccounts map[string]selectedAccountRecord
+	imageJobs        map[string]map[string]struct{}
+	imageInFlight    map[string]int
+	imageJobsChanged chan struct{}
 }
 
 func newRequestUsageTracker() *requestUsageTracker {
-	return &requestUsageTracker{records: make(map[string][]usagePayload)}
+	return &requestUsageTracker{
+		records:          make(map[string][]usagePayload),
+		selectedAccounts: make(map[string]selectedAccountRecord),
+		imageJobs:        make(map[string]map[string]struct{}),
+		imageInFlight:    make(map[string]int),
+		imageJobsChanged: make(chan struct{}),
+	}
+}
+
+func (t *requestUsageTracker) imageInFlightCount(authID string) int {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.imageInFlight[strings.TrimSpace(authID)]
+}
+
+func (t *requestUsageTracker) tryReserveImageJob(requestID, authID string, maxConcurrent int) bool {
+	if t == nil {
+		return true
+	}
+	requestID = strings.TrimSpace(requestID)
+	authID = strings.TrimSpace(authID)
+	if requestID == "" || authID == "" {
+		return false
+	}
+	if maxConcurrent < 1 {
+		maxConcurrent = 1
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	jobs := t.imageJobs[requestID]
+	if jobs == nil {
+		jobs = make(map[string]struct{})
+		t.imageJobs[requestID] = jobs
+	}
+	if _, alreadyReserved := jobs[authID]; alreadyReserved {
+		return true
+	}
+	if t.imageInFlight[authID] >= maxConcurrent {
+		return false
+	}
+	jobs[authID] = struct{}{}
+	t.imageInFlight[authID]++
+	return true
+}
+
+func (t *requestUsageTracker) imageJobChangeSignal() <-chan struct{} {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	changed := t.imageJobsChanged
+	t.mu.Unlock()
+	return changed
+}
+
+func (t *requestUsageTracker) notifyImageJobChangeLocked() {
+	if t == nil || t.imageJobsChanged == nil {
+		return
+	}
+	close(t.imageJobsChanged)
+	t.imageJobsChanged = make(chan struct{})
+}
+
+func (t *requestUsageTracker) releaseImageJobs(requestID string) {
+	if t == nil {
+		return
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for authID := range t.imageJobs[requestID] {
+		if t.imageInFlight[authID] <= 1 {
+			delete(t.imageInFlight, authID)
+		} else {
+			t.imageInFlight[authID]--
+		}
+	}
+	delete(t.imageJobs, requestID)
+	t.notifyImageJobChangeLocked()
 }
 
 func (t *requestUsageTracker) record(payload usagePayload) {
@@ -302,6 +516,34 @@ func (t *requestUsageTracker) record(payload usagePayload) {
 	t.mu.Unlock()
 }
 
+func (t *requestUsageTracker) recordSelectedAccount(requestID string, account *accountSpec, authID string) {
+	if t == nil {
+		return
+	}
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" || account == nil {
+		return
+	}
+	t.mu.Lock()
+	t.selectedAccounts[requestID] = selectedAccountRecord{
+		AccountID:    strings.TrimSpace(account.ID),
+		AccountEmail: strings.TrimSpace(account.Email),
+		AuthID:       strings.TrimSpace(authID),
+	}
+	t.mu.Unlock()
+}
+
+func normalizedUsageServiceTier(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "priority":
+		return "priority"
+	case "", "default", "standard":
+		return ""
+	default:
+		return ""
+	}
+}
+
 func (t *requestUsageTracker) finalize(requestID string, input usageFinalizeInput) (usagePayload, bool) {
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
@@ -309,10 +551,14 @@ func (t *requestUsageTracker) finalize(requestID string, input usageFinalizeInpu
 	}
 
 	var records []usagePayload
+	var selected selectedAccountRecord
+	var selectedOK bool
 	if t != nil {
 		t.mu.Lock()
 		records = append(records, t.records[requestID]...)
 		delete(t.records, requestID)
+		selected, selectedOK = t.selectedAccounts[requestID]
+		delete(t.selectedAccounts, requestID)
 		t.mu.Unlock()
 	}
 
@@ -350,6 +596,15 @@ func (t *requestUsageTracker) finalize(requestID string, input usageFinalizeInpu
 	}
 	if strings.TrimSpace(payload.RequestKind) == "" {
 		payload.RequestKind = strings.TrimSpace(input.requestKind)
+	}
+	if selectedOK {
+		payload.AccountID = selected.AccountID
+		payload.AccountEmail = selected.AccountEmail
+		payload.AuthID = selected.AuthID
+	} else {
+		payload.AccountID = ""
+		payload.AccountEmail = ""
+		payload.AuthID = ""
 	}
 	if input.status > 0 {
 		payload.Status = input.status
@@ -440,6 +695,8 @@ func loadManifest(path string) (*manifest, error) {
 	m.accountByID = make(map[string]*accountSpec)
 	m.accountByAuthID = make(map[string]*accountSpec)
 	m.accountByAPIKey = make(map[string]*accountSpec)
+	m.accountByChatGPT = make(map[string]*accountSpec)
+	m.accountByEmail = make(map[string]*accountSpec)
 	m.originalIndexByID = make(map[string]int)
 	for i := range m.Accounts {
 		account := &m.Accounts[i]
@@ -447,15 +704,32 @@ func loadManifest(path string) (*manifest, error) {
 		if account.ID == "" {
 			continue
 		}
+		account.Email = strings.TrimSpace(account.Email)
+		account.AuthKind = strings.ToLower(strings.TrimSpace(account.AuthKind))
+		account.ChatGPTAccountID = strings.TrimSpace(account.ChatGPTAccountID)
 		m.accountByID[account.ID] = account
 		m.originalIndexByID[account.ID] = i
 		if authID := strings.TrimSpace(account.AuthID); authID != "" {
 			account.AuthID = authID
 			m.accountByAuthID[strings.ToLower(authID)] = account
+			if base := filepath.Base(authID); base != authID {
+				m.accountByAuthID[strings.ToLower(base)] = account
+			}
 		}
 		if key := strings.TrimSpace(account.UpstreamAPIKey); key != "" {
 			account.UpstreamAPIKey = key
 			m.accountByAPIKey[key] = account
+		}
+		if account.ChatGPTAccountID != "" {
+			m.accountByChatGPT[strings.ToLower(account.ChatGPTAccountID)] = account
+		}
+		if account.Email != "" {
+			key := strings.ToLower(account.Email)
+			if existing, exists := m.accountByEmail[key]; exists && existing != account {
+				m.accountByEmail[key] = nil
+			} else {
+				m.accountByEmail[key] = account
+			}
 		}
 	}
 	m.aliasToSource = make(map[string]string)
@@ -558,6 +832,42 @@ func extractBearerToken(header string) string {
 	return strings.TrimSpace(parts[1])
 }
 
+func extractClientInstanceID(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if value := strings.TrimSpace(r.Header.Get(clientInstanceIDHeaderName)); value != "" {
+		return value
+	}
+	// Header map is case-insensitive via Get; keep an explicit fallback for odd clients.
+	for key, values := range r.Header {
+		if strings.EqualFold(strings.TrimSpace(key), clientInstanceIDHeaderName) {
+			for _, value := range values {
+				if trimmed := strings.TrimSpace(value); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func clientInstanceIDFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(clientInstanceIDContextKey).(string)
+	return strings.TrimSpace(value)
+}
+
+func withClientInstanceID(ctx context.Context, instanceID string) context.Context {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" || ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, clientInstanceIDContextKey, instanceID)
+}
+
 type requestPolicy struct {
 	manifest *manifest
 	emitter  *eventEmitter
@@ -575,6 +885,10 @@ func (p *requestPolicy) middleware() gin.HandlerFunc {
 		requestID := ensureRequestID(c)
 		spec := p.lookupAPIKey(c.Request)
 		requestKind := requestKindFromPath(c.Request.URL.Path)
+		clientInstanceID := extractClientInstanceID(c.Request)
+		if clientInstanceID != "" {
+			c.Request = c.Request.WithContext(withClientInstanceID(c.Request.Context(), clientInstanceID))
+		}
 		model := ""
 		startLogged := false
 		emitStart := func() {
@@ -594,13 +908,16 @@ func (p *requestPolicy) middleware() gin.HandlerFunc {
 			c.Set(ginUserAPIKeyKey, spec.Key)
 			ctx := context.WithValue(c.Request.Context(), clientAPIKeyContextKey, spec)
 			ctx = context.WithValue(ctx, requestKindContextKey, requestKind)
+			if clientInstanceID != "" {
+				ctx = withClientInstanceID(ctx, clientInstanceID)
+			}
 			c.Request = c.Request.WithContext(ctx)
 		}
 
 		if spec != nil && isModelsRequest(c.Request) {
 			models := clientCatalogModelsForAPIKey(p.manifest, spec)
 			if isCodexClientModelsRequest(c.Request) {
-				c.JSON(http.StatusOK, buildCodexClientModelsResponse(models))
+				c.JSON(http.StatusOK, buildCodexClientModelsResponse(models, spec))
 			} else {
 				c.JSON(http.StatusOK, buildModelsResponse(models))
 			}
@@ -628,7 +945,7 @@ func (p *requestPolicy) middleware() gin.HandlerFunc {
 		}
 		emitStart()
 		if err != nil {
-			p.emitBlockedRequest(requestID, spec, model, requestKind, startedAt, err.Error())
+			p.emitBlockedRequest(c, requestID, spec, model, requestKind, startedAt, err.Error())
 			c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
 				"error": gin.H{
 					"message": err.Error(),
@@ -749,6 +1066,7 @@ func (p *requestPolicy) emitRequestCompleted(c *gin.Context, requestID string, s
 	if p.tracker == nil || !shouldEmitRequestDiagnostic(c.Request) {
 		return
 	}
+	p.tracker.releaseImageJobs(requestID)
 	if payload, ok := p.tracker.finalize(requestID, usageFinalizeInput{
 		spec:          spec,
 		requestKind:   requestKind,
@@ -762,23 +1080,28 @@ func (p *requestPolicy) emitRequestCompleted(c *gin.Context, requestID string, s
 	}
 }
 
-func (p *requestPolicy) emitBlockedRequest(requestID string, spec *apiKeySpec, model, requestKind string, startedAt time.Time, message string) {
+func (p *requestPolicy) emitBlockedRequest(c *gin.Context, requestID string, spec *apiKeySpec, model, requestKind string, startedAt time.Time, message string) {
 	if p == nil || spec == nil {
 		return
 	}
+	clientInstanceID := ""
+	if c != nil && c.Request != nil {
+		clientInstanceID = clientInstanceIDFromContext(c.Request.Context())
+	}
 	payload := usagePayload{
-		Type:          "usage",
-		RequestID:     requestID,
-		Model:         model,
-		APIKeyID:      spec.ID,
-		APIKeyLabel:   spec.Label,
-		RequestKind:   requestKind,
-		Success:       false,
-		Status:        http.StatusNotFound,
-		ErrorCategory: "model_not_available",
-		ErrorMessage:  message,
-		LatencyMS:     time.Since(startedAt).Milliseconds(),
-		RequestedAtMS: time.Now().UnixMilli(),
+		Type:             "usage",
+		RequestID:        requestID,
+		Model:            model,
+		APIKeyID:         spec.ID,
+		APIKeyLabel:      spec.Label,
+		ClientInstanceID: clientInstanceID,
+		RequestKind:      requestKind,
+		Success:          false,
+		Status:           http.StatusNotFound,
+		ErrorCategory:    "model_not_available",
+		ErrorMessage:     message,
+		LatencyMS:        time.Since(startedAt).Milliseconds(),
+		RequestedAtMS:    time.Now().UnixMilli(),
 	}
 	if p.tracker != nil {
 		p.tracker.record(payload)
@@ -888,15 +1211,15 @@ func buildOllamaShowResponse(model string, modifiedAt time.Time) gin.H {
 			"display_name":                displayNameForModel(model),
 			"input_modalities":            []string{"text", "image"},
 			"context_length":              contextLength,
-			"supported_reasoning_efforts": []string{"low", "medium", "high"},
-			"default_reasoning_effort":    "medium",
+			"supported_reasoning_efforts": ollamaReasoningEfforts(model),
+			"default_reasoning_effort":    ollamaDefaultReasoningEffort(model),
 		},
 	}
 }
 
 func ollamaModelFamily(model string) string {
 	normalized := strings.ToLower(strings.TrimSpace(model))
-	for _, prefix := range []string{"gpt-5.5", "gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-5.1", "gpt-oss", "codex"} {
+	for _, prefix := range []string{"gpt-5.6", "gpt-5.5", "gpt-5.4", "gpt-5.3", "gpt-5.2", "gpt-5.1", "gpt-oss", "codex"} {
 		if strings.HasPrefix(normalized, prefix) {
 			return prefix
 		}
@@ -914,6 +1237,8 @@ func ollamaModelFamily(model string) string {
 
 func ollamaContextLength(model string) int {
 	switch {
+	case strings.HasPrefix(model, "gpt-5.6"):
+		return 372000
 	case strings.HasPrefix(model, "gpt-5.5"), strings.HasPrefix(model, "gpt-5.4"):
 		return 400000
 	case strings.HasPrefix(model, "gpt-5.3"), strings.HasPrefix(model, "gpt-5.2"), strings.HasPrefix(model, "gpt-5.1"):
@@ -923,33 +1248,134 @@ func ollamaContextLength(model string) int {
 	}
 }
 
-func buildCodexClientModelsResponse(models []string) gin.H {
+func ollamaReasoningEfforts(model string) []string {
+	switch {
+	case strings.HasPrefix(model, "gpt-5.6-sol"), strings.HasPrefix(model, "gpt-5.6-terra"):
+		return []string{"low", "medium", "high", "xhigh", "max", "ultra"}
+	case strings.HasPrefix(model, "gpt-5.6-luna"), strings.HasPrefix(model, "gpt-5.6"):
+		return []string{"low", "medium", "high", "xhigh", "max"}
+	default:
+		return []string{"low", "medium", "high", "xhigh"}
+	}
+}
+
+func ollamaDefaultReasoningEffort(model string) string {
+	if strings.HasPrefix(model, "gpt-5.6-sol") {
+		return "low"
+	}
+	return "medium"
+}
+
+func buildCodexClientModelsResponse(models []string, spec *apiKeySpec) gin.H {
 	sourceModels := make([]map[string]any, 0, len(models))
 	for _, model := range models {
 		displayName := displayNameForModel(model)
-		sourceModels = append(sourceModels, map[string]any{
-			"id":             model,
-			"display_name":   displayName,
-			"description":    displayName,
-			"context_length": 272000,
-		})
+		entry := map[string]any{
+			"id":           model,
+			"display_name": displayName,
+			"description":  displayName,
+		}
+		// Only seed context_length for non-template models. Template models keep
+		// official context/service-tier values from codex_client_models.json.
+		if cw := ollamaContextLength(model); cw > 0 {
+			entry["context_length"] = cw
+		}
+		sourceModels = append(sourceModels, entry)
 	}
-	response := gin.H(sdkopenai.CodexClientModelsResponse(sourceModels))
+	response := gin.H(sdkopenai.CodexClientModelsResponseWithProviders(sourceModels, func(string) []string {
+		if spec != nil && spec.ProviderGateway != nil {
+			return []string{"provider-gateway"}
+		}
+		return []string{"codex"}
+	}))
 	if data, ok := response["models"].([]map[string]any); ok {
-		for index, model := range data {
+		hydrateCodexCompatibilityModels(data)
+		preferWebsockets := spec != nil && spec.ProviderGateway == nil && spec.ResponsesWebsockets
+		for _, model := range data {
+			model["prefer_websockets"] = preferWebsockets
+			if spec != nil && spec.ProviderGateway != nil {
+				applyProviderGatewayCodexInputModalities(model, spec.ProviderGateway)
+			}
 			slug, _ := model["slug"].(string)
 			if isHiddenCodexClientModel(slug) {
 				model["visibility"] = "hide"
 			}
-			model["max_context_window"] = 1000000
-			model["priority"] = 1000 + index
-			model["additional_speed_tiers"] = []any{}
-			model["service_tiers"] = []any{}
-			model["availability_nux"] = nil
-			model["upgrade"] = nil
+			// Preserve template priority/context/service_tiers. Only fill gaps
+			// for synthesized models that lack official catalog fields.
+			if _, ok := model["max_context_window"]; !ok {
+				if cw := intModelValueAny(model["context_window"]); cw > 0 {
+					model["max_context_window"] = cw
+				}
+			}
+			if _, ok := model["additional_speed_tiers"]; !ok {
+				model["additional_speed_tiers"] = []any{}
+			}
+			if _, ok := model["service_tiers"]; !ok {
+				model["service_tiers"] = []any{}
+			}
+			if _, ok := model["availability_nux"]; !ok {
+				model["availability_nux"] = nil
+			}
+			if _, ok := model["upgrade"]; !ok {
+				model["upgrade"] = nil
+			}
 		}
 	}
 	return response
+}
+
+func applyProviderGatewayCodexInputModalities(model map[string]any, gateway *providerGatewaySpec) {
+	slug, _ := model["slug"].(string)
+	slug = strings.TrimSpace(slug)
+	supportsImage := providerGatewayModelSupportsVision(gateway, slug) ||
+		strings.TrimSpace(providerGatewayVisionRoutingModel(gateway)) != ""
+	if supportsImage {
+		model["input_modalities"] = []any{"text", "image"}
+		model["supports_image_detail_original"] = true
+		return
+	}
+	model["input_modalities"] = []any{"text"}
+	delete(model, "supports_image_detail_original")
+}
+
+func intModelValueAny(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func hydrateCodexCompatibilityModels(models []map[string]any) {
+	var template map[string]any
+	for _, model := range models {
+		if model["slug"] == codexSparkCatalogTemplateModel {
+			template = model
+			break
+		}
+	}
+	if template == nil {
+		return
+	}
+
+	for index, model := range models {
+		if model["slug"] != codexSparkModel {
+			continue
+		}
+		compatibilityModel := make(map[string]any, len(template))
+		for key, value := range template {
+			compatibilityModel[key] = value
+		}
+		compatibilityModel["slug"] = codexSparkModel
+		compatibilityModel["display_name"] = "GPT-5.3 Codex Spark"
+		compatibilityModel["description"] = "GPT-5.3 Codex Spark"
+		models[index] = compatibilityModel
+	}
 }
 
 func displayNameForModel(model string) string {
@@ -958,13 +1384,21 @@ func displayNameForModel(model string) string {
 		return "GPT-5 Codex"
 	case "gpt-5-codex-mini":
 		return "GPT-5 Codex Mini"
+	case "gpt-5.6-sol":
+		return "GPT-5.6-Sol"
+	case "gpt-5.6-terra":
+		return "GPT-5.6-Terra"
+	case "gpt-5.6-luna":
+		return "GPT-5.6-Luna"
+	case "gpt-5.5":
+		return "GPT-5.5"
 	case "gpt-5.4":
 		return "GPT-5.4"
 	case "gpt-5.4-mini":
 		return "GPT-5.4 Mini"
 	case "gpt-5.3-codex":
 		return "GPT-5.3 Codex"
-	case "gpt-5.3-codex-spark":
+	case codexSparkModel:
 		return "GPT-5.3 Codex Spark"
 	case "gpt-5.2":
 		return "GPT-5.2"
@@ -1225,9 +1659,6 @@ func providerGatewayValueHasVisionInput(value any) bool {
 		if typ, _ := typed["type"].(string); strings.EqualFold(strings.TrimSpace(typ), "input_image") || strings.EqualFold(strings.TrimSpace(typ), "image_url") {
 			return true
 		}
-		if _, ok := typed["image_url"]; ok {
-			return true
-		}
 		for _, child := range typed {
 			if providerGatewayValueHasVisionInput(child) {
 				return true
@@ -1241,6 +1672,58 @@ func providerGatewayValueHasVisionInput(value any) bool {
 		}
 	}
 	return false
+}
+
+const providerGatewayOmittedImageText = "[Image omitted because the current model does not support image input.]"
+
+func omitProviderGatewayVisionInput(body []byte, sourceFormat sdktranslator.Format) ([]byte, int, error) {
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, 0, err
+	}
+	textType := "text"
+	if sourceFormatEqual(sourceFormat, sdktranslator.FormatOpenAIResponse) {
+		textType = "input_text"
+	}
+	omitted, count := omitProviderGatewayVisionValue(payload, textType)
+	if count == 0 {
+		return body, 0, nil
+	}
+	normalized, err := json.Marshal(omitted)
+	if err != nil {
+		return nil, 0, err
+	}
+	return normalized, count, nil
+}
+
+func omitProviderGatewayVisionValue(value any, textType string) (any, int) {
+	switch typed := value.(type) {
+	case map[string]any:
+		typ, _ := typed["type"].(string)
+		if strings.EqualFold(strings.TrimSpace(typ), "input_image") || strings.EqualFold(strings.TrimSpace(typ), "image_url") {
+			return map[string]any{
+				"type": textType,
+				"text": providerGatewayOmittedImageText,
+			}, 1
+		}
+		count := 0
+		for key, child := range typed {
+			next, childCount := omitProviderGatewayVisionValue(child, textType)
+			typed[key] = next
+			count += childCount
+		}
+		return typed, count
+	case []any:
+		count := 0
+		for index, child := range typed {
+			next, childCount := omitProviderGatewayVisionValue(child, textType)
+			typed[index] = next
+			count += childCount
+		}
+		return typed, count
+	default:
+		return value, 0
+	}
 }
 
 func stripModelPrefix(model string, spec *apiKeySpec) string {
@@ -1402,6 +1885,9 @@ func requestKindFromPath(path string) string {
 		return "image_generation"
 	case strings.Contains(path, "/images/edits"):
 		return "image_edit"
+	case strings.Contains(path, "/alpha/search"):
+		// Responses Lite web.run uses a standalone search endpoint.
+		return "text"
 	case strings.Contains(path, "/chat/completions"),
 		strings.Contains(path, "/responses"),
 		strings.Contains(path, "/v1/messages"),
@@ -1414,17 +1900,67 @@ func requestKindFromPath(path string) string {
 }
 
 type cockpitSelector struct {
+	manifest   *manifest
+	emitter    *eventEmitter
+	quota      *quotaReserveStateStore
+	priorities *apiKeyPriorityStateStore
+	tracker    *requestUsageTracker
+	mu         sync.Mutex
+	cursor     int
+}
+
+type recordingSelector struct {
+	inner    coreauth.Selector
 	manifest *manifest
-	emitter  *eventEmitter
-	quota    *quotaReserveStateStore
-	mu       sync.Mutex
-	cursor   int
+	tracker  *requestUsageTracker
+}
+
+type imageRequestSelector struct {
+	imageFallback coreauth.Selector
+	fallback      coreauth.Selector
+}
+
+func (s *imageRequestSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*coreauth.Auth) (*coreauth.Auth, error) {
+	requestKind, _ := ctx.Value(requestKindContextKey).(string)
+	if isImageRequestKind(requestKind) && s.imageFallback != nil {
+		return s.imageFallback.Pick(ctx, provider, model, opts, auths)
+	}
+	if s.fallback == nil {
+		return nil, fmt.Errorf("image request selector fallback is not initialized")
+	}
+	return s.fallback.Pick(ctx, provider, model, opts, auths)
+}
+
+func (s *imageRequestSelector) Stop() {
+	if stoppable, ok := s.fallback.(coreauth.StoppableSelector); ok {
+		stoppable.Stop()
+	}
+}
+
+func (s *recordingSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*coreauth.Auth) (*coreauth.Auth, error) {
+	auth, err := s.inner.Pick(ctx, provider, model, opts, auths)
+	if err != nil || auth == nil || s.tracker == nil {
+		return auth, err
+	}
+	s.tracker.recordSelectedAccount(internallogging.GetRequestID(ctx), accountForAuthInManifest(s.manifest, auth), auth.ID)
+	return auth, nil
+}
+
+func (s *recordingSelector) Stop() {
+	if stoppable, ok := s.inner.(coreauth.StoppableSelector); ok {
+		stoppable.Stop()
+	}
 }
 
 type quotaReserveSelector struct {
 	manifest *manifest
 	fallback coreauth.Selector
 	quota    *quotaReserveStateStore
+}
+
+type backupAccountSelector struct {
+	manifest *manifest
+	fallback coreauth.Selector
 }
 
 func quotaReserveSnapshotsFromManifest(m *manifest) map[string]quotaReserveSnapshot {
@@ -1589,9 +2125,61 @@ func (s *quotaReserveSelector) Stop() {
 	}
 }
 
+func (s *backupAccountSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*coreauth.Auth) (*coreauth.Auth, error) {
+	if s == nil || s.fallback == nil {
+		return nil, fmt.Errorf("backup account selector is not initialized")
+	}
+	if s.manifest == nil || !strings.EqualFold(strings.TrimSpace(s.manifest.RoutingStrategy), "custom") {
+		return s.fallback.Pick(ctx, provider, model, opts, auths)
+	}
+
+	now := time.Now()
+	regular := make([]*coreauth.Auth, 0, len(auths))
+	backup := make([]*coreauth.Auth, 0)
+	regularAvailable := false
+	for _, auth := range auths {
+		if s.isBackupAuth(auth) {
+			backup = append(backup, auth)
+			continue
+		}
+		regular = append(regular, auth)
+		if authAvailable(auth, model, now) {
+			regularAvailable = true
+		}
+	}
+
+	if regularAvailable || len(backup) == 0 {
+		return s.fallback.Pick(ctx, provider, model, opts, regular)
+	}
+	return s.fallback.Pick(ctx, provider, model, opts, backup)
+}
+
+func (s *backupAccountSelector) isBackupAuth(auth *coreauth.Auth) bool {
+	account := accountForAuthInManifest(s.manifest, auth)
+	if account == nil {
+		return false
+	}
+	for _, rule := range s.manifest.CustomRoutingRules {
+		if rule.AccountID == account.ID {
+			return rule.IsBackup
+		}
+	}
+	return false
+}
+
+func (s *backupAccountSelector) Stop() {
+	if s == nil || s.fallback == nil {
+		return
+	}
+	if stoppable, ok := s.fallback.(coreauth.StoppableSelector); ok {
+		stoppable.Stop()
+	}
+}
+
 func (s *cockpitSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*coreauth.Auth) (*coreauth.Auth, error) {
 	_ = provider
 	_ = opts
+	auths = s.filterAuthsForAPIKeyScope(ctx, auths)
 	now := time.Now()
 	available := make([]*coreauth.Auth, 0, len(auths))
 	quotaReserveReasons := make([]string, 0)
@@ -1614,13 +2202,140 @@ func (s *cockpitSelector) Pick(ctx context.Context, provider, model string, opts
 	s.cursor++
 	s.mu.Unlock()
 
+	requestKind, _ := ctx.Value(requestKindContextKey).(string)
 	ordered := s.orderAuths(available, start)
+	if isImageRequestKind(requestKind) {
+		ordered = s.orderImageAuths(available, start)
+	} else {
+		ordered = s.prioritizeAuthsForAPIKey(ctx, ordered)
+	}
 	if len(ordered) == 0 {
 		return nil, noAuthAvailableError(quotaReserveReasons)
+	}
+	if isImageRequestKind(requestKind) && s.tracker != nil {
+		requestID := internallogging.GetRequestID(ctx)
+		for {
+			changed := s.tracker.imageJobChangeSignal()
+			for _, candidate := range s.orderImageAuths(available, start) {
+				if s.tracker.tryReserveImageJob(requestID, candidate.ID, s.maxConcurrentImageRequests()) {
+					s.emitAuthSelected(ctx, candidate, provider, model, len(auths), len(available))
+					return candidate, nil
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-changed:
+			}
+		}
 	}
 	selected := ordered[0]
 	s.emitAuthSelected(ctx, selected, provider, model, len(auths), len(available))
 	return selected, nil
+}
+
+func (s *cockpitSelector) prioritizeAuthsForAPIKey(ctx context.Context, auths []*coreauth.Auth) []*coreauth.Auth {
+	if s == nil || ctx == nil || len(auths) <= 1 || s.priorities == nil {
+		return auths
+	}
+	spec, _ := ctx.Value(clientAPIKeyContextKey).(*apiKeySpec)
+	if spec == nil {
+		return auths
+	}
+	priorityAccountIDs := s.priorities.priorityAccountIDs(spec.ID)
+	if len(priorityAccountIDs) == 0 {
+		return auths
+	}
+
+	ordered := make([]*coreauth.Auth, 0, len(auths))
+	selected := make(map[*coreauth.Auth]struct{}, len(priorityAccountIDs))
+	for _, priorityAccountID := range priorityAccountIDs {
+		for _, auth := range auths {
+			account := s.accountForAuth(auth)
+			if account == nil || account.ID != priorityAccountID {
+				continue
+			}
+			if _, alreadySelected := selected[auth]; alreadySelected {
+				break
+			}
+			ordered = append(ordered, auth)
+			selected[auth] = struct{}{}
+			break
+		}
+	}
+	if len(ordered) == 0 {
+		return auths
+	}
+	for _, auth := range auths {
+		if _, alreadySelected := selected[auth]; !alreadySelected {
+			ordered = append(ordered, auth)
+		}
+	}
+	return ordered
+}
+
+func (s *cockpitSelector) filterAuthsForAPIKeyScope(ctx context.Context, auths []*coreauth.Auth) []*coreauth.Auth {
+	if s == nil || s.manifest == nil || ctx == nil {
+		return auths
+	}
+	spec, _ := ctx.Value(clientAPIKeyContextKey).(*apiKeySpec)
+	if spec == nil || len(spec.AccountIDs) == 0 {
+		return auths
+	}
+
+	allowedAccountIDs := make(map[string]struct{}, len(spec.AccountIDs))
+	for _, accountID := range spec.AccountIDs {
+		if accountID = strings.TrimSpace(accountID); accountID != "" {
+			allowedAccountIDs[accountID] = struct{}{}
+		}
+	}
+	if len(allowedAccountIDs) == 0 {
+		return nil
+	}
+
+	scoped := make([]*coreauth.Auth, 0, len(auths))
+	for _, auth := range auths {
+		account := s.accountForAuth(auth)
+		if account == nil {
+			continue
+		}
+		if _, allowed := allowedAccountIDs[account.ID]; allowed {
+			scoped = append(scoped, auth)
+		}
+	}
+	return scoped
+}
+
+func (s *cockpitSelector) maxConcurrentImageRequests() int {
+	if s == nil || s.manifest == nil || s.manifest.MaxConcurrentImageRequests < 1 {
+		return 1
+	}
+	return s.manifest.MaxConcurrentImageRequests
+}
+
+func isImageRequestKind(requestKind string) bool {
+	switch strings.TrimSpace(requestKind) {
+	case "image_generation", "image_edit":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *cockpitSelector) orderImageAuths(auths []*coreauth.Auth, start int) []*coreauth.Auth {
+	if len(auths) <= 1 || s == nil || s.tracker == nil {
+		return s.orderAuths(auths, start)
+	}
+	out := append([]*coreauth.Auth(nil), auths...)
+	sort.SliceStable(out, func(i, j int) bool {
+		leftJobs := s.tracker.imageInFlightCount(out[i].ID)
+		rightJobs := s.tracker.imageInFlightCount(out[j].ID)
+		if leftJobs != rightJobs {
+			return leftJobs < rightJobs
+		}
+		return s.rotatedIndex(s.accountForAuth(out[i]), start) < s.rotatedIndex(s.accountForAuth(out[j]), start)
+	})
+	return out
 }
 
 func quotaReserveBlockReason(account *accountSpec, now time.Time) string {
@@ -1790,6 +2505,13 @@ func (s *cockpitSelector) orderAuths(auths []*coreauth.Auth, start int) []*corea
 		return auths
 	}
 	strategy := strings.TrimSpace(strings.ToLower(s.manifest.RoutingStrategy))
+	if strategy == "random" {
+		out := append([]*coreauth.Auth(nil), auths...)
+		rand.Shuffle(len(out), func(i, j int) {
+			out[i], out[j] = out[j], out[i]
+		})
+		return out
+	}
 	if strategy == "custom" {
 		return s.orderCustom(auths, start)
 	}
@@ -2081,22 +2803,24 @@ func (p *usagePlugin) HandleUsage(ctx context.Context, record coreusage.Record) 
 	status := record.Fail.StatusCode
 	success := !record.Failed
 	p.tracker.record(usagePayload{
-		Type:          "usage",
-		RequestID:     internallogging.GetRequestID(ctx),
-		Provider:      record.Provider,
-		Model:         model,
-		Alias:         record.Alias,
-		AccountID:     stringFromAccount(account, "id"),
-		AccountEmail:  stringFromAccount(account, "email"),
-		AuthID:        record.AuthID,
-		APIKeyID:      stringFromAPIKey(spec, "id"),
-		APIKeyLabel:   stringFromAPIKey(spec, "label"),
-		RequestKind:   requestKind,
-		Success:       success,
-		Status:        status,
-		ErrorCategory: errorCategory(status, record.Fail.Body, success),
-		ErrorMessage:  strings.TrimSpace(record.Fail.Body),
-		LatencyMS:     record.Latency.Milliseconds(),
+		Type:             "usage",
+		RequestID:        internallogging.GetRequestID(ctx),
+		Provider:         record.Provider,
+		Model:            model,
+		Alias:            record.Alias,
+		AccountID:        stringFromAccount(account, "id"),
+		AccountEmail:     stringFromAccount(account, "email"),
+		AuthID:           record.AuthID,
+		APIKeyID:         stringFromAPIKey(spec, "id"),
+		APIKeyLabel:      stringFromAPIKey(spec, "label"),
+		ClientInstanceID: clientInstanceIDFromContext(ctx),
+		RequestKind:      requestKind,
+		ServiceTier:      normalizedUsageServiceTier(record.ServiceTier),
+		Success:          success,
+		Status:           status,
+		ErrorCategory:    errorCategory(status, record.Fail.Body, success),
+		ErrorMessage:     strings.TrimSpace(record.Fail.Body),
+		LatencyMS:        record.Latency.Milliseconds(),
 		Usage: usageDetails{
 			InputTokens:     record.Detail.InputTokens,
 			OutputTokens:    record.Detail.OutputTokens,
@@ -2244,23 +2968,35 @@ func (h *authHook) OnResult(ctx context.Context, result coreauth.Result) {
 		retryAfterMS = result.RetryAfter.Milliseconds()
 	}
 	success := result.Success
+	var authAvailable *bool
+	if result.AuthStateKnown {
+		value := result.AuthAvailable
+		authAvailable = &value
+	}
+	nextRetryAtMS := int64(0)
+	if !result.NextRetryAt.IsZero() {
+		nextRetryAtMS = result.NextRetryAt.UnixMilli()
+	}
 	h.emitter.emit(requestDiagnosticPayload{
-		Type:         "auth_result",
-		RequestID:    internallogging.GetRequestID(ctx),
-		Provider:     result.Provider,
-		Model:        model,
-		AuthID:       result.AuthID,
-		AccountID:    stringFromAccount(account, "id"),
-		AccountEmail: stringFromAccount(account, "email"),
-		APIKeyID:     stringFromAPIKey(spec, "id"),
-		APIKeyLabel:  stringFromAPIKey(spec, "label"),
-		RequestKind:  requestKind,
-		Success:      &success,
-		HTTPStatus:   status,
-		ErrorCode:    errorCode,
-		ErrorMessage: errorMessage,
-		Retryable:    retryablePtr,
-		RetryAfterMS: retryAfterMS,
+		Type:            "auth_result",
+		RequestID:       internallogging.GetRequestID(ctx),
+		Provider:        result.Provider,
+		Model:           model,
+		AuthID:          result.AuthID,
+		AccountID:       stringFromAccount(account, "id"),
+		AccountEmail:    stringFromAccount(account, "email"),
+		APIKeyID:        stringFromAPIKey(spec, "id"),
+		APIKeyLabel:     stringFromAPIKey(spec, "label"),
+		RequestKind:     requestKind,
+		Success:         &success,
+		HTTPStatus:      status,
+		ErrorCode:       errorCode,
+		ErrorMessage:    errorMessage,
+		Retryable:       retryablePtr,
+		RetryAfterMS:    retryAfterMS,
+		AuthAvailable:   authAvailable,
+		NextRetryAtMS:   nextRetryAtMS,
+		AuthStateReason: result.AuthStateReason,
 	})
 }
 
@@ -2298,28 +3034,58 @@ func buildCoreAuthSelector(cfg *config.Config, selector coreauth.Selector, m *ma
 		selector = &coreauth.RoundRobinSelector{}
 	}
 	if cfg != nil && cfg.Routing.SessionAffinity {
+		imageFallback := selector
 		ttl := time.Hour
 		if parsed, err := time.ParseDuration(strings.TrimSpace(cfg.Routing.SessionAffinityTTL)); err == nil && parsed > 0 {
 			ttl = parsed
 		}
+		// Session affinity + per-client-key namespace, with image requests bypassing affinity.
 		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
 			Fallback: selector,
 			TTL:      ttl,
 		})
+		selector = &cockpitSessionAffinitySelector{inner: selector}
+		selector = &imageRequestSelector{
+			imageFallback: imageFallback,
+			fallback:      selector,
+		}
 	}
 	if m != nil {
+		selector = &backupAccountSelector{manifest: m, fallback: selector}
 		selector = &quotaReserveSelector{manifest: m, fallback: selector, quota: quota}
 	}
 	return selector
 }
 
-func buildCoreAuthManager(cfg *config.Config, selector coreauth.Selector, hook coreauth.Hook, m *manifest, quota *quotaReserveStateStore) *coreauth.Manager {
+func buildCoreAuthManager(cfg *config.Config, selector coreauth.Selector, hook coreauth.Hook, m *manifest, quota *quotaReserveStateStore, tracker *requestUsageTracker) *coreauth.Manager {
 	tokenStore := sdkauth.GetTokenStore()
 	if dirSetter, ok := tokenStore.(interface{ SetBaseDir(string) }); ok && cfg != nil {
 		dirSetter.SetBaseDir(cfg.AuthDir)
 	}
 	selector = buildCoreAuthSelector(cfg, selector, m, quota)
+	if tracker != nil {
+		selector = &recordingSelector{inner: selector, manifest: m, tracker: tracker}
+	}
 	return coreauth.NewManager(tokenStore, selector, hook)
+}
+
+type cockpitSessionAffinitySelector struct {
+	inner coreauth.Selector
+}
+
+func (s *cockpitSessionAffinitySelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*coreauth.Auth) (*coreauth.Auth, error) {
+	if s == nil || s.inner == nil {
+		return nil, errors.New("session affinity selector is unavailable")
+	}
+	if spec, _ := ctx.Value(clientAPIKeyContextKey).(*apiKeySpec); spec != nil && strings.TrimSpace(spec.ID) != "" {
+		metadata := make(map[string]any, len(opts.Metadata)+1)
+		for key, value := range opts.Metadata {
+			metadata[key] = value
+		}
+		metadata[cliproxyexecutor.SessionAffinityNamespaceMetadataKey] = spec.ID
+		opts.Metadata = metadata
+	}
+	return s.inner.Pick(ctx, provider, model, opts, auths)
 }
 
 type sidecarRuntime struct {
@@ -2327,6 +3093,169 @@ type sidecarRuntime struct {
 	service *cliproxy.Service
 	cancel  context.CancelFunc
 	done    chan error
+}
+
+// CodexAlphaSearch selects a Codex OAuth credential and forwards the standalone
+// search payload to the ChatGPT Codex alpha search backend.
+func (r *sidecarRuntime) CodexAlphaSearch(ctx context.Context, model string, body []byte, headers http.Header) (int, http.Header, []byte, error) {
+	if r == nil || r.manager == nil {
+		return 0, nil, nil, errors.New("Codex auth manager is unavailable")
+	}
+	upstreamBody := sanitizeCodexAlphaSearchBody(body)
+	selectionHeaders := http.Header{}
+	if headers != nil {
+		selectionHeaders = headers.Clone()
+	}
+	opts := cliproxyexecutor.Options{
+		Headers:         selectionHeaders,
+		OriginalRequest: body,
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestedModelMetadataKey: model,
+			cliproxyexecutor.RequestPathMetadataKey:    codexAlphaSearchPath,
+		},
+	}
+	selected, err := r.manager.SelectAuthByKind(ctx, "codex", model, coreauth.AuthKindOAuth, opts)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	if selected == nil {
+		return 0, nil, nil, errors.New("no Codex OAuth account available for alpha search")
+	}
+
+	upstreamHeaders := buildCodexAlphaSearchHeaders(selectionHeaders, selected)
+	upstreamURL := resolveCodexAlphaSearchURL(selected)
+	req, err := r.manager.NewHttpRequest(ctx, selected, http.MethodPost, upstreamURL, upstreamBody, upstreamHeaders)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	// Ensure ChatGPT account binding for OAuth (PrepareRequest only injects Bearer).
+	if accountID := codexAuthChatGPTAccountID(selected); accountID != "" {
+		req.Header.Set("Chatgpt-Account-Id", accountID)
+	}
+
+	resp, err := r.manager.HttpRequest(ctx, selected, req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer func() {
+		_ = resp.Body.Close()
+	}()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexAlphaSearchResponseBytes))
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("failed to read Codex search response: %w", err)
+	}
+	return resp.StatusCode, resp.Header.Clone(), payload, nil
+}
+
+func sanitizeCodexAlphaSearchBody(body []byte) []byte {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
+	}
+	removed := false
+	for _, field := range []string{"prompt_cache_key", "prompt_cache_retention"} {
+		if _, exists := payload[field]; exists {
+			delete(payload, field)
+			removed = true
+		}
+	}
+	if !removed {
+		return body
+	}
+	sanitized, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return sanitized
+}
+
+func resolveCodexAlphaSearchURL(auth *coreauth.Auth) string {
+	baseURL := ""
+	if auth != nil && auth.Attributes != nil {
+		baseURL = strings.TrimSpace(auth.Attributes["base_url"])
+	}
+	if baseURL == "" {
+		return defaultCodexAlphaSearchURL
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	switch {
+	case strings.HasSuffix(strings.ToLower(baseURL), "/alpha/search"):
+		return baseURL
+	case strings.HasSuffix(strings.ToLower(baseURL), "/codex"):
+		return baseURL + "/alpha/search"
+	case strings.HasSuffix(strings.ToLower(baseURL), "/backend-api"):
+		return baseURL + "/codex/alpha/search"
+	default:
+		return baseURL + "/alpha/search"
+	}
+}
+
+func codexAuthChatGPTAccountID(auth *coreauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Metadata != nil {
+		if accountID, ok := auth.Metadata["account_id"].(string); ok {
+			if accountID = strings.TrimSpace(accountID); accountID != "" {
+				return accountID
+			}
+		}
+		if accountID, ok := auth.Metadata["chatgpt_account_id"].(string); ok {
+			if accountID = strings.TrimSpace(accountID); accountID != "" {
+				return accountID
+			}
+		}
+	}
+	if auth.Attributes != nil {
+		if accountID := strings.TrimSpace(auth.Attributes["chatgpt_account_id"]); accountID != "" {
+			return accountID
+		}
+	}
+	return ""
+}
+
+func buildCodexAlphaSearchHeaders(src http.Header, auth *coreauth.Auth) http.Header {
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/json")
+	headers.Set("Accept", "application/json")
+	headers.Set("Originator", "codex_cli_rs")
+	for _, name := range []string{
+		"Version",
+		"User-Agent",
+		"Session_id",
+		"X-Session-ID",
+		"X-Client-Request-Id",
+		"X-Openai-Actor-Authorization",
+		"x-openai-actor-authorization",
+	} {
+		if src == nil {
+			continue
+		}
+		if value := strings.TrimSpace(src.Get(name)); value != "" {
+			headers.Set(name, value)
+		}
+	}
+	// Preserve agtools diagnostic headers used by Cockpit.
+	if src != nil {
+		for key, values := range src {
+			trimmed := strings.TrimSpace(key)
+			if trimmed == "" || !strings.HasPrefix(strings.ToLower(trimmed), "x-agtools-") {
+				continue
+			}
+			canonical := http.CanonicalHeaderKey(trimmed)
+			headers.Del(canonical)
+			for _, value := range values {
+				value = strings.TrimSpace(value)
+				if value != "" {
+					headers.Add(canonical, value)
+				}
+			}
+		}
+	}
+	if accountID := codexAuthChatGPTAccountID(auth); accountID != "" {
+		headers.Set("Chatgpt-Account-Id", accountID)
+	}
+	return headers
 }
 
 func newSidecarRuntime(ctx context.Context, configPath string, cfg *config.Config, m *manifest, manager *coreauth.Manager) (*sidecarRuntime, error) {
@@ -2395,6 +3324,10 @@ func newSidecarRuntime(ctx context.Context, configPath string, cfg *config.Confi
 		cancel()
 		return nil, err
 	}
+	if err := registerManifestCodexTokenAuths(runtimeCtx, service, cfg, m, manager); err != nil {
+		cancel()
+		return nil, err
+	}
 	for _, auth := range manager.List() {
 		if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
 			continue
@@ -2434,6 +3367,188 @@ func registerConfigCodexAPIKeyAuths(ctx context.Context, service *cliproxy.Servi
 		linkManifestAccountForAuth(m, registered)
 	}
 	return nil
+}
+
+func registerManifestCodexTokenAuths(
+	ctx context.Context,
+	service *cliproxy.Service,
+	cfg *config.Config,
+	m *manifest,
+	manager *coreauth.Manager,
+) error {
+	if service == nil || cfg == nil || m == nil {
+		return nil
+	}
+	for i := range m.Accounts {
+		account := &m.Accounts[i]
+		authID := strings.TrimSpace(account.AuthID)
+		if authID == "" || manifestAccountAuthKind(account) == "api_key" {
+			continue
+		}
+		path := authID
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(cfg.AuthDir, path)
+		}
+		auth, err := readManifestCodexTokenAuth(account, cfg.AuthDir, path)
+		if err != nil {
+			return err
+		}
+		registered, err := service.UpsertRuntimeAuth(coreauth.WithSkipPersist(ctx), auth)
+		if err != nil {
+			return fmt.Errorf("register codex token auth %s: %w", auth.ID, err)
+		}
+		linkManifestAccountForAuth(m, registered)
+		registerManifestModelsForAuth(manager, m, registered)
+	}
+	return nil
+}
+
+func readManifestCodexTokenAuth(account *accountSpec, authDir, path string) (*coreauth.Auth, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read codex token auth file %s: %w", path, err)
+	}
+	metadata := make(map[string]any)
+	if err = json.Unmarshal(data, &metadata); err != nil {
+		return nil, fmt.Errorf("parse codex token auth file %s: %w", path, err)
+	}
+	provider := strings.TrimSpace(metadataString(metadata, "type"))
+	if provider == "" {
+		provider = "codex"
+	}
+	if !strings.EqualFold(provider, "codex") {
+		return nil, fmt.Errorf("codex token auth file %s has unsupported provider %q", path, provider)
+	}
+	accessToken := firstMetadataString(
+		metadata,
+		"personal_access_token",
+		"at_token",
+		"access_token",
+	)
+	if accessToken == "" {
+		return nil, fmt.Errorf("codex token auth file %s is missing access_token", path)
+	}
+	metadata["access_token"] = accessToken
+	if strings.TrimSpace(metadataString(metadata, "token_type")) == "" {
+		metadata["token_type"] = "Bearer"
+	}
+	if account != nil &&
+		(account.AccessTokenOnly || manifestAccountAuthKind(account) == "access_token") {
+		if strings.TrimSpace(metadataString(metadata, "auth_mode")) == "" {
+			metadata["auth_mode"] = "personal_access_token"
+		}
+		if strings.TrimSpace(metadataString(metadata, "openai_auth_mode")) == "" {
+			metadata["openai_auth_mode"] = "personal_access_token"
+		}
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("stat codex token auth file %s: %w", path, err)
+	}
+	id := manifestAuthFileID(authDir, path)
+	label := ""
+	if account != nil {
+		label = strings.TrimSpace(account.Email)
+	}
+	if label == "" {
+		label = firstMetadataString(metadata, "email", "label")
+	}
+	disabled, _ := metadata["disabled"].(bool)
+	status := coreauth.StatusActive
+	if disabled {
+		status = coreauth.StatusDisabled
+	}
+	auth := &coreauth.Auth{
+		ID:       id,
+		Provider: "codex",
+		FileName: id,
+		Label:    label,
+		Status:   status,
+		Disabled: disabled,
+		Attributes: map[string]string{
+			"path":       path,
+			"auth_kind":  manifestAccountAuthKind(account),
+			"websockets": "true",
+		},
+		Metadata:        metadata,
+		CreatedAt:       info.ModTime(),
+		UpdatedAt:       info.ModTime(),
+		LastRefreshedAt: time.Time{},
+	}
+	if account != nil {
+		auth.Attributes["account_id"] = strings.TrimSpace(account.ID)
+		if strings.TrimSpace(account.Email) != "" {
+			auth.Attributes["email"] = strings.TrimSpace(account.Email)
+		}
+		if strings.TrimSpace(account.ChatGPTAccountID) != "" {
+			auth.Attributes["chatgpt_account_id"] = strings.TrimSpace(account.ChatGPTAccountID)
+		}
+	}
+	if email := firstMetadataString(metadata, "email"); email != "" {
+		auth.Attributes["email"] = email
+	}
+	if proxyURL := firstMetadataString(metadata, "proxy_url", "proxy-url"); proxyURL != "" {
+		auth.ProxyURL = proxyURL
+	}
+	coreauth.ApplyCustomHeadersFromMetadata(auth)
+	return auth, nil
+}
+
+func manifestAccountAuthKind(account *accountSpec) string {
+	if account == nil {
+		return ""
+	}
+	if kind := strings.ToLower(strings.TrimSpace(account.AuthKind)); kind != "" {
+		switch kind {
+		case "api-key", "apikey", "api key":
+			return "api_key"
+		case "access-token", "accesstoken", "access token",
+			"personal_access_token", "pat", "at":
+			return "access_token"
+		default:
+			return kind
+		}
+	}
+	if strings.TrimSpace(account.UpstreamAPIKey) != "" {
+		return "api_key"
+	}
+	if account.AccessTokenOnly {
+		return "access_token"
+	}
+	return "oauth"
+}
+
+func manifestAuthFileID(authDir, path string) string {
+	id := path
+	if strings.TrimSpace(authDir) != "" {
+		if rel, err := filepath.Rel(authDir, path); err == nil && strings.TrimSpace(rel) != "" {
+			id = rel
+		}
+	}
+	if runtime.GOOS == "windows" {
+		id = strings.ToLower(id)
+	}
+	return id
+}
+
+func metadataString(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	if raw, ok := metadata[key].(string); ok {
+		return strings.TrimSpace(raw)
+	}
+	return ""
+}
+
+func firstMetadataString(metadata map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := metadataString(metadata, key); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (r *sidecarRuntime) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -2491,16 +3606,84 @@ func linkManifestAccountForAuth(m *manifest, auth *coreauth.Auth) {
 	if m.accountByAuthID == nil {
 		m.accountByAuthID = make(map[string]*accountSpec)
 	}
-	if _, exists := m.accountByAuthID[strings.ToLower(auth.ID)]; exists {
+	authID := strings.ToLower(strings.TrimSpace(auth.ID))
+	if _, exists := m.accountByAuthID[authID]; exists {
 		return
 	}
+	if account := findManifestAccountForAuth(m, auth); account != nil {
+		m.accountByAuthID[authID] = account
+		if base := strings.ToLower(filepath.Base(strings.TrimSpace(auth.ID))); base != "" && base != authID {
+			m.accountByAuthID[base] = account
+		}
+		return
+	}
+}
+
+func findManifestAccountForAuth(m *manifest, auth *coreauth.Auth) *accountSpec {
+	if m == nil || auth == nil {
+		return nil
+	}
+	for _, candidate := range []string{
+		strings.TrimSpace(auth.ID),
+		filepath.Base(strings.TrimSpace(auth.ID)),
+		strings.TrimSpace(auth.FileName),
+		filepath.Base(strings.TrimSpace(auth.FileName)),
+	} {
+		if candidate == "." || candidate == "" {
+			continue
+		}
+		if account := m.accountByAuthID[strings.ToLower(candidate)]; account != nil {
+			return account
+		}
+	}
 	if auth.Attributes != nil {
+		if path := strings.TrimSpace(auth.Attributes["path"]); path != "" {
+			if account := m.accountByAuthID[strings.ToLower(path)]; account != nil {
+				return account
+			}
+			if account := m.accountByAuthID[strings.ToLower(filepath.Base(path))]; account != nil {
+				return account
+			}
+		}
 		if key := strings.TrimSpace(auth.Attributes["api_key"]); key != "" {
 			if account := m.accountByAPIKey[key]; account != nil {
-				m.accountByAuthID[strings.ToLower(auth.ID)] = account
+				return account
+			}
+		}
+		if accountID := strings.TrimSpace(auth.Attributes["account_id"]); accountID != "" {
+			if account := m.accountByID[accountID]; account != nil {
+				return account
+			}
+		}
+		if chatGPTID := strings.TrimSpace(auth.Attributes["chatgpt_account_id"]); chatGPTID != "" {
+			if account := m.accountByChatGPT[strings.ToLower(chatGPTID)]; account != nil {
+				return account
+			}
+		}
+		if email := strings.TrimSpace(auth.Attributes["email"]); email != "" {
+			if account := m.accountByEmail[strings.ToLower(email)]; account != nil {
+				return account
 			}
 		}
 	}
+	if auth.Metadata != nil {
+		for _, key := range []string{"account_id", "chatgpt_account_id"} {
+			if value := metadataString(auth.Metadata, key); value != "" {
+				if account := m.accountByChatGPT[strings.ToLower(value)]; account != nil {
+					return account
+				}
+				if account := m.accountByID[value]; account != nil {
+					return account
+				}
+			}
+		}
+		if email := metadataString(auth.Metadata, "email"); email != "" {
+			if account := m.accountByEmail[strings.ToLower(email)]; account != nil {
+				return account
+			}
+		}
+	}
+	return nil
 }
 
 func registerManifestModelsForAuth(manager *coreauth.Manager, m *manifest, auth *coreauth.Auth) {
@@ -2624,12 +3807,21 @@ type executorRuntime interface {
 	ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error)
 }
 
+// codexAlphaSearcher forwards Responses Lite web.run search requests using the
+// same OAuth account pool as /v1/responses.
+type codexAlphaSearcher interface {
+	CodexAlphaSearch(ctx context.Context, model string, body []byte, headers http.Header) (status int, respHeaders http.Header, payload []byte, err error)
+}
+
 type relayServer struct {
-	runtime  executorRuntime
-	cfg      *config.Config
-	manifest *manifest
-	emitter  *eventEmitter
-	policy   *requestPolicy
+	runtime            executorRuntime
+	cfg                *config.Config
+	manifest           *manifest
+	authManager        *coreauth.Manager
+	emitter            *eventEmitter
+	policy             *requestPolicy
+	responsesWebsocket gin.HandlerFunc
+	quotaPoolStatePath string
 }
 
 func (s *relayServer) router() *gin.Engine {
@@ -2638,9 +3830,19 @@ func (s *relayServer) router() *gin.Engine {
 	router.Use(corsMiddleware())
 	router.Use(s.policy.middleware())
 	router.GET("/v1/models", s.handleModels)
+	router.GET(cockpitQuotaPath, s.handleCockpitQuota)
+	router.POST("/v1/cockpit/auth/reset", s.handleResetAuthState)
+	// Codex Responses WebSocket upgrade uses GET /v1/responses (not POST/SSE).
+	router.GET("/v1/responses", s.handleResponsesWebsocket)
 	router.POST("/v1/responses", s.handleResponses)
 	router.POST("/v1/responses/compact", s.handleResponsesCompact)
+	// Compatibility: some clients set chat-completions base and still append /v1/responses.
+	router.POST("/v1/chat/completions/v1/responses", s.handleResponses)
+	router.POST("/v1/chat/completions/v1/responses/compact", s.handleResponsesCompact)
 	router.POST("/v1/chat/completions", s.handleChatCompletions)
+	// Responses Lite web.run independent search endpoint.
+	router.POST(codexAlphaSearchPath, s.handleCodexAlphaSearch)
+	router.POST(codexDirectAlphaSearchPath, s.handleCodexAlphaSearch)
 	router.POST(anthropicMessagesPath, s.handleAnthropicMessages)
 	router.POST(anthropicCountTokensPath, s.handleAnthropicCountTokens)
 	router.GET(geminiModelsPath, s.handleGeminiModels)
@@ -2656,6 +3858,252 @@ func (s *relayServer) router() *gin.Engine {
 		writeAPIError(c, http.StatusNotFound, "endpoint not supported", "not_found")
 	})
 	return router
+}
+
+type quotaPoolWindowState struct {
+	Present          *bool  `json:"present,omitempty"`
+	RemainingPercent *int   `json:"remainingPercent,omitempty"`
+	WindowMinutes    *int64 `json:"windowMinutes,omitempty"`
+	ResetAt          *int64 `json:"resetAt,omitempty"`
+}
+
+type quotaPoolAccountState struct {
+	Primary   *quotaPoolWindowState `json:"primary,omitempty"`
+	Secondary *quotaPoolWindowState `json:"secondary,omitempty"`
+	UpdatedAt *int64                `json:"updatedAt,omitempty"`
+}
+
+type quotaPoolStateFile struct {
+	Accounts map[string]quotaPoolAccountState `json:"accounts"`
+}
+
+type cockpitQuotaResponse struct {
+	Version                  int    `json:"version"`
+	Scope                    string `json:"scope"`
+	RemainingPercent         *int   `json:"remainingPercent,omitempty"`
+	WeeklyRemainingPercent   *int   `json:"weeklyRemainingPercent,omitempty"`
+	FiveHourRemainingPercent *int   `json:"fiveHourRemainingPercent,omitempty"`
+	AccountCount             int    `json:"accountCount"`
+	IncludedAccountCount     int    `json:"includedAccountCount"`
+	MissingAccountCount      int    `json:"missingAccountCount"`
+	UpdatedAt                int64  `json:"updatedAt,omitempty"`
+	Stale                    bool   `json:"stale"`
+}
+
+func readQuotaPoolState(path string) (quotaPoolStateFile, error) {
+	content, err := os.ReadFile(strings.TrimSpace(path))
+	if err != nil {
+		return quotaPoolStateFile{}, err
+	}
+	var state quotaPoolStateFile
+	if err := json.Unmarshal(content, &state); err != nil {
+		return quotaPoolStateFile{}, err
+	}
+	if state.Accounts == nil {
+		state.Accounts = make(map[string]quotaPoolAccountState)
+	}
+	return state, nil
+}
+
+func quotaWindowPresent(window *quotaPoolWindowState) bool {
+	return window != nil && (window.Present == nil || *window.Present)
+}
+
+func quotaWindowValue(window *quotaPoolWindowState) (int, int64, bool) {
+	if !quotaWindowPresent(window) || window.RemainingPercent == nil {
+		return 0, 0, false
+	}
+	minutes := int64(10080)
+	if window.WindowMinutes != nil && *window.WindowMinutes > 0 {
+		minutes = *window.WindowMinutes
+	}
+	return *window.RemainingPercent, minutes, true
+}
+
+func buildCockpitQuotaResponse(spec *apiKeySpec, state quotaPoolStateFile, now time.Time) cockpitQuotaResponse {
+	accountIDs := make([]string, 0)
+	if spec != nil {
+		accountIDs = normalizeStringList(spec.AccountIDs)
+	}
+	result := cockpitQuotaResponse{
+		Version:      1,
+		Scope:        "api_key_account_pool",
+		AccountCount: len(accountIDs),
+	}
+	total := 0
+	hasValue := false
+	weeklyTotal := 0
+	fiveHourTotal := 0
+	hasWeekly := false
+	hasFiveHour := false
+	for _, accountID := range accountIDs {
+		item, ok := state.Accounts[accountID]
+		if !ok {
+			result.MissingAccountCount++
+			continue
+		}
+		primaryValue, primaryMinutes, primaryOK := quotaWindowValue(item.Primary)
+		secondaryValue, secondaryMinutes, secondaryOK := quotaWindowValue(item.Secondary)
+		value, ok := 0, false
+		switch {
+		case primaryOK && secondaryOK && primaryMinutes <= secondaryMinutes:
+			value, ok = primaryValue, true
+		case primaryOK && secondaryOK:
+			value, ok = secondaryValue, true
+		case primaryOK:
+			value, ok = primaryValue, true
+		case secondaryOK:
+			value, ok = secondaryValue, true
+		}
+		if !ok {
+			result.MissingAccountCount++
+			continue
+		}
+		total += value
+		hasValue = true
+		if primaryOK && primaryMinutes >= 5*24*60 {
+			weeklyTotal += primaryValue
+			hasWeekly = true
+		}
+		if secondaryOK && secondaryMinutes >= 5*24*60 {
+			weeklyTotal += secondaryValue
+			hasWeekly = true
+		}
+		if primaryOK && primaryMinutes > 0 && primaryMinutes <= 6*60 {
+			fiveHourTotal += primaryValue
+			hasFiveHour = true
+		}
+		if secondaryOK && secondaryMinutes > 0 && secondaryMinutes <= 6*60 {
+			fiveHourTotal += secondaryValue
+			hasFiveHour = true
+		}
+		result.IncludedAccountCount++
+		if item.UpdatedAt != nil {
+			if *item.UpdatedAt > result.UpdatedAt {
+				result.UpdatedAt = *item.UpdatedAt
+			}
+			if now.Unix()-*item.UpdatedAt > 15*60 {
+				result.Stale = true
+			}
+		}
+	}
+	if hasValue {
+		result.RemainingPercent = &total
+	}
+	if hasWeekly {
+		result.WeeklyRemainingPercent = &weeklyTotal
+	}
+	if hasFiveHour {
+		result.FiveHourRemainingPercent = &fiveHourTotal
+	}
+	return result
+}
+
+func (s *relayServer) handleCockpitQuota(c *gin.Context) {
+	spec, ok := s.requireAPIKey(c)
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(s.quotaPoolStatePath) == "" {
+		c.JSON(http.StatusOK, cockpitQuotaResponse{Version: 1, Scope: "api_key_account_pool"})
+		return
+	}
+	state, err := readQuotaPoolState(s.quotaPoolStatePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			c.JSON(http.StatusOK, cockpitQuotaResponse{Version: 1, Scope: "api_key_account_pool"})
+			return
+		}
+		writeAPIError(c, http.StatusServiceUnavailable, "quota state unavailable", "quota_state_unavailable")
+		return
+	}
+	response := buildCockpitQuotaResponse(spec, state, time.Now())
+	if response.RemainingPercent == nil && spec != nil && spec.ProviderGateway != nil {
+		upstreamURL, urlErr := providerGatewayURL(spec.ProviderGateway.BaseURL, cockpitQuotaPath)
+		if urlErr == nil {
+			request, requestErr := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, upstreamURL, nil)
+			if requestErr == nil {
+				request.Header.Set("Authorization", "Bearer "+spec.ProviderGateway.APIKey)
+				client := &http.Client{Timeout: 2 * time.Second}
+				if upstream, doErr := client.Do(request); doErr == nil {
+					defer upstream.Body.Close()
+					if upstream.StatusCode == http.StatusOK {
+						var upstreamResponse cockpitQuotaResponse
+						if json.NewDecoder(upstream.Body).Decode(&upstreamResponse) == nil {
+							c.JSON(http.StatusOK, upstreamResponse)
+							return
+						}
+					}
+				}
+			}
+		}
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+type resetAuthStateRequest struct {
+	AccountIDs []string `json:"accountIds"`
+}
+
+func (s *relayServer) handleResetAuthState(c *gin.Context) {
+	spec, ok := s.requireAPIKey(c)
+	if !ok {
+		return
+	}
+	if s.authManager == nil || s.manifest == nil {
+		writeAPIError(c, http.StatusServiceUnavailable, "auth manager unavailable", "service_unavailable")
+		return
+	}
+
+	var req resetAuthStateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeAPIError(c, http.StatusBadRequest, "invalid request body", "invalid_request")
+		return
+	}
+
+	accountIDs := normalizeStringList(req.AccountIDs)
+	if len(accountIDs) == 0 {
+		writeAPIError(c, http.StatusBadRequest, "accountIds is required", "invalid_request")
+		return
+	}
+
+	allowed := make(map[string]struct{}, len(spec.AccountIDs))
+	for _, accountID := range spec.AccountIDs {
+		allowed[strings.TrimSpace(accountID)] = struct{}{}
+	}
+	type resetTarget struct {
+		accountID string
+		authID    string
+	}
+	targets := make([]resetTarget, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		account := s.manifest.accountByID[accountID]
+		if account == nil || strings.TrimSpace(account.AuthID) == "" {
+			continue
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[accountID]; !ok {
+				continue
+			}
+		}
+		targets = append(targets, resetTarget{accountID: accountID, authID: account.AuthID})
+	}
+	if len(targets) == 0 {
+		writeAPIError(c, http.StatusNotFound, "no resettable accounts found", "account_not_found")
+		return
+	}
+
+	resetAccountIDs := make([]string, 0, len(targets))
+	for _, target := range targets {
+		if auth, _ := s.authManager.ResetAuthState(c.Request.Context(), target.authID); auth != nil {
+			resetAccountIDs = append(resetAccountIDs, target.accountID)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "ok",
+		"reset":      len(resetAccountIDs),
+		"accountIds": resetAccountIDs,
+	})
 }
 
 func corsMiddleware() gin.HandlerFunc {
@@ -2678,7 +4126,7 @@ func (s *relayServer) handleModels(c *gin.Context) {
 	}
 	models := clientCatalogModelsForAPIKey(s.manifest, spec)
 	if isCodexClientModelsRequest(c.Request) {
-		c.JSON(http.StatusOK, buildCodexClientModelsResponse(models))
+		c.JSON(http.StatusOK, buildCodexClientModelsResponse(models, spec))
 		return
 	}
 	c.JSON(http.StatusOK, buildModelsResponse(models))
@@ -2688,8 +4136,117 @@ func (s *relayServer) handleResponses(c *gin.Context) {
 	s.handleExecutorRequest(c, sdktranslator.FormatOpenAIResponse, "")
 }
 
+func (s *relayServer) handleResponsesWebsocket(c *gin.Context) {
+	spec, ok := s.requireAPIKey(c)
+	if !ok {
+		return
+	}
+	if spec.ProviderGateway != nil {
+		writeAPIError(
+			c,
+			http.StatusBadRequest,
+			"provider gateway does not support responses websocket",
+			"websocket_not_supported",
+		)
+		return
+	}
+	if !spec.ResponsesWebsockets {
+		writeAPIError(c, http.StatusBadRequest, "responses websocket is disabled", "websocket_disabled")
+		return
+	}
+	if s.responsesWebsocket == nil {
+		writeAPIError(
+			c,
+			http.StatusServiceUnavailable,
+			"responses websocket unavailable",
+			"service_unavailable",
+		)
+		return
+	}
+	s.responsesWebsocket(c)
+}
+
 func (s *relayServer) handleResponsesCompact(c *gin.Context) {
 	s.handleExecutorRequest(c, sdktranslator.FormatOpenAIResponse, "responses/compact")
+}
+
+// handleCodexAlphaSearch proxies Codex web.run search requests to the ChatGPT
+// Codex alpha search backend. Unlike /v1/responses, the body is already in
+// Codex search format and must not pass through protocol translation.
+func (s *relayServer) handleCodexAlphaSearch(c *gin.Context) {
+	spec, ok := s.requireAPIKey(c)
+	if !ok {
+		return
+	}
+	if spec.ProviderGateway != nil {
+		writeAPIError(c, http.StatusNotFound, "provider gateway does not support /v1/alpha/search", "not_found")
+		return
+	}
+	searcher, ok := s.runtime.(codexAlphaSearcher)
+	if !ok || searcher == nil {
+		writeAPIError(c, http.StatusServiceUnavailable, "Codex alpha search runtime is unavailable", "service_unavailable")
+		return
+	}
+
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxCodexAlphaSearchRequestBytes))
+	if err != nil {
+		writeAPIError(c, http.StatusBadRequest, "failed to read search request", "invalid_request")
+		return
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		writeAPIError(c, http.StatusBadRequest, "request body is required", "invalid_request")
+		return
+	}
+
+	var routing struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &routing)
+	model := strings.TrimSpace(routing.Model)
+	if model == "" {
+		if ctxModel, _ := c.Request.Context().Value(requestModelContextKey).(string); strings.TrimSpace(ctxModel) != "" {
+			model = strings.TrimSpace(ctxModel)
+		}
+	}
+	if model != "" {
+		canonical := canonicalModelForClientModel(s.manifest, spec, model)
+		if !validateClientModelVisible(s.manifest, spec, model, canonical) {
+			writeAPIError(c, http.StatusNotFound, fmt.Sprintf("模型 %s 不在当前 API Key 的可用模型范围内", model), "model_not_available")
+			return
+		}
+		model = canonical
+	}
+
+	headers := c.Request.Header.Clone()
+	if sessionID := strings.TrimSpace(routing.ID); sessionID != "" {
+		headers.Set("X-Session-ID", sessionID)
+		if headers.Get("Session_id") == "" {
+			headers.Set("Session_id", sessionID)
+		}
+	}
+
+	startedAt := time.Now()
+	s.emitExecutorDiagnostic(c, "executor_started", model, "alpha_search", startedAt, "")
+	status, respHeaders, payload, err := searcher.CodexAlphaSearch(relayContext(c), model, body, headers)
+	if err != nil {
+		s.emitExecutorDiagnostic(c, "executor_failed", model, "alpha_search", startedAt, err.Error())
+		s.writeExecutorError(c, err)
+		return
+	}
+	s.emitExecutorDiagnostic(c, "executor_completed", model, "alpha_search", startedAt, "")
+	writeUpstreamHeaders(c.Writer.Header(), respHeaders)
+	contentType := ""
+	if respHeaders != nil {
+		contentType = respHeaders.Get("Content-Type")
+	}
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	if status <= 0 {
+		status = http.StatusOK
+	}
+	c.Data(status, contentType, payload)
 }
 
 func (s *relayServer) handleChatCompletions(c *gin.Context) {
@@ -3022,19 +4579,41 @@ func (s *relayServer) handleImagesRelayRequest(c *gin.Context, imageReq imageRel
 	req, opts := buildExecutorRequest(c, imageReq.body, model, sdktranslator.FormatOpenAIResponse, "", true)
 	startedAt := time.Now()
 	timeouts := s.streamTimeoutsForRequest(c.Request, imageReq.body, defaultImagesToolModel)
+	immediateSSE := imageReq.stream && s.manifest != nil && s.manifest.ImmediateSSEResponse
+	var immediateFlusher http.Flusher
+	if immediateSSE {
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			writeAPIError(c, http.StatusInternalServerError, "streaming not supported", "streaming_not_supported")
+			return
+		}
+		setEventStreamHeaders(c.Writer.Header())
+		c.Status(http.StatusOK)
+		_, _ = c.Writer.Write([]byte(": accepted\n\n"))
+		flusher.Flush()
+		immediateFlusher = flusher
+	}
 	streamCtx, cancelStream := context.WithCancel(relayContext(c))
 	defer cancelStream()
 	result, err := s.executeStreamWithOpenTimeout(c, streamCtx, []string{"codex"}, req, opts, model, startedAt, timeouts.open)
 	if err != nil {
+		if immediateSSE {
+			writeImagesStreamError(c, immediateFlusher, err)
+			return
+		}
 		s.writeExecutorError(c, err)
 		return
 	}
 	if result == nil || result.Chunks == nil {
+		if immediateSSE {
+			writeImagesStreamError(c, immediateFlusher, relayStatusError{status: http.StatusBadGateway, message: "upstream stream is unavailable"})
+			return
+		}
 		writeAPIError(c, http.StatusBadGateway, "upstream stream is unavailable", "bad_gateway")
 		return
 	}
 	if imageReq.stream {
-		s.forwardImagesStream(c, streamCtx, result, imageReq, timeouts.idle)
+		s.forwardImagesStream(c, streamCtx, result, imageReq, timeouts.idle, immediateSSE)
 		return
 	}
 	out, err := collectImagesResponse(streamCtx, result.Chunks, imageReq.responseFormat, timeouts.idle)
@@ -3046,15 +4625,17 @@ func (s *relayServer) handleImagesRelayRequest(c *gin.Context, imageReq imageRel
 	c.Data(http.StatusOK, "application/json", out)
 }
 
-func (s *relayServer) forwardImagesStream(c *gin.Context, ctx context.Context, result *cliproxyexecutor.StreamResult, imageReq imageRelayRequest, idleTimeout time.Duration) {
+func (s *relayServer) forwardImagesStream(c *gin.Context, ctx context.Context, result *cliproxyexecutor.StreamResult, imageReq imageRelayRequest, idleTimeout time.Duration, headersCommitted bool) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		writeAPIError(c, http.StatusInternalServerError, "streaming not supported", "streaming_not_supported")
 		return
 	}
-	setEventStreamHeaders(c.Writer.Header())
-	writeUpstreamHeaders(c.Writer.Header(), result.Headers)
-	c.Status(http.StatusOK)
+	if !headersCommitted {
+		setEventStreamHeaders(c.Writer.Header())
+		writeUpstreamHeaders(c.Writer.Header(), result.Headers)
+		c.Status(http.StatusOK)
+	}
 
 	writeEvent := func(eventName string, payload []byte) {
 		if strings.TrimSpace(eventName) != "" {
@@ -3064,15 +4645,7 @@ func (s *relayServer) forwardImagesStream(c *gin.Context, ctx context.Context, r
 		flusher.Flush()
 	}
 	writeErr := func(err error) {
-		status := statusCodeFromError(err)
-		payload, _ := json.Marshal(map[string]any{
-			"error": map[string]any{
-				"message": errorMessage(err),
-				"type":    "upstream_error",
-				"code":    status,
-			},
-		})
-		writeEvent("error", payload)
+		writeImagesStreamError(c, flusher, err)
 	}
 
 	acc := &imageSSEAccumulator{}
@@ -3118,6 +4691,21 @@ func (s *relayServer) forwardImagesStream(c *gin.Context, ctx context.Context, r
 			}
 		}
 	}
+}
+
+func writeImagesStreamError(c *gin.Context, flusher http.Flusher, err error) {
+	if c == nil || flusher == nil {
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": errorMessage(err),
+			"type":    "upstream_error",
+			"code":    statusCodeFromError(err),
+		},
+	})
+	_, _ = fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", string(payload))
+	flusher.Flush()
 }
 
 func forwardImageResponseFrame(frame []byte, imageReq imageRelayRequest, writeEvent func(string, []byte), writeErr func(error)) bool {
@@ -3553,6 +5141,11 @@ func (s *relayServer) handleExecutorBody(c *gin.Context, spec *apiKeySpec, body 
 		writeAPIError(c, http.StatusBadRequest, "model is required", "invalid_request")
 		return
 	}
+	canonicalModel := canonicalModelForClientModel(s.manifest, spec, model)
+	if sourceFormatEqual(sourceFormat, sdktranslator.FormatOpenAI) && isGPTImageGenerationModel(canonicalModel) {
+		writeAPIError(c, http.StatusBadRequest, "This model is not supported on the Chat Completions endpoint", "invalid_request")
+		return
+	}
 
 	if spec.ProviderGateway != nil {
 		s.handleProviderGatewayRequest(c, spec.ProviderGateway, body, model, sourceFormat, fixedAlt)
@@ -3596,22 +5189,39 @@ func (s *relayServer) handleProviderGatewayRequest(c *gin.Context, gateway *prov
 	if providerGatewayRequestHasVisionInput(body) && !supportsVision {
 		visionRoutingModel := providerGatewayVisionRoutingModel(gateway)
 		if strings.TrimSpace(visionRoutingModel) == "" {
-			writeAPIError(c, http.StatusBadRequest, fmt.Sprintf("model %s does not support image input", upstreamModel), "unsupported_image_input")
-			return
-		}
-		originalModel := upstreamModel
-		upstreamModel = visionRoutingModel
-		if s.emitter != nil {
-			s.emitter.emit(requestDiagnosticPayload{
-				Type:         "provider_gateway_vision_routed",
-				RequestID:    internallogging.GetRequestID(c.Request.Context()),
-				Method:       c.Request.Method,
-				Path:         requestPath(c.Request),
-				RequestKind:  requestKindFromPath(requestPath(c.Request)),
-				Model:        upstreamModel,
-				Transport:    diagnosticTransport(c.Request),
-				ErrorMessage: fmt.Sprintf("routed image input from %s to %s", originalModel, upstreamModel),
-			})
+			omittedBody, omittedCount, err := omitProviderGatewayVisionInput(body, sourceFormat)
+			if err != nil || omittedCount == 0 {
+				writeAPIError(c, http.StatusBadRequest, fmt.Sprintf("model %s does not support image input", upstreamModel), "unsupported_image_input")
+				return
+			}
+			body = omittedBody
+			if s.emitter != nil {
+				s.emitter.emit(requestDiagnosticPayload{
+					Type:         "provider_gateway_vision_omitted",
+					RequestID:    internallogging.GetRequestID(c.Request.Context()),
+					Method:       c.Request.Method,
+					Path:         requestPath(c.Request),
+					RequestKind:  requestKindFromPath(requestPath(c.Request)),
+					Model:        upstreamModel,
+					Transport:    diagnosticTransport(c.Request),
+					ErrorMessage: fmt.Sprintf("omitted %d image input item(s) for text-only model", omittedCount),
+				})
+			}
+		} else {
+			originalModel := upstreamModel
+			upstreamModel = visionRoutingModel
+			if s.emitter != nil {
+				s.emitter.emit(requestDiagnosticPayload{
+					Type:         "provider_gateway_vision_routed",
+					RequestID:    internallogging.GetRequestID(c.Request.Context()),
+					Method:       c.Request.Method,
+					Path:         requestPath(c.Request),
+					RequestKind:  requestKindFromPath(requestPath(c.Request)),
+					Model:        upstreamModel,
+					Transport:    diagnosticTransport(c.Request),
+					ErrorMessage: fmt.Sprintf("routed image input from %s to %s", originalModel, upstreamModel),
+				})
+			}
 		}
 	}
 	upstreamPath := "/v1/responses"
@@ -3810,7 +5420,7 @@ func (s *relayServer) writeProviderGatewayChatStream(c *gin.Context, body io.Rea
 	}
 	if err := scanner.Err(); err != nil {
 		s.emitExecutorDiagnostic(c, "provider_gateway_stream_scan_failed", model, "provider_gateway_chat_stream", startedAt, err.Error())
-		writeStreamTerminalError(c, err)
+		writeStreamTerminalErrorForFormat(c, err, sdktranslator.FormatOpenAIResponse)
 		flusher.Flush()
 		return
 	}
@@ -3888,7 +5498,7 @@ func (s *relayServer) writeProviderGatewayTranslatedChatStream(c *gin.Context, b
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		writeStreamTerminalError(c, err)
+		writeStreamTerminalErrorForFormat(c, err, targetFormat)
 		flusher.Flush()
 	}
 }
@@ -4033,6 +5643,20 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 	req, opts := buildExecutorRequest(c, body, model, sourceFormat, alt, true)
 	startedAt := time.Now()
 	timeouts := s.streamTimeoutsForRequest(c.Request, body, model)
+	immediateSSE := s.manifest != nil && s.manifest.ImmediateSSEResponse
+	var immediateFlusher http.Flusher
+	if immediateSSE {
+		flusher, ok := c.Writer.(http.Flusher)
+		if !ok {
+			writeAPIError(c, http.StatusInternalServerError, "streaming not supported", "streaming_not_supported")
+			return
+		}
+		setEventStreamHeaders(c.Writer.Header())
+		c.Status(http.StatusOK)
+		_, _ = c.Writer.Write([]byte(": accepted\n\n"))
+		flusher.Flush()
+		immediateFlusher = flusher
+	}
 	s.emitExecutorDiagnostic(c, "executor_started", model, "execute_stream", startedAt, "")
 	stopWaitLogger := s.startExecutorWaitLogger(c, model, "execute_stream", startedAt)
 	streamCtx, cancelStream := context.WithCancel(relayContext(c))
@@ -4041,12 +5665,22 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 	stopWaitLogger()
 	if err != nil {
 		s.emitExecutorDiagnostic(c, "executor_failed", model, "execute_stream", startedAt, err.Error())
+		if immediateSSE {
+			writeStreamTerminalErrorForFormat(c, err, sourceFormat)
+			immediateFlusher.Flush()
+			return
+		}
 		s.writeExecutorError(c, err)
 		return
 	}
 	if result == nil || result.Chunks == nil {
 		s.emitExecutorDiagnostic(c, "executor_failed", model, "execute_stream", startedAt, "upstream stream is unavailable")
-		writeAPIError(c, http.StatusBadGateway, "upstream stream is unavailable", "bad_gateway")
+		if immediateSSE {
+			writeStreamTerminalErrorForFormat(c, relayStatusError{status: http.StatusBadGateway, message: "upstream stream is unavailable"}, sourceFormat)
+			immediateFlusher.Flush()
+		} else {
+			writeAPIError(c, http.StatusBadGateway, "upstream stream is unavailable", "bad_gateway")
+		}
 		return
 	}
 	s.emitExecutorDiagnostic(c, "stream_opened", model, "execute_stream", startedAt, "")
@@ -4056,9 +5690,11 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 		return
 	}
 
-	setEventStreamHeaders(c.Writer.Header())
-	writeUpstreamHeaders(c.Writer.Header(), result.Headers)
-	c.Status(http.StatusOK)
+	if !immediateSSE {
+		setEventStreamHeaders(c.Writer.Header())
+		writeUpstreamHeaders(c.Writer.Header(), result.Headers)
+		c.Status(http.StatusOK)
+	}
 
 	framer := newRelayStreamFramer(sourceFormat, requestPath(c.Request))
 	keepAlive := streamKeepAliveInterval(s.cfg)
@@ -4086,7 +5722,7 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 			endReason = "stream_idle_timeout"
 			err := relayTimeoutError{phase: "stream_idle", timeout: timeouts.idle}
 			s.emitExecutorDiagnostic(c, "stream_idle_timeout", model, "stream_loop", startedAt, err.Error())
-			writeStreamTerminalError(c, err)
+			writeStreamTerminalErrorForFormat(c, err, sourceFormat)
 			flusher.Flush()
 			return
 		case <-c.Request.Context().Done():
@@ -4124,7 +5760,7 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 			if chunk.Err != nil {
 				endReason = "stream_error"
 				s.emitExecutorDiagnostic(c, "stream_error", model, "stream_loop", startedAt, chunk.Err.Error())
-				writeStreamTerminalError(c, chunk.Err)
+				writeStreamTerminalErrorForFormat(c, chunk.Err, sourceFormat)
 				flusher.Flush()
 				return
 			}
@@ -4735,7 +6371,7 @@ func ollamaThinkingEffort(value any) string {
 	switch v := value.(type) {
 	case string:
 		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "low", "medium", "high", "xhigh":
+		case "low", "medium", "high", "xhigh", "max", "ultra":
 			return strings.ToLower(strings.TrimSpace(v))
 		case "true":
 			return "medium"
@@ -5354,6 +6990,10 @@ func modelBase(model string) string {
 	return model
 }
 
+func isGPTImageGenerationModel(model string) bool {
+	return strings.HasPrefix(modelBase(model), "gpt-image-")
+}
+
 func jsonContainsImageGenerationTool(body []byte) bool {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return false
@@ -5636,6 +7276,19 @@ func writeStreamTerminalError(c *gin.Context, err error) {
 	_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", string(payload))
 }
 
+func writeStreamTerminalErrorForFormat(c *gin.Context, err error, sourceFormat sdktranslator.Format) {
+	if c == nil {
+		return
+	}
+	if !sourceFormatEqual(sourceFormat, sdktranslator.FormatOpenAIResponse) {
+		writeStreamTerminalError(c, err)
+		return
+	}
+	status := statusCodeFromError(err)
+	eventName, payload := sdkhandlers.BuildOpenAIResponsesStreamTerminalEvent(status, err, 0)
+	_, _ = fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventName, string(payload))
+}
+
 type relayStreamFrameMode int
 
 const (
@@ -5777,7 +7430,7 @@ func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) error {
 		if frameLen == 0 {
 			break
 		}
-		if err := writeResponsesSSEChunk(w, f.pending[:frameLen]); err != nil {
+		if err := writeResponsesSSEFrame(w, f.pending[:frameLen]); err != nil {
 			return err
 		}
 		copy(f.pending, f.pending[frameLen:])
@@ -5790,7 +7443,7 @@ func (f *responsesSSEFramer) WriteChunk(w io.Writer, chunk []byte) error {
 	if !responsesSSECanEmitWithoutDelimiter(f.pending) {
 		return nil
 	}
-	if err := writeResponsesSSEChunk(w, f.pending); err != nil {
+	if err := writeResponsesSSEFrame(w, f.pending); err != nil {
 		return err
 	}
 	f.pending = f.pending[:0]
@@ -5809,10 +7462,82 @@ func (f *responsesSSEFramer) Flush(w io.Writer) error {
 		f.pending = f.pending[:0]
 		return nil
 	}
-	if err := writeResponsesSSEChunk(w, f.pending); err != nil {
+	if err := writeResponsesSSEFrame(w, f.pending); err != nil {
 		return err
 	}
 	f.pending = f.pending[:0]
+	return nil
+}
+
+const (
+	maxResponsesConcatenatedJSONDocuments = 16
+	maxResponsesConcatenatedJSONBytes     = 16 * 1024 * 1024
+)
+
+func splitResponsesConcatenatedJSONDocuments(payload []byte) ([][]byte, bool) {
+	payload = bytes.TrimSpace(payload)
+	if len(payload) == 0 || len(payload) > maxResponsesConcatenatedJSONBytes || json.Valid(payload) {
+		return nil, false
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	documents := make([][]byte, 0, 2)
+	for {
+		var raw json.RawMessage
+		err := decoder.Decode(&raw)
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(documents) > 1 {
+				return documents, true
+			}
+			return nil, false
+		}
+
+		raw = bytes.TrimSpace(raw)
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, false
+		}
+		eventType := strings.TrimSpace(envelope.Type)
+		if eventType == "" || strings.ContainsAny(eventType, "\r\n") {
+			return nil, false
+		}
+		if len(documents) == maxResponsesConcatenatedJSONDocuments {
+			return nil, false
+		}
+		documents = append(documents, bytes.Clone(raw))
+	}
+}
+
+func writeResponsesSSEFrame(w io.Writer, chunk []byte) error {
+	payload, ok := responsesSSEDataPayload(chunk)
+	if !ok {
+		return writeResponsesSSEChunk(w, chunk)
+	}
+	documents, repaired := splitResponsesConcatenatedJSONDocuments(payload)
+	if !repaired {
+		return writeResponsesSSEChunk(w, chunk)
+	}
+
+	for _, document := range documents {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(document, &envelope); err != nil {
+			return err
+		}
+		frame := make([]byte, 0, len(document)+len(envelope.Type)+17)
+		frame = append(frame, "event: "...)
+		frame = append(frame, strings.TrimSpace(envelope.Type)...)
+		frame = append(frame, '\n')
+		frame = append(frame, "data: "...)
+		frame = append(frame, document...)
+		frame = append(frame, '\n', '\n')
+		if err := writeResponsesSSEChunk(w, frame); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -5879,7 +7604,45 @@ func responsesSSECanEmitWithoutDelimiter(chunk []byte) bool {
 	if responsesSSENeedsMoreData(trimmed) {
 		return false
 	}
-	return isSSEFieldChunk(trimmed) || bytes.HasPrefix(trimmed, []byte("{")) || bytes.HasPrefix(trimmed, []byte("["))
+	if payload, ok := responsesSSEDataPayload(trimmed); ok {
+		if bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
+			return true
+		}
+		if json.Valid(payload) {
+			return true
+		}
+		_, repaired := splitResponsesConcatenatedJSONDocuments(payload)
+		return repaired
+	}
+	return isSSEFieldChunk(trimmed)
+}
+
+func responsesSSEDataPayload(chunk []byte) ([]byte, bool) {
+	trimmed := bytes.TrimSpace(chunk)
+	if len(trimmed) == 0 {
+		return nil, false
+	}
+	if bytes.HasPrefix(trimmed, []byte("{")) || bytes.HasPrefix(trimmed, []byte("[")) {
+		return trimmed, true
+	}
+
+	lines := bytes.Split(bytes.ReplaceAll(trimmed, []byte("\r\n"), []byte("\n")), []byte("\n"))
+	dataLines := make([][]byte, 0, 1)
+	for _, line := range lines {
+		line = bytes.TrimSpace(line)
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		value := line[len("data:"):]
+		if len(value) > 0 && value[0] == ' ' {
+			value = value[1:]
+		}
+		dataLines = append(dataLines, value)
+	}
+	if len(dataLines) == 0 {
+		return nil, false
+	}
+	return bytes.Join(dataLines, []byte("\n")), true
 }
 
 func responsesSSENeedsMoreData(chunk []byte) bool {
@@ -5962,6 +7725,7 @@ func main() {
 	configPath := flag.String("config", "", "CLIProxyAPI config file")
 	manifestPath := flag.String("manifest", "", "Cockpit sidecar manifest file")
 	quotaReserveStatePath := flag.String("quota-reserve-state", "", "Cockpit OAuth quota reserve state file")
+	quotaPoolStatePath := flag.String("quota-pool-state", "", "Cockpit account-pool quota state file")
 	parentPID := flag.Int("parent-pid", 0, "Cockpit Tools parent process id")
 	flag.Parse()
 
@@ -6001,8 +7765,15 @@ func main() {
 	usageTracker := newRequestUsageTracker()
 	policy := &requestPolicy{manifest: m, emitter: emitter, tracker: usageTracker}
 	hook := &authHook{manifest: m, emitter: emitter}
-	selector := &cockpitSelector{manifest: m, emitter: emitter, quota: quotaState}
-	coreManager := buildCoreAuthManager(cfg, selector, hook, m, quotaState)
+	priorityState := newAPIKeyPriorityStateStore(*manifestPath)
+	selector := &cockpitSelector{
+		manifest:   m,
+		emitter:    emitter,
+		quota:      quotaState,
+		priorities: priorityState,
+		tracker:    usageTracker,
+	}
+	coreManager := buildCoreAuthManager(cfg, selector, hook, m, quotaState, usageTracker)
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -6021,12 +7792,23 @@ func main() {
 	defer runtime.Stop()
 	emitter.emitStartupStage("start_http_server")
 
+	// Reuse the same coreManager so WS upgrades share OAuth pool, routing and
+	// session affinity with POST /v1/responses.
+	var sdkCfg *config.SDKConfig
+	if cfg != nil {
+		sdkCfg = &cfg.SDKConfig
+	}
+	baseHandlers := sdkhandlers.NewBaseAPIHandlers(sdkCfg, coreManager)
+	responsesHandler := sdkopenai.NewOpenAIResponsesAPIHandler(baseHandlers)
 	relay := &relayServer{
-		runtime:  runtime,
-		cfg:      cfg,
-		manifest: m,
-		emitter:  emitter,
-		policy:   policy,
+		runtime:            runtime,
+		cfg:                cfg,
+		manifest:           m,
+		authManager:        coreManager,
+		emitter:            emitter,
+		policy:             policy,
+		responsesWebsocket: responsesHandler.ResponsesWebsocket,
+		quotaPoolStatePath: *quotaPoolStatePath,
 	}
 	if err := runRelayHTTPServer(ctx, cfg, relay.router(), emitter); err != nil && !errors.Is(err, context.Canceled) {
 		emitter.emit(map[string]any{"type": "error", "message": err.Error()})

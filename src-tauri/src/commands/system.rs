@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 use tauri::Manager;
 use tauri_plugin_autostart::ManagerExt as _;
 use url::Url;
@@ -20,6 +21,16 @@ use crate::modules::websocket;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const AUTO_BACKUP_DIR_NAME: &str = "backups";
+
+static GENERAL_CONFIG_SAVE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+pub(crate) fn lock_general_config_transaction() -> Result<std::sync::MutexGuard<'static, ()>, String>
+{
+    GENERAL_CONFIG_SAVE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "通用配置保存锁已损坏".to_string())
+}
 
 /// 网络服务配置（前端使用）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +70,14 @@ pub struct GeneralConfig {
     pub default_terminal: String,
     /// 应用主题: "light", "dark", "system"
     pub theme: String,
+    /// 主题色套件 id
+    pub theme_color: String,
+    /// 是否允许外连
+    pub external_network_enabled: bool,
+    /// WebDAV 允许域名（逗号分隔）
+    pub webdav_allowed_domains: String,
+    /// 是否减少界面动画
+    pub reduced_motion_enabled: bool,
     /// 界面缩放比例（WebView Zoom）
     pub ui_scale: f64,
     /// 自动刷新间隔（分钟），-1 表示禁用
@@ -67,6 +86,8 @@ pub struct GeneralConfig {
     pub codex_auto_refresh_minutes: i32,
     /// Codex 切号时是否同步覆盖 WSL 配置 (Windows Only)
     pub codex_sync_wsl: bool,
+    /// 是否启用 Codex 客户端中的 API 服务额度显示注入
+    pub codex_app_ui_injection_enabled: bool,
     /// Codex WSL 配置目录 (Windows Only)
     pub codex_wsl_config_dir: String,
     /// Zed 自动刷新间隔（分钟），-1 表示禁用
@@ -79,12 +100,12 @@ pub struct GeneralConfig {
     pub kiro_auto_refresh_minutes: i32,
     /// Cursor 自动刷新间隔（分钟），-1 表示禁用
     pub cursor_auto_refresh_minutes: i32,
-    /// Gemini 自动刷新间隔（分钟），-1 表示禁用
-    pub gemini_auto_refresh_minutes: i32,
+    /// Grok CLI 自动刷新间隔（分钟），-1 表示禁用
+    pub grok_auto_refresh_minutes: i32,
+    /// 默认实例切号时是否同步写入官方 ~/.grok/auth.json
+    pub grok_sync_official_auth_on_switch: bool,
     /// Claude 自动刷新间隔（分钟），-1 表示禁用
     pub claude_auto_refresh_minutes: i32,
-    /// Gemini 切号时是否同步覆盖 WSL 配置 (Windows Only)
-    pub gemini_sync_wsl: bool,
     /// CodeBuddy 自动刷新间隔（分钟），-1 表示禁用
     pub codebuddy_auto_refresh_minutes: i32,
     /// CodeBuddy CN 自动刷新间隔（分钟），-1 表示禁用
@@ -112,12 +133,18 @@ pub struct GeneralConfig {
     pub floating_card_show_on_startup: bool,
     /// 是否在启动后自动最小化主窗口
     pub startup_minimized: bool,
+    /// 是否记住主窗口尺寸和位置
+    pub remember_main_window_state: bool,
+    /// 启动默认页面：`last` 或具体页面 id
+    pub startup_page: String,
     /// 悬浮卡片是否默认置顶
     pub floating_card_always_on_top: bool,
     /// 是否启用应用开机自启动
     pub app_auto_launch_enabled: bool,
     /// 是否启用后台账号授权保活
     pub token_keeper_enabled: bool,
+    /// 是否启用本机账号变更后自动导入
+    pub auto_import_from_local_enabled: bool,
     /// 是否在应用启动后触发 Antigravity IDE 唤醒
     pub antigravity_startup_wakeup_enabled: bool,
     /// Antigravity IDE 启动后唤醒延时（秒）
@@ -182,6 +209,7 @@ pub struct GeneralConfig {
     pub ghcp_launch_on_switch: bool,
     /// 切换 Codex 时是否覆盖 OpenClaw 登录信息
     pub openclaw_auth_overwrite_on_switch: bool,
+    pub hermes_auth_overwrite_on_switch: bool,
     /// 切换 Codex 时是否自动启动/重启 Codex App
     pub codex_launch_on_switch: bool,
     /// 切换 Antigravity IDE 时是否自动启动/重启应用
@@ -252,10 +280,10 @@ pub struct GeneralConfig {
     pub cursor_quota_alert_enabled: bool,
     /// Cursor 配额预警阈值（百分比）
     pub cursor_quota_alert_threshold: i32,
-    /// 是否启用 Gemini 配额预警通知
-    pub gemini_quota_alert_enabled: bool,
-    /// Gemini 配额预警阈值（百分比）
-    pub gemini_quota_alert_threshold: i32,
+    /// 是否启用 Grok CLI 配额预警通知
+    pub grok_quota_alert_enabled: bool,
+    /// Grok CLI 配额预警阈值（百分比）
+    pub grok_quota_alert_threshold: i32,
     /// 是否启用 Claude 配额预警通知
     pub claude_quota_alert_enabled: bool,
     /// Claude 配额预警阈值（百分比）
@@ -964,6 +992,323 @@ fn normalize_auto_switch_selected_account_ids(raw: &[String]) -> Vec<String> {
     result
 }
 
+fn apply_codex_quota_alert_thresholds(
+    config: &mut UserConfig,
+    threshold: Option<i32>,
+    primary_threshold: Option<i32>,
+    secondary_threshold: Option<i32>,
+) {
+    let inherited_threshold = threshold.and_then(|value| {
+        let changed = config.codex_quota_alert_threshold != value;
+        config.codex_quota_alert_threshold = value;
+        changed.then_some(value)
+    });
+
+    if let Some(value) = primary_threshold.or(inherited_threshold) {
+        config.codex_quota_alert_primary_threshold = value;
+    }
+    if let Some(value) = secondary_threshold.or(inherited_threshold) {
+        config.codex_quota_alert_secondary_threshold = value;
+    }
+}
+
+fn is_general_config_patch_field(key: &str) -> bool {
+    matches!(
+        key,
+        "language"
+            | "default_terminal"
+            | "theme"
+            | "theme_color"
+            | "external_network_enabled"
+            | "webdav_allowed_domains"
+            | "reduced_motion_enabled"
+            | "ui_scale"
+            | "auto_refresh_minutes"
+            | "codex_auto_refresh_minutes"
+            | "codex_sync_wsl"
+            | "codex_app_ui_injection_enabled"
+            | "codex_wsl_config_dir"
+            | "zed_auto_refresh_minutes"
+            | "ghcp_auto_refresh_minutes"
+            | "windsurf_auto_refresh_minutes"
+            | "kiro_auto_refresh_minutes"
+            | "cursor_auto_refresh_minutes"
+            | "grok_auto_refresh_minutes"
+            | "grok_sync_official_auth_on_switch"
+            | "claude_auto_refresh_minutes"
+            | "codebuddy_auto_refresh_minutes"
+            | "codebuddy_cn_auto_refresh_minutes"
+            | "workbuddy_auto_refresh_minutes"
+            | "qoder_auto_refresh_minutes"
+            | "zcode_auto_refresh_minutes"
+            | "trae_auto_refresh_minutes"
+            | "trae_solo_auto_refresh_minutes"
+            | "trae_cn_auto_refresh_minutes"
+            | "trae_solo_cn_auto_refresh_minutes"
+            | "close_behavior"
+            | "minimize_behavior"
+            | "hide_dock_icon"
+            | "tray_icon_style"
+            | "floating_card_show_on_startup"
+            | "startup_minimized"
+            | "remember_main_window_state"
+            | "startup_page"
+            | "floating_card_always_on_top"
+            | "app_auto_launch_enabled"
+            | "token_keeper_enabled"
+            | "auto_import_from_local_enabled"
+            | "antigravity_startup_wakeup_enabled"
+            | "antigravity_startup_wakeup_delay_seconds"
+            | "codex_startup_wakeup_enabled"
+            | "codex_startup_wakeup_delay_seconds"
+            | "floating_card_confirm_on_close"
+            | "opencode_app_path"
+            | "antigravity_app_path"
+            | "codex_app_path"
+            | "claude_app_path"
+            | "claude_app_scan_roots"
+            | "codex_specified_app_path"
+            | "zed_app_path"
+            | "vscode_app_path"
+            | "windsurf_app_path"
+            | "kiro_app_path"
+            | "cursor_app_path"
+            | "codebuddy_app_path"
+            | "codebuddy_cn_app_path"
+            | "qoder_app_path"
+            | "zcode_app_path"
+            | "trae_app_path"
+            | "trae_solo_app_path"
+            | "trae_cn_app_path"
+            | "trae_solo_cn_app_path"
+            | "trae_app_scan_roots"
+            | "trae_solo_app_scan_roots"
+            | "trae_cn_app_scan_roots"
+            | "trae_solo_cn_app_scan_roots"
+            | "workbuddy_app_path"
+            | "opencode_sync_on_switch"
+            | "opencode_auth_overwrite_on_switch"
+            | "ghcp_opencode_sync_on_switch"
+            | "ghcp_opencode_auth_overwrite_on_switch"
+            | "ghcp_launch_on_switch"
+            | "openclaw_auth_overwrite_on_switch"
+            | "hermes_auth_overwrite_on_switch"
+            | "codex_launch_on_switch"
+            | "antigravity_launch_on_switch"
+            | "codex_restart_specified_app_on_switch"
+            | "codex_local_access_entry_visible"
+            | "top_right_ad_visible"
+            | "antigravity_dual_switch_no_restart_enabled"
+            | "auto_switch_enabled"
+            | "auto_switch_threshold"
+            | "auto_switch_credits_enabled"
+            | "auto_switch_credits_threshold"
+            | "auto_switch_scope_mode"
+            | "auto_switch_selected_group_ids"
+            | "auto_switch_account_scope_mode"
+            | "auto_switch_selected_account_ids"
+            | "codex_auto_switch_enabled"
+            | "codex_auto_switch_primary_threshold"
+            | "codex_auto_switch_secondary_threshold"
+            | "codex_auto_switch_account_scope_mode"
+            | "codex_auto_switch_selected_account_ids"
+            | "quota_alert_enabled"
+            | "quota_alert_threshold"
+            | "codex_quota_alert_enabled"
+            | "codex_quota_alert_threshold"
+            | "zed_quota_alert_enabled"
+            | "zed_quota_alert_threshold"
+            | "codex_quota_alert_primary_threshold"
+            | "codex_quota_alert_secondary_threshold"
+            | "ghcp_quota_alert_enabled"
+            | "ghcp_quota_alert_threshold"
+            | "windsurf_quota_alert_enabled"
+            | "windsurf_quota_alert_threshold"
+            | "kiro_quota_alert_enabled"
+            | "kiro_quota_alert_threshold"
+            | "cursor_quota_alert_enabled"
+            | "cursor_quota_alert_threshold"
+            | "grok_quota_alert_enabled"
+            | "grok_quota_alert_threshold"
+            | "claude_quota_alert_enabled"
+            | "claude_quota_alert_threshold"
+            | "codebuddy_quota_alert_enabled"
+            | "codebuddy_quota_alert_threshold"
+            | "codebuddy_cn_quota_alert_enabled"
+            | "codebuddy_cn_quota_alert_threshold"
+            | "qoder_quota_alert_enabled"
+            | "qoder_quota_alert_threshold"
+            | "trae_quota_alert_enabled"
+            | "trae_quota_alert_threshold"
+            | "trae_solo_quota_alert_enabled"
+            | "trae_solo_quota_alert_threshold"
+            | "trae_cn_quota_alert_enabled"
+            | "trae_cn_quota_alert_threshold"
+            | "trae_solo_cn_quota_alert_enabled"
+            | "trae_solo_cn_quota_alert_threshold"
+            | "workbuddy_quota_alert_enabled"
+            | "workbuddy_quota_alert_threshold"
+    )
+}
+
+fn json_i32(updates: &JsonMap<String, JsonValue>, key: &str) -> Result<Option<i32>, String> {
+    let Some(value) = updates.get(key) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_i64()
+        .and_then(|value| i32::try_from(value).ok())
+        .ok_or_else(|| format!("配置字段 {} 必须为整数", key))?;
+    Ok(Some(value))
+}
+
+fn apply_general_config_updates(
+    current: &mut UserConfig,
+    updates: &JsonMap<String, JsonValue>,
+) -> Result<(), String> {
+    for key in updates.keys() {
+        if !is_general_config_patch_field(key) {
+            return Err(format!("不支持的通用配置字段: {}", key));
+        }
+    }
+
+    let mut value = serde_json::to_value(&*current)
+        .map_err(|error| format!("序列化当前通用配置失败: {}", error))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "当前通用配置结构无效".to_string())?;
+    for (key, value) in updates {
+        object.insert(key.clone(), value.clone());
+    }
+    let mut next: UserConfig = serde_json::from_value(value)
+        .map_err(|error| format!("通用配置字段类型无效: {}", error))?;
+
+    if updates.contains_key("language") {
+        next.language = next.language.to_lowercase();
+    }
+    if updates.contains_key("ui_scale") {
+        next.ui_scale = sanitize_ui_scale(next.ui_scale);
+    }
+    if updates.contains_key("antigravity_startup_wakeup_delay_seconds") {
+        next.antigravity_startup_wakeup_delay_seconds =
+            sanitize_startup_wakeup_delay_seconds(next.antigravity_startup_wakeup_delay_seconds);
+    }
+    if updates.contains_key("codex_startup_wakeup_delay_seconds") {
+        next.codex_startup_wakeup_delay_seconds =
+            sanitize_startup_wakeup_delay_seconds(next.codex_startup_wakeup_delay_seconds);
+    }
+    if updates.contains_key("startup_page") {
+        next.startup_page = config::normalize_startup_page(&next.startup_page);
+    }
+    if updates.contains_key("theme_color") {
+        next.theme_color = config::normalize_theme_color(&next.theme_color);
+    }
+    if updates.contains_key("webdav_allowed_domains") {
+        next.webdav_allowed_domains = next
+            .webdav_allowed_domains
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(",");
+    }
+
+    macro_rules! trim_string_field {
+        ($key:literal, $field:ident) => {
+            if updates.contains_key($key) {
+                next.$field = next.$field.trim().to_string();
+            }
+        };
+    }
+    macro_rules! normalize_app_path_field {
+        ($key:literal, $field:ident) => {
+            if updates.contains_key($key) {
+                next.$field = modules::process::normalize_windows_user_facing_path(&next.$field);
+            }
+        };
+    }
+    normalize_app_path_field!("opencode_app_path", opencode_app_path);
+    normalize_app_path_field!("antigravity_app_path", antigravity_app_path);
+    normalize_app_path_field!("codex_app_path", codex_app_path);
+    normalize_app_path_field!("claude_app_path", claude_app_path);
+    trim_string_field!("claude_app_scan_roots", claude_app_scan_roots);
+    normalize_app_path_field!("codex_specified_app_path", codex_specified_app_path);
+    normalize_app_path_field!("zed_app_path", zed_app_path);
+    normalize_app_path_field!("vscode_app_path", vscode_app_path);
+    normalize_app_path_field!("windsurf_app_path", windsurf_app_path);
+    normalize_app_path_field!("kiro_app_path", kiro_app_path);
+    normalize_app_path_field!("cursor_app_path", cursor_app_path);
+    normalize_app_path_field!("codebuddy_app_path", codebuddy_app_path);
+    normalize_app_path_field!("codebuddy_cn_app_path", codebuddy_cn_app_path);
+    normalize_app_path_field!("qoder_app_path", qoder_app_path);
+    normalize_app_path_field!("zcode_app_path", zcode_app_path);
+    normalize_app_path_field!("trae_app_path", trae_app_path);
+    normalize_app_path_field!("trae_solo_app_path", trae_solo_app_path);
+    normalize_app_path_field!("trae_cn_app_path", trae_cn_app_path);
+    normalize_app_path_field!("trae_solo_cn_app_path", trae_solo_cn_app_path);
+    trim_string_field!("trae_app_scan_roots", trae_app_scan_roots);
+    trim_string_field!("trae_solo_app_scan_roots", trae_solo_app_scan_roots);
+    trim_string_field!("trae_cn_app_scan_roots", trae_cn_app_scan_roots);
+    trim_string_field!("trae_solo_cn_app_scan_roots", trae_solo_cn_app_scan_roots);
+    normalize_app_path_field!("workbuddy_app_path", workbuddy_app_path);
+
+    if updates.contains_key("auto_switch_scope_mode") {
+        let normalized = next.auto_switch_scope_mode.trim();
+        next.auto_switch_scope_mode = if normalized.is_empty() {
+            current.auto_switch_scope_mode.clone()
+        } else {
+            normalized.to_string()
+        };
+    }
+    if updates.contains_key("auto_switch_account_scope_mode") {
+        next.auto_switch_account_scope_mode =
+            normalize_auto_switch_account_scope_mode(&next.auto_switch_account_scope_mode);
+    }
+    if updates.contains_key("auto_switch_selected_account_ids") {
+        next.auto_switch_selected_account_ids =
+            normalize_auto_switch_selected_account_ids(&next.auto_switch_selected_account_ids);
+    }
+    if updates.contains_key("codex_auto_switch_account_scope_mode") {
+        next.codex_auto_switch_account_scope_mode =
+            normalize_auto_switch_account_scope_mode(&next.codex_auto_switch_account_scope_mode);
+    }
+    if updates.contains_key("codex_auto_switch_selected_account_ids") {
+        next.codex_auto_switch_selected_account_ids = normalize_auto_switch_selected_account_ids(
+            &next.codex_auto_switch_selected_account_ids,
+        );
+    }
+
+    if updates.contains_key("opencode_sync_on_switch")
+        || updates.contains_key("opencode_auth_overwrite_on_switch")
+    {
+        next.opencode_sync_on_switch =
+            next.opencode_auth_overwrite_on_switch && next.opencode_sync_on_switch;
+    }
+    if updates.contains_key("ghcp_opencode_sync_on_switch")
+        || updates.contains_key("ghcp_opencode_auth_overwrite_on_switch")
+    {
+        next.ghcp_opencode_sync_on_switch =
+            next.ghcp_opencode_auth_overwrite_on_switch && next.ghcp_opencode_sync_on_switch;
+    }
+
+    let codex_threshold = json_i32(updates, "codex_quota_alert_threshold")?;
+    let codex_primary = json_i32(updates, "codex_quota_alert_primary_threshold")?;
+    let codex_secondary = json_i32(updates, "codex_quota_alert_secondary_threshold")?;
+    let mut thresholds = current.clone();
+    apply_codex_quota_alert_thresholds(
+        &mut thresholds,
+        codex_threshold,
+        codex_primary,
+        codex_secondary,
+    );
+    next.codex_quota_alert_threshold = thresholds.codex_quota_alert_threshold;
+    next.codex_quota_alert_primary_threshold = thresholds.codex_quota_alert_primary_threshold;
+    next.codex_quota_alert_secondary_threshold = thresholds.codex_quota_alert_secondary_threshold;
+
+    *current = next;
+    Ok(())
+}
+
 fn get_app_auto_launch_enabled(app: &tauri::AppHandle) -> Result<bool, String> {
     app.autolaunch()
         .is_enabled()
@@ -1459,6 +1804,15 @@ pub async fn open_data_folder() -> Result<(), String> {
     open_path_in_system(path.as_path())
 }
 
+#[tauri::command]
+pub fn open_local_path(path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(path.trim());
+    if !p.exists() {
+        return Err(format!("路径不存在: {}", p.display()));
+    }
+    open_path_in_system(p.as_path())
+}
+
 /// 保存文本文件
 #[tauri::command]
 pub async fn save_text_file(path: String, content: String) -> Result<(), String> {
@@ -1484,18 +1838,16 @@ pub fn save_auto_backup_settings(
     include_config: bool,
     retention_days: i32,
 ) -> Result<AutoBackupSettings, String> {
-    let current = config::get_user_config();
     let (next_include_accounts, next_include_config) =
         config::normalize_auto_backup_selection(include_accounts, include_config);
     let next_retention_days = config::sanitize_auto_backup_retention_days(retention_days);
-    let new_config = UserConfig {
-        auto_backup_enabled: enabled,
-        auto_backup_include_accounts: next_include_accounts,
-        auto_backup_include_config: next_include_config,
-        auto_backup_retention_days: next_retention_days,
-        ..current
-    };
-    config::save_user_config(&new_config)?;
+    let new_config = config::patch_user_config(move |current| {
+        current.auto_backup_enabled = enabled;
+        current.auto_backup_include_accounts = next_include_accounts;
+        current.auto_backup_include_config = next_include_config;
+        current.auto_backup_retention_days = next_retention_days;
+        Ok(())
+    })?;
     build_auto_backup_settings(&new_config)
 }
 
@@ -1503,7 +1855,6 @@ pub fn save_auto_backup_settings(
 pub fn update_auto_backup_last_run(
     last_backup_at: Option<String>,
 ) -> Result<AutoBackupSettings, String> {
-    let current = config::get_user_config();
     let normalized_last_backup_at = last_backup_at.and_then(|value| {
         let trimmed = value.trim().to_string();
         if trimmed.is_empty() {
@@ -1512,11 +1863,10 @@ pub fn update_auto_backup_last_run(
             Some(trimmed)
         }
     });
-    let new_config = UserConfig {
-        auto_backup_last_backup_at: normalized_last_backup_at,
-        ..current
-    };
-    config::save_user_config(&new_config)?;
+    let new_config = config::patch_user_config(move |current| {
+        current.auto_backup_last_backup_at = normalized_last_backup_at;
+        Ok(())
+    })?;
     build_auto_backup_settings(&new_config)
 }
 
@@ -1745,22 +2095,21 @@ pub fn save_webdav_sync_settings(
     remote_dir: String,
     retention_days: i32,
 ) -> Result<WebdavSyncSettings, String> {
-    let current = config::get_user_config();
-    let next_password =
-        resolve_webdav_password_update(&current.webdav_sync_password, password, clear_password);
-    let (next_url, next_username, next_remote_dir) =
-        validate_webdav_sync_config(enabled, &url, &username, &next_password, &remote_dir)?;
+    let new_config = config::patch_user_config(move |current| {
+        let next_password =
+            resolve_webdav_password_update(&current.webdav_sync_password, password, clear_password);
+        let (next_url, next_username, next_remote_dir) =
+            validate_webdav_sync_config(enabled, &url, &username, &next_password, &remote_dir)?;
 
-    let new_config = UserConfig {
-        webdav_sync_enabled: enabled,
-        webdav_sync_url: next_url,
-        webdav_sync_username: next_username,
-        webdav_sync_password: next_password,
-        webdav_sync_remote_dir: next_remote_dir,
-        webdav_sync_retention_days: config::sanitize_webdav_sync_retention_days(retention_days),
-        ..current
-    };
-    config::save_user_config(&new_config)?;
+        current.webdav_sync_enabled = enabled;
+        current.webdav_sync_url = next_url;
+        current.webdav_sync_username = next_username;
+        current.webdav_sync_password = next_password;
+        current.webdav_sync_remote_dir = next_remote_dir;
+        current.webdav_sync_retention_days =
+            config::sanitize_webdav_sync_retention_days(retention_days);
+        Ok(())
+    })?;
     Ok(build_webdav_sync_settings(&new_config))
 }
 
@@ -1822,12 +2171,11 @@ pub async fn upload_auto_backup_to_webdav(
     let uploaded_at = chrono::Utc::now().to_rfc3339();
     let remote_dir = connection.remote_dir.clone();
 
-    let new_config = UserConfig {
-        webdav_sync_last_upload_at: Some(uploaded_at.clone()),
-        webdav_sync_last_upload_file_name: Some(archive_name),
-        ..config
-    };
-    config::save_user_config(&new_config)?;
+    config::patch_user_config(|current| {
+        current.webdav_sync_last_upload_at = Some(uploaded_at.clone());
+        current.webdav_sync_last_upload_file_name = Some(archive_name.clone());
+        Ok(())
+    })?;
 
     Ok(modules::webdav_sync::WebdavUploadResult {
         uploaded_files,
@@ -1861,12 +2209,11 @@ pub async fn read_webdav_backup_file(file_name: String) -> Result<String, String
         return Err("不支持的备份文件格式".to_string());
     };
 
-    let new_config = UserConfig {
-        webdav_sync_last_download_at: Some(downloaded_at),
-        webdav_sync_last_download_file_name: Some(safe_name),
-        ..config
-    };
-    config::save_user_config(&new_config)?;
+    config::patch_user_config(move |current| {
+        current.webdav_sync_last_download_at = Some(downloaded_at);
+        current.webdav_sync_last_download_file_name = Some(safe_name);
+        Ok(())
+    })?;
     Ok(content)
 }
 
@@ -1913,194 +2260,48 @@ pub fn save_network_config(
     global_proxy_url: Option<String>,
     global_proxy_no_proxy: Option<String>,
 ) -> Result<bool, String> {
-    let current = config::get_user_config();
-    let next_report_enabled = report_enabled.unwrap_or(current.report_enabled);
-    let next_report_port = report_port.unwrap_or(current.report_port);
-    let next_report_token = report_token
-        .unwrap_or_else(|| current.report_token.clone())
-        .trim()
-        .to_string();
-    let next_global_proxy_enabled = global_proxy_enabled.unwrap_or(current.global_proxy_enabled);
-    let next_global_proxy_url = global_proxy_url
-        .unwrap_or_else(|| current.global_proxy_url.clone())
-        .trim()
-        .to_string();
-    let next_global_proxy_no_proxy = global_proxy_no_proxy
-        .unwrap_or_else(|| current.global_proxy_no_proxy.clone())
-        .trim()
-        .to_string();
+    let mut needs_restart = false;
+    config::patch_user_config(|current| {
+        let next_report_enabled = report_enabled.unwrap_or(current.report_enabled);
+        let next_report_port = report_port.unwrap_or(current.report_port);
+        let next_report_token = report_token
+            .unwrap_or_else(|| current.report_token.clone())
+            .trim()
+            .to_string();
+        let next_global_proxy_enabled =
+            global_proxy_enabled.unwrap_or(current.global_proxy_enabled);
+        let next_global_proxy_url = global_proxy_url
+            .unwrap_or_else(|| current.global_proxy_url.clone())
+            .trim()
+            .to_string();
+        let next_global_proxy_no_proxy = global_proxy_no_proxy
+            .unwrap_or_else(|| current.global_proxy_no_proxy.clone())
+            .trim()
+            .to_string();
 
-    if next_report_enabled && next_report_token.is_empty() {
-        return Err("网页查询服务 token 不能为空".to_string());
-    }
-    if next_global_proxy_enabled && next_global_proxy_url.is_empty() {
-        return Err("启用全局代理时，代理地址不能为空".to_string());
-    }
+        if next_report_enabled && next_report_token.is_empty() {
+            return Err("网页查询服务 token 不能为空".to_string());
+        }
+        if next_global_proxy_enabled && next_global_proxy_url.is_empty() {
+            return Err("启用全局代理时，代理地址不能为空".to_string());
+        }
 
-    let needs_restart = current.ws_port != ws_port
-        || current.ws_enabled != ws_enabled
-        || current.report_enabled != next_report_enabled
-        || current.report_port != next_report_port
-        || current.report_token != next_report_token;
+        needs_restart = current.ws_port != ws_port
+            || current.ws_enabled != ws_enabled
+            || current.report_enabled != next_report_enabled
+            || current.report_port != next_report_port
+            || current.report_token != next_report_token;
 
-    let new_config = UserConfig {
-        ws_enabled,
-        ws_port,
-        report_enabled: next_report_enabled,
-        report_port: next_report_port,
-        report_token: next_report_token,
-        global_proxy_enabled: next_global_proxy_enabled,
-        global_proxy_url: next_global_proxy_url,
-        global_proxy_no_proxy: next_global_proxy_no_proxy,
-        diagnostics_error_reporting_enabled: current.diagnostics_error_reporting_enabled,
-        diagnostics_error_reporting_debug: current.diagnostics_error_reporting_debug,
-        // 保留其他设置不变
-        language: current.language,
-        default_terminal: current.default_terminal,
-        theme: current.theme,
-        ui_scale: current.ui_scale,
-        auto_refresh_minutes: current.auto_refresh_minutes,
-        codex_auto_refresh_minutes: current.codex_auto_refresh_minutes,
-        claude_auto_refresh_minutes: current.claude_auto_refresh_minutes,
-        codex_sync_wsl: current.codex_sync_wsl,
-        codex_wsl_config_dir: current.codex_wsl_config_dir,
-        zed_auto_refresh_minutes: current.zed_auto_refresh_minutes,
-        ghcp_auto_refresh_minutes: current.ghcp_auto_refresh_minutes,
-        windsurf_auto_refresh_minutes: current.windsurf_auto_refresh_minutes,
-        kiro_auto_refresh_minutes: current.kiro_auto_refresh_minutes,
-        cursor_auto_refresh_minutes: current.cursor_auto_refresh_minutes,
-        gemini_auto_refresh_minutes: current.gemini_auto_refresh_minutes,
-        gemini_sync_wsl: current.gemini_sync_wsl,
-        codebuddy_auto_refresh_minutes: current.codebuddy_auto_refresh_minutes,
-        codebuddy_cn_auto_refresh_minutes: current.codebuddy_cn_auto_refresh_minutes,
-        workbuddy_auto_refresh_minutes: current.workbuddy_auto_refresh_minutes,
-        qoder_auto_refresh_minutes: current.qoder_auto_refresh_minutes,
-        zcode_auto_refresh_minutes: current.zcode_auto_refresh_minutes,
-        trae_auto_refresh_minutes: current.trae_auto_refresh_minutes,
-        trae_solo_auto_refresh_minutes: current.trae_solo_auto_refresh_minutes,
-        trae_cn_auto_refresh_minutes: current.trae_cn_auto_refresh_minutes,
-        trae_solo_cn_auto_refresh_minutes: current.trae_solo_cn_auto_refresh_minutes,
-        close_behavior: current.close_behavior,
-        minimize_behavior: current.minimize_behavior,
-        hide_dock_icon: current.hide_dock_icon,
-        tray_icon_style: current.tray_icon_style,
-        floating_card_show_on_startup: current.floating_card_show_on_startup,
-        startup_minimized: current.startup_minimized,
-        floating_card_always_on_top: current.floating_card_always_on_top,
-        app_auto_launch_enabled: current.app_auto_launch_enabled,
-        token_keeper_enabled: current.token_keeper_enabled,
-        antigravity_startup_wakeup_enabled: current.antigravity_startup_wakeup_enabled,
-        antigravity_startup_wakeup_delay_seconds: current.antigravity_startup_wakeup_delay_seconds,
-        codex_startup_wakeup_enabled: current.codex_startup_wakeup_enabled,
-        codex_startup_wakeup_delay_seconds: current.codex_startup_wakeup_delay_seconds,
-        floating_card_confirm_on_close: current.floating_card_confirm_on_close,
-        auto_backup_enabled: current.auto_backup_enabled,
-        auto_backup_include_accounts: current.auto_backup_include_accounts,
-        auto_backup_include_config: current.auto_backup_include_config,
-        auto_backup_retention_days: current.auto_backup_retention_days,
-        auto_backup_retention_days_migrated: current.auto_backup_retention_days_migrated,
-        auto_backup_last_backup_at: current.auto_backup_last_backup_at,
-        webdav_sync_enabled: current.webdav_sync_enabled,
-        webdav_sync_url: current.webdav_sync_url,
-        webdav_sync_username: current.webdav_sync_username,
-        webdav_sync_password: current.webdav_sync_password,
-        webdav_sync_remote_dir: current.webdav_sync_remote_dir,
-        webdav_sync_retention_days: current.webdav_sync_retention_days,
-        webdav_sync_last_upload_at: current.webdav_sync_last_upload_at,
-        webdav_sync_last_upload_file_name: current.webdav_sync_last_upload_file_name,
-        webdav_sync_last_download_at: current.webdav_sync_last_download_at,
-        webdav_sync_last_download_file_name: current.webdav_sync_last_download_file_name,
-        floating_card_position_x: current.floating_card_position_x,
-        floating_card_position_y: current.floating_card_position_y,
-        opencode_app_path: current.opencode_app_path,
-        antigravity_app_path: current.antigravity_app_path,
-        codex_app_path: current.codex_app_path,
-        claude_app_path: current.claude_app_path,
-        claude_app_scan_roots: current.claude_app_scan_roots,
-        codex_specified_app_path: current.codex_specified_app_path,
-        zed_app_path: current.zed_app_path,
-        vscode_app_path: current.vscode_app_path,
-        windsurf_app_path: current.windsurf_app_path,
-        kiro_app_path: current.kiro_app_path,
-        cursor_app_path: current.cursor_app_path,
-        codebuddy_app_path: current.codebuddy_app_path,
-        codebuddy_cn_app_path: current.codebuddy_cn_app_path,
-        qoder_app_path: current.qoder_app_path,
-        zcode_app_path: current.zcode_app_path,
-        trae_app_path: current.trae_app_path,
-        trae_solo_app_path: current.trae_solo_app_path,
-        trae_cn_app_path: current.trae_cn_app_path,
-        trae_solo_cn_app_path: current.trae_solo_cn_app_path,
-        trae_app_scan_roots: current.trae_app_scan_roots,
-        trae_solo_app_scan_roots: current.trae_solo_app_scan_roots,
-        trae_cn_app_scan_roots: current.trae_cn_app_scan_roots,
-        trae_solo_cn_app_scan_roots: current.trae_solo_cn_app_scan_roots,
-        workbuddy_app_path: current.workbuddy_app_path,
-        opencode_sync_on_switch: current.opencode_sync_on_switch,
-        opencode_auth_overwrite_on_switch: current.opencode_auth_overwrite_on_switch,
-        ghcp_opencode_sync_on_switch: current.ghcp_opencode_sync_on_switch,
-        ghcp_opencode_auth_overwrite_on_switch: current.ghcp_opencode_auth_overwrite_on_switch,
-        ghcp_launch_on_switch: current.ghcp_launch_on_switch,
-        openclaw_auth_overwrite_on_switch: current.openclaw_auth_overwrite_on_switch,
-        codex_launch_on_switch: current.codex_launch_on_switch,
-        antigravity_launch_on_switch: current.antigravity_launch_on_switch,
-        codex_restart_specified_app_on_switch: current.codex_restart_specified_app_on_switch,
-        codex_local_access_entry_visible: current.codex_local_access_entry_visible,
-        top_right_ad_visible: current.top_right_ad_visible,
-        antigravity_dual_switch_no_restart_enabled: current
-            .antigravity_dual_switch_no_restart_enabled,
-        auto_switch_enabled: current.auto_switch_enabled,
-        auto_switch_threshold: current.auto_switch_threshold,
-        auto_switch_credits_enabled: current.auto_switch_credits_enabled,
-        auto_switch_credits_threshold: current.auto_switch_credits_threshold,
-        auto_switch_scope_mode: current.auto_switch_scope_mode,
-        auto_switch_selected_group_ids: current.auto_switch_selected_group_ids,
-        auto_switch_account_scope_mode: current.auto_switch_account_scope_mode,
-        auto_switch_selected_account_ids: current.auto_switch_selected_account_ids,
-        codex_auto_switch_enabled: current.codex_auto_switch_enabled,
-        codex_auto_switch_primary_threshold: current.codex_auto_switch_primary_threshold,
-        codex_auto_switch_secondary_threshold: current.codex_auto_switch_secondary_threshold,
-        codex_auto_switch_account_scope_mode: current.codex_auto_switch_account_scope_mode,
-        codex_auto_switch_selected_account_ids: current.codex_auto_switch_selected_account_ids,
-        quota_alert_enabled: current.quota_alert_enabled,
-        quota_alert_threshold: current.quota_alert_threshold,
-        codex_quota_alert_enabled: current.codex_quota_alert_enabled,
-        codex_quota_alert_threshold: current.codex_quota_alert_threshold,
-        claude_quota_alert_enabled: current.claude_quota_alert_enabled,
-        claude_quota_alert_threshold: current.claude_quota_alert_threshold,
-        zed_quota_alert_enabled: current.zed_quota_alert_enabled,
-        zed_quota_alert_threshold: current.zed_quota_alert_threshold,
-        codex_quota_alert_primary_threshold: current.codex_quota_alert_primary_threshold,
-        codex_quota_alert_secondary_threshold: current.codex_quota_alert_secondary_threshold,
-        ghcp_quota_alert_enabled: current.ghcp_quota_alert_enabled,
-        ghcp_quota_alert_threshold: current.ghcp_quota_alert_threshold,
-        windsurf_quota_alert_enabled: current.windsurf_quota_alert_enabled,
-        windsurf_quota_alert_threshold: current.windsurf_quota_alert_threshold,
-        kiro_quota_alert_enabled: current.kiro_quota_alert_enabled,
-        kiro_quota_alert_threshold: current.kiro_quota_alert_threshold,
-        cursor_quota_alert_enabled: current.cursor_quota_alert_enabled,
-        cursor_quota_alert_threshold: current.cursor_quota_alert_threshold,
-        gemini_quota_alert_enabled: current.gemini_quota_alert_enabled,
-        gemini_quota_alert_threshold: current.gemini_quota_alert_threshold,
-        codebuddy_quota_alert_enabled: current.codebuddy_quota_alert_enabled,
-        codebuddy_quota_alert_threshold: current.codebuddy_quota_alert_threshold,
-        codebuddy_cn_quota_alert_enabled: current.codebuddy_cn_quota_alert_enabled,
-        codebuddy_cn_quota_alert_threshold: current.codebuddy_cn_quota_alert_threshold,
-        qoder_quota_alert_enabled: current.qoder_quota_alert_enabled,
-        qoder_quota_alert_threshold: current.qoder_quota_alert_threshold,
-        trae_quota_alert_enabled: current.trae_quota_alert_enabled,
-        trae_quota_alert_threshold: current.trae_quota_alert_threshold,
-        trae_solo_quota_alert_enabled: current.trae_solo_quota_alert_enabled,
-        trae_solo_quota_alert_threshold: current.trae_solo_quota_alert_threshold,
-        trae_cn_quota_alert_enabled: current.trae_cn_quota_alert_enabled,
-        trae_cn_quota_alert_threshold: current.trae_cn_quota_alert_threshold,
-        trae_solo_cn_quota_alert_enabled: current.trae_solo_cn_quota_alert_enabled,
-        trae_solo_cn_quota_alert_threshold: current.trae_solo_cn_quota_alert_threshold,
-        workbuddy_quota_alert_enabled: current.workbuddy_quota_alert_enabled,
-        workbuddy_quota_alert_threshold: current.workbuddy_quota_alert_threshold,
-    };
-
-    config::save_user_config(&new_config)?;
+        current.ws_enabled = ws_enabled;
+        current.ws_port = ws_port;
+        current.report_enabled = next_report_enabled;
+        current.report_port = next_report_port;
+        current.report_token = next_report_token;
+        current.global_proxy_enabled = next_global_proxy_enabled;
+        current.global_proxy_url = next_global_proxy_url;
+        current.global_proxy_no_proxy = next_global_proxy_no_proxy;
+        Ok(())
+    })?;
 
     Ok(needs_restart)
 }
@@ -2269,18 +2470,9 @@ pub fn diagnostics_capture_event(event: modules::diagnostics::DiagnosticsClientE
 #[tauri::command]
 pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String> {
     let started = Instant::now();
-    let mut user_config = config::get_user_config();
+    let user_config = config::get_user_config();
     let app_auto_launch_enabled =
         get_app_auto_launch_enabled(&app).unwrap_or(user_config.app_auto_launch_enabled);
-    if app_auto_launch_enabled != user_config.app_auto_launch_enabled {
-        user_config.app_auto_launch_enabled = app_auto_launch_enabled;
-        if let Err(err) = config::save_user_config(&user_config) {
-            modules::logger::log_warn(&format!(
-                "[SystemConfig] 同步应用自启动状态到本地配置失败: {}",
-                err
-            ));
-        }
-    }
 
     let close_behavior_str = match user_config.close_behavior {
         CloseWindowBehavior::Ask => "ask",
@@ -2296,19 +2488,24 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         language: user_config.language,
         default_terminal: user_config.default_terminal,
         theme: user_config.theme,
+        theme_color: config::normalize_theme_color(&user_config.theme_color),
+        external_network_enabled: user_config.external_network_enabled,
+        webdav_allowed_domains: user_config.webdav_allowed_domains,
+        reduced_motion_enabled: user_config.reduced_motion_enabled,
         ui_scale: user_config.ui_scale,
         auto_refresh_minutes: user_config.auto_refresh_minutes,
         codex_auto_refresh_minutes: user_config.codex_auto_refresh_minutes,
         codex_sync_wsl: user_config.codex_sync_wsl,
+        codex_app_ui_injection_enabled: user_config.codex_app_ui_injection_enabled,
         codex_wsl_config_dir: user_config.codex_wsl_config_dir,
         zed_auto_refresh_minutes: user_config.zed_auto_refresh_minutes,
         ghcp_auto_refresh_minutes: user_config.ghcp_auto_refresh_minutes,
         windsurf_auto_refresh_minutes: user_config.windsurf_auto_refresh_minutes,
         kiro_auto_refresh_minutes: user_config.kiro_auto_refresh_minutes,
         cursor_auto_refresh_minutes: user_config.cursor_auto_refresh_minutes,
-        gemini_auto_refresh_minutes: user_config.gemini_auto_refresh_minutes,
+        grok_auto_refresh_minutes: user_config.grok_auto_refresh_minutes,
+        grok_sync_official_auth_on_switch: user_config.grok_sync_official_auth_on_switch,
         claude_auto_refresh_minutes: user_config.claude_auto_refresh_minutes,
-        gemini_sync_wsl: user_config.gemini_sync_wsl,
         codebuddy_auto_refresh_minutes: user_config.codebuddy_auto_refresh_minutes,
         codebuddy_cn_auto_refresh_minutes: user_config.codebuddy_cn_auto_refresh_minutes,
         workbuddy_auto_refresh_minutes: user_config.workbuddy_auto_refresh_minutes,
@@ -2324,9 +2521,12 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         tray_icon_style: user_config.tray_icon_style.as_str().to_string(),
         floating_card_show_on_startup: user_config.floating_card_show_on_startup,
         startup_minimized: user_config.startup_minimized,
+        remember_main_window_state: user_config.remember_main_window_state,
+        startup_page: config::normalize_startup_page(&user_config.startup_page),
         floating_card_always_on_top: user_config.floating_card_always_on_top,
         app_auto_launch_enabled,
         token_keeper_enabled: user_config.token_keeper_enabled,
+        auto_import_from_local_enabled: user_config.auto_import_from_local_enabled,
         antigravity_startup_wakeup_enabled: user_config.antigravity_startup_wakeup_enabled,
         antigravity_startup_wakeup_delay_seconds: sanitize_startup_wakeup_delay_seconds(
             user_config.antigravity_startup_wakeup_delay_seconds,
@@ -2336,36 +2536,75 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
             user_config.codex_startup_wakeup_delay_seconds,
         ),
         floating_card_confirm_on_close: user_config.floating_card_confirm_on_close,
-        opencode_app_path: user_config.opencode_app_path,
-        antigravity_app_path: user_config.antigravity_app_path,
-        codex_app_path: user_config.codex_app_path,
-        claude_app_path: user_config.claude_app_path,
+        opencode_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.opencode_app_path,
+        ),
+        antigravity_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.antigravity_app_path,
+        ),
+        codex_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.codex_app_path,
+        ),
+        claude_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.claude_app_path,
+        ),
         claude_app_scan_roots: user_config.claude_app_scan_roots,
-        codex_specified_app_path: user_config.codex_specified_app_path,
-        zed_app_path: user_config.zed_app_path,
-        vscode_app_path: user_config.vscode_app_path,
-        windsurf_app_path: user_config.windsurf_app_path,
-        kiro_app_path: user_config.kiro_app_path,
-        cursor_app_path: user_config.cursor_app_path,
-        codebuddy_app_path: user_config.codebuddy_app_path,
-        codebuddy_cn_app_path: user_config.codebuddy_cn_app_path,
-        qoder_app_path: user_config.qoder_app_path,
-        zcode_app_path: user_config.zcode_app_path,
-        trae_app_path: user_config.trae_app_path,
-        trae_solo_app_path: user_config.trae_solo_app_path,
-        trae_cn_app_path: user_config.trae_cn_app_path,
-        trae_solo_cn_app_path: user_config.trae_solo_cn_app_path,
+        codex_specified_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.codex_specified_app_path,
+        ),
+        zed_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.zed_app_path,
+        ),
+        vscode_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.vscode_app_path,
+        ),
+        windsurf_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.windsurf_app_path,
+        ),
+        kiro_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.kiro_app_path,
+        ),
+        cursor_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.cursor_app_path,
+        ),
+        codebuddy_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.codebuddy_app_path,
+        ),
+        codebuddy_cn_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.codebuddy_cn_app_path,
+        ),
+        qoder_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.qoder_app_path,
+        ),
+        zcode_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.zcode_app_path,
+        ),
+        trae_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.trae_app_path,
+        ),
+        trae_solo_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.trae_solo_app_path,
+        ),
+        trae_cn_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.trae_cn_app_path,
+        ),
+        trae_solo_cn_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.trae_solo_cn_app_path,
+        ),
         trae_app_scan_roots: user_config.trae_app_scan_roots,
         trae_solo_app_scan_roots: user_config.trae_solo_app_scan_roots,
         trae_cn_app_scan_roots: user_config.trae_cn_app_scan_roots,
         trae_solo_cn_app_scan_roots: user_config.trae_solo_cn_app_scan_roots,
-        workbuddy_app_path: user_config.workbuddy_app_path,
+        workbuddy_app_path: modules::process::normalize_windows_user_facing_path(
+            &user_config.workbuddy_app_path,
+        ),
         opencode_sync_on_switch: user_config.opencode_sync_on_switch,
         opencode_auth_overwrite_on_switch: user_config.opencode_auth_overwrite_on_switch,
         ghcp_opencode_sync_on_switch: user_config.ghcp_opencode_sync_on_switch,
         ghcp_opencode_auth_overwrite_on_switch: user_config.ghcp_opencode_auth_overwrite_on_switch,
         ghcp_launch_on_switch: user_config.ghcp_launch_on_switch,
         openclaw_auth_overwrite_on_switch: user_config.openclaw_auth_overwrite_on_switch,
+        hermes_auth_overwrite_on_switch: user_config.hermes_auth_overwrite_on_switch,
         codex_launch_on_switch: user_config.codex_launch_on_switch,
         antigravity_launch_on_switch: user_config.antigravity_launch_on_switch,
         codex_restart_specified_app_on_switch: user_config.codex_restart_specified_app_on_switch,
@@ -2402,8 +2641,8 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         kiro_quota_alert_threshold: user_config.kiro_quota_alert_threshold,
         cursor_quota_alert_enabled: user_config.cursor_quota_alert_enabled,
         cursor_quota_alert_threshold: user_config.cursor_quota_alert_threshold,
-        gemini_quota_alert_enabled: user_config.gemini_quota_alert_enabled,
-        gemini_quota_alert_threshold: user_config.gemini_quota_alert_threshold,
+        grok_quota_alert_enabled: user_config.grok_quota_alert_enabled,
+        grok_quota_alert_threshold: user_config.grok_quota_alert_threshold,
         claude_quota_alert_enabled: user_config.claude_quota_alert_enabled,
         claude_quota_alert_threshold: user_config.claude_quota_alert_threshold,
         codebuddy_quota_alert_enabled: user_config.codebuddy_quota_alert_enabled,
@@ -2425,7 +2664,7 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
     };
 
     modules::logger::log_info(&format!(
-        "[StartupPerf][SystemCommand] get_general_config completed in {}ms: auto_refresh={}, codex={}, zed={}, ghcp={}, windsurf={}, kiro={}, cursor={}, gemini={}, codebuddy={}, codebuddy_cn={}, workbuddy={}, qoder={}, zcode={}, trae={}, auto_switch={}",
+        "[StartupPerf][SystemCommand] get_general_config completed in {}ms: auto_refresh={}, codex={}, zed={}, ghcp={}, windsurf={}, kiro={}, cursor={}, codebuddy={}, codebuddy_cn={}, workbuddy={}, qoder={}, zcode={}, trae={}, auto_switch={}",
         started.elapsed().as_millis(),
         result.auto_refresh_minutes,
         result.codex_auto_refresh_minutes,
@@ -2434,7 +2673,6 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         result.windsurf_auto_refresh_minutes,
         result.kiro_auto_refresh_minutes,
         result.cursor_auto_refresh_minutes,
-        result.gemini_auto_refresh_minutes,
         result.codebuddy_auto_refresh_minutes,
         result.codebuddy_cn_auto_refresh_minutes,
         result.workbuddy_auto_refresh_minutes,
@@ -2447,13 +2685,212 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
     Ok(result)
 }
 
-/// 保存通用设置配置
+/// 按字段保存通用设置配置。
+#[tauri::command]
+pub fn patch_general_config(
+    app: tauri::AppHandle,
+    updates: JsonMap<String, JsonValue>,
+) -> Result<(), String> {
+    let _save_guard = lock_general_config_transaction()?;
+
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    // 在修改系统自启动状态前完成字段和类型校验，避免无效请求留下外部副作用。
+    let mut preview = config::get_user_config();
+    apply_general_config_updates(&mut preview, &updates)?;
+
+    let requested_auto_launch = updates
+        .get("app_auto_launch_enabled")
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| "配置字段 app_auto_launch_enabled 必须为布尔值".to_string())
+        })
+        .transpose()?;
+    let previous_auto_launch = requested_auto_launch
+        .map(|_| get_app_auto_launch_enabled(&app))
+        .transpose()?;
+    let auto_launch_os_changed = requested_auto_launch
+        .zip(previous_auto_launch)
+        .map(|(requested, previous)| requested != previous)
+        .unwrap_or(false);
+    if auto_launch_os_changed {
+        apply_app_auto_launch_enabled(
+            &app,
+            requested_auto_launch.expect("requested auto launch should exist"),
+        )?;
+    }
+
+    let mut language_changed = false;
+    let mut token_keeper_enabled_changed = false;
+    let mut auto_import_from_local_enabled_changed = false;
+    let mut floating_always_on_top_changed = false;
+    #[cfg(target_os = "macos")]
+    let mut hide_dock_icon_changed = false;
+    #[cfg(target_os = "macos")]
+    let mut tray_icon_style_changed = false;
+
+    let patch_result = config::patch_user_config(|current| {
+        let previous_language = current.language.clone();
+        let previous_token_keeper_enabled = current.token_keeper_enabled;
+        let previous_auto_import_from_local_enabled = current.auto_import_from_local_enabled;
+        let previous_floating_always_on_top = current.floating_card_always_on_top;
+        #[cfg(target_os = "macos")]
+        let previous_hide_dock_icon = current.hide_dock_icon;
+        #[cfg(target_os = "macos")]
+        let previous_tray_icon_style = current.tray_icon_style;
+
+        apply_general_config_updates(current, &updates)?;
+
+        language_changed = previous_language != current.language;
+        token_keeper_enabled_changed =
+            previous_token_keeper_enabled != current.token_keeper_enabled;
+        auto_import_from_local_enabled_changed =
+            previous_auto_import_from_local_enabled != current.auto_import_from_local_enabled;
+        floating_always_on_top_changed =
+            previous_floating_always_on_top != current.floating_card_always_on_top;
+        #[cfg(target_os = "macos")]
+        {
+            hide_dock_icon_changed = previous_hide_dock_icon != current.hide_dock_icon;
+            tray_icon_style_changed = previous_tray_icon_style != current.tray_icon_style;
+        }
+        Ok(())
+    });
+
+    let new_config = match patch_result {
+        Ok(config) => config,
+        Err(error) => {
+            if auto_launch_os_changed {
+                if let Some(previous) = previous_auto_launch {
+                    if let Err(rollback_error) = apply_app_auto_launch_enabled(&app, previous) {
+                        modules::logger::log_error(&format!(
+                            "[SystemConfig] 配置保存失败后回滚应用自启动状态失败: {}",
+                            rollback_error
+                        ));
+                    }
+                }
+            }
+            return Err(error);
+        }
+    };
+
+    if token_keeper_enabled_changed {
+        modules::provider_token_keeper::notify_config_changed(
+            app.clone(),
+            new_config.token_keeper_enabled,
+        );
+    }
+
+    if auto_import_from_local_enabled_changed {
+        modules::auto_local_import::notify_config_changed(
+            new_config.auto_import_from_local_enabled,
+        );
+    }
+
+    if floating_always_on_top_changed {
+        if let Err(err) = modules::floating_card_window::apply_floating_card_always_on_top(&app) {
+            modules::logger::log_warn(&format!(
+                "[FloatingCard] 保存通用设置后应用置顶状态失败: {}",
+                err
+            ));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    if hide_dock_icon_changed {
+        crate::apply_macos_activation_policy(&app);
+    }
+
+    #[cfg(target_os = "macos")]
+    if tray_icon_style_changed {
+        if let Err(err) = modules::tray::apply_tray_icon_style(&app) {
+            modules::logger::log_warn(&format!("[Tray] 保存通用设置后应用图标样式失败: {}", err));
+        }
+    }
+
+    if language_changed {
+        websocket::broadcast_language_changed(&new_config.language, "desktop");
+        modules::sync_settings::write_sync_setting("language", &new_config.language);
+        if let Err(err) = modules::tray::update_tray_menu(&app) {
+            modules::logger::log_warn(&format!("[Tray] 语言变更后刷新托盘失败: {}", err));
+        }
+    }
+
+    Ok(())
+}
+
+/// 立即扫描并导入本机当前登录账号（开启「本机账号自动导入」后调用）。
+#[tauri::command]
+pub async fn scan_auto_local_import(
+    app: tauri::AppHandle,
+) -> Result<modules::auto_local_import::AutoLocalImportScanResult, String> {
+    modules::auto_local_import::scan_now(app).await
+}
+
+// --- Codex SSH sync (#1404 vertical slice) ---
+#[tauri::command]
+pub fn codex_ssh_list_servers() -> Result<modules::codex_ssh::CodexSshListResult, String> {
+    let (servers, selected_id) = modules::codex_ssh::list_servers()?;
+    Ok(modules::codex_ssh::CodexSshListResult {
+        servers,
+        selected_id,
+    })
+}
+
+#[tauri::command]
+pub fn codex_ssh_upsert_server(
+    server: modules::codex_ssh::CodexSshServer,
+) -> Result<modules::codex_ssh::CodexSshServer, String> {
+    modules::codex_ssh::upsert_server(server)
+}
+
+#[tauri::command]
+pub fn codex_ssh_delete_server(id: String) -> Result<(), String> {
+    modules::codex_ssh::delete_server(&id)
+}
+
+#[tauri::command]
+pub fn codex_ssh_select_server(id: String) -> Result<(), String> {
+    modules::codex_ssh::select_server(&id)
+}
+
+#[tauri::command]
+pub fn codex_ssh_test_connection(id: String) -> Result<String, String> {
+    modules::codex_ssh::test_connection(&id)
+}
+
+#[tauri::command]
+pub fn codex_ssh_sync_current(id: String) -> Result<String, String> {
+    modules::codex_ssh::sync_current_account(&id)
+}
+
+/// Managed provider id for local API LB (#980 vertical slice).
+#[tauri::command]
+pub fn codex_managed_lb_provider_id() -> String {
+    "cockpit-codex-lb".to_string()
+}
+
+#[tauri::command]
+pub fn codebuddy_list_local_session_files(
+    limit: Option<u32>,
+) -> Result<Vec<modules::codebuddy_session_list::CodebuddySessionFileEntry>, String> {
+    Ok(modules::codebuddy_session_list::list_local_session_files(
+        limit.unwrap_or(100) as usize,
+    ))
+}
+
+/// 保存完整通用设置配置（兼容旧前端调用）。
 #[tauri::command]
 pub fn save_general_config(
     app: tauri::AppHandle,
     language: String,
     default_terminal: Option<String>,
     theme: String,
+    theme_color: Option<String>,
+    external_network_enabled: Option<bool>,
+    webdav_allowed_domains: Option<String>,
     ui_scale: Option<f64>,
     auto_refresh_minutes: i32,
     codex_auto_refresh_minutes: i32,
@@ -2464,9 +2901,9 @@ pub fn save_general_config(
     windsurf_auto_refresh_minutes: Option<i32>,
     kiro_auto_refresh_minutes: Option<i32>,
     cursor_auto_refresh_minutes: Option<i32>,
-    gemini_auto_refresh_minutes: Option<i32>,
+    grok_auto_refresh_minutes: Option<i32>,
+    grok_sync_official_auth_on_switch: Option<bool>,
     claude_auto_refresh_minutes: Option<i32>,
-    gemini_sync_wsl: Option<bool>,
     codebuddy_auto_refresh_minutes: Option<i32>,
     codebuddy_cn_auto_refresh_minutes: Option<i32>,
     workbuddy_auto_refresh_minutes: Option<i32>,
@@ -2482,9 +2919,11 @@ pub fn save_general_config(
     tray_icon_style: Option<String>,
     floating_card_show_on_startup: Option<bool>,
     startup_minimized: Option<bool>,
+    startup_page: Option<String>,
     floating_card_always_on_top: Option<bool>,
     app_auto_launch_enabled: Option<bool>,
     token_keeper_enabled: Option<bool>,
+    auto_import_from_local_enabled: Option<bool>,
     antigravity_startup_wakeup_enabled: Option<bool>,
     antigravity_startup_wakeup_delay_seconds: Option<i32>,
     codex_startup_wakeup_enabled: Option<bool>,
@@ -2520,6 +2959,7 @@ pub fn save_general_config(
     ghcp_opencode_auth_overwrite_on_switch: Option<bool>,
     ghcp_launch_on_switch: Option<bool>,
     openclaw_auth_overwrite_on_switch: Option<bool>,
+    hermes_auth_overwrite_on_switch: Option<bool>,
     codex_launch_on_switch: bool,
     antigravity_launch_on_switch: Option<bool>,
     codex_restart_specified_app_on_switch: Option<bool>,
@@ -2555,8 +2995,8 @@ pub fn save_general_config(
     kiro_quota_alert_threshold: Option<i32>,
     cursor_quota_alert_enabled: Option<bool>,
     cursor_quota_alert_threshold: Option<i32>,
-    gemini_quota_alert_enabled: Option<bool>,
-    gemini_quota_alert_threshold: Option<i32>,
+    grok_quota_alert_enabled: Option<bool>,
+    grok_quota_alert_threshold: Option<i32>,
     claude_quota_alert_enabled: Option<bool>,
     claude_quota_alert_threshold: Option<i32>,
     codebuddy_quota_alert_enabled: Option<bool>,
@@ -2576,386 +3016,503 @@ pub fn save_general_config(
     workbuddy_quota_alert_enabled: Option<bool>,
     workbuddy_quota_alert_threshold: Option<i32>,
 ) -> Result<(), String> {
-    let current = config::get_user_config();
-    let normalized_opencode_path = opencode_app_path.trim().to_string();
-    let normalized_antigravity_path = antigravity_app_path.trim().to_string();
-    let normalized_codex_path = codex_app_path.trim().to_string();
-    let normalized_claude_path = claude_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.claude_app_path.clone());
-    let normalized_claude_app_scan_roots = claude_app_scan_roots
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.claude_app_scan_roots.clone());
-    let normalized_codex_specified_app_path = codex_specified_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.codex_specified_app_path.clone());
-    let normalized_codex_wsl_config_dir = codex_wsl_config_dir
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.codex_wsl_config_dir.clone());
-    let normalized_zed_path = zed_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.zed_app_path.clone());
-    let normalized_vscode_path = vscode_app_path.trim().to_string();
-    let normalized_ui_scale = sanitize_ui_scale(ui_scale.unwrap_or(current.ui_scale));
-    let normalized_windsurf_path = windsurf_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.windsurf_app_path.clone());
-    let normalized_kiro_path = kiro_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.kiro_app_path.clone());
-    let normalized_cursor_path = cursor_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.cursor_app_path.clone());
-    let normalized_codebuddy_path = codebuddy_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.codebuddy_app_path.clone());
-    let normalized_codebuddy_cn_path = codebuddy_cn_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.codebuddy_cn_app_path.clone());
-    let normalized_qoder_path = qoder_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.qoder_app_path.clone());
-    let normalized_zcode_path = zcode_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.zcode_app_path.clone());
-    let normalized_trae_path = trae_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.trae_app_path.clone());
-    let normalized_trae_solo_path = trae_solo_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.trae_solo_app_path.clone());
-    let normalized_trae_cn_path = trae_cn_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.trae_cn_app_path.clone());
-    let normalized_trae_solo_cn_path = trae_solo_cn_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.trae_solo_cn_app_path.clone());
-    let normalized_trae_app_scan_roots = trae_app_scan_roots
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.trae_app_scan_roots.clone());
-    let normalized_trae_solo_app_scan_roots = trae_solo_app_scan_roots
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.trae_solo_app_scan_roots.clone());
-    let normalized_trae_cn_app_scan_roots = trae_cn_app_scan_roots
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.trae_cn_app_scan_roots.clone());
-    let normalized_trae_solo_cn_app_scan_roots = trae_solo_cn_app_scan_roots
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.trae_solo_cn_app_scan_roots.clone());
-    let normalized_workbuddy_path = workbuddy_app_path
-        .map(|value| value.trim().to_string())
-        .unwrap_or_else(|| current.workbuddy_app_path.clone());
-    // 标准化语言代码为小写，确保与插件端格式一致
     let normalized_language = language.to_lowercase();
-    let language_changed = current.language != normalized_language;
     let language_for_broadcast = normalized_language.clone();
+    let normalized_opencode_path =
+        modules::process::normalize_windows_user_facing_path(&opencode_app_path);
+    let normalized_antigravity_path =
+        modules::process::normalize_windows_user_facing_path(&antigravity_app_path);
+    let normalized_codex_path =
+        modules::process::normalize_windows_user_facing_path(&codex_app_path);
+    let normalized_vscode_path =
+        modules::process::normalize_windows_user_facing_path(&vscode_app_path);
+    let normalized_codex_wsl_config_dir =
+        codex_wsl_config_dir.map(|value| value.trim().to_string());
+    let normalized_claude_path =
+        claude_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_claude_app_scan_roots =
+        claude_app_scan_roots.map(|value| value.trim().to_string());
+    let normalized_codex_specified_app_path = codex_specified_app_path
+        .map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_zed_path =
+        zed_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_windsurf_path =
+        windsurf_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_kiro_path =
+        kiro_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_cursor_path =
+        cursor_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_codebuddy_path = codebuddy_app_path
+        .map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_codebuddy_cn_path = codebuddy_cn_app_path
+        .map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_qoder_path =
+        qoder_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_zcode_path =
+        zcode_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_trae_path =
+        trae_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_trae_solo_path = trae_solo_app_path
+        .map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_trae_cn_path =
+        trae_cn_app_path.map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_trae_solo_cn_path = trae_solo_cn_app_path
+        .map(|value| modules::process::normalize_windows_user_facing_path(&value));
+    let normalized_trae_app_scan_roots = trae_app_scan_roots.map(|value| value.trim().to_string());
+    let normalized_trae_solo_app_scan_roots =
+        trae_solo_app_scan_roots.map(|value| value.trim().to_string());
+    let normalized_trae_cn_app_scan_roots =
+        trae_cn_app_scan_roots.map(|value| value.trim().to_string());
+    let normalized_trae_solo_cn_app_scan_roots =
+        trae_solo_cn_app_scan_roots.map(|value| value.trim().to_string());
+    let normalized_workbuddy_path = workbuddy_app_path
+        .map(|value| modules::process::normalize_windows_user_facing_path(&value));
 
-    // 解析关闭行为
-    let close_behavior_enum = match close_behavior.as_str() {
+    let close_behavior_value = match close_behavior.as_str() {
         "minimize" => CloseWindowBehavior::Minimize,
         "quit" => CloseWindowBehavior::Quit,
         _ => CloseWindowBehavior::Ask,
     };
-    let minimize_behavior_enum = match minimize_behavior.as_deref() {
-        Some("dock_and_tray") => MinimizeWindowBehavior::DockAndTray,
-        Some("tray_only") => MinimizeWindowBehavior::TrayOnly,
-        Some(_) | None => current.minimize_behavior.clone(),
-    };
-    let hide_dock_icon_value = hide_dock_icon.unwrap_or(current.hide_dock_icon);
-    let tray_icon_style_value = tray_icon_style
-        .as_deref()
-        .map(TrayIconStyle::from_str)
-        .unwrap_or(current.tray_icon_style);
-    let floating_card_show_on_startup_value =
-        floating_card_show_on_startup.unwrap_or(current.floating_card_show_on_startup);
-    let startup_minimized_value = startup_minimized.unwrap_or(current.startup_minimized);
-    let floating_card_always_on_top_value =
-        floating_card_always_on_top.unwrap_or(current.floating_card_always_on_top);
-    let app_auto_launch_enabled_value =
-        app_auto_launch_enabled.unwrap_or(current.app_auto_launch_enabled);
-    let token_keeper_enabled_value = token_keeper_enabled.unwrap_or(current.token_keeper_enabled);
-    let token_keeper_enabled_changed = current.token_keeper_enabled != token_keeper_enabled_value;
-    let antigravity_startup_wakeup_enabled_value =
-        antigravity_startup_wakeup_enabled.unwrap_or(current.antigravity_startup_wakeup_enabled);
-    let antigravity_startup_wakeup_delay_seconds_value = sanitize_startup_wakeup_delay_seconds(
-        antigravity_startup_wakeup_delay_seconds
-            .unwrap_or(current.antigravity_startup_wakeup_delay_seconds),
-    );
-    let codex_startup_wakeup_enabled_value =
-        codex_startup_wakeup_enabled.unwrap_or(current.codex_startup_wakeup_enabled);
-    let codex_startup_wakeup_delay_seconds_value = sanitize_startup_wakeup_delay_seconds(
-        codex_startup_wakeup_delay_seconds.unwrap_or(current.codex_startup_wakeup_delay_seconds),
-    );
-    let floating_card_confirm_on_close_value =
-        floating_card_confirm_on_close.unwrap_or(current.floating_card_confirm_on_close);
-    let next_codex_quota_alert_threshold =
-        codex_quota_alert_threshold.unwrap_or(current.codex_quota_alert_threshold);
-    let next_opencode_auth_overwrite_on_switch =
-        opencode_auth_overwrite_on_switch.unwrap_or(current.opencode_auth_overwrite_on_switch);
-    let next_opencode_sync_on_switch = if next_opencode_auth_overwrite_on_switch {
-        opencode_sync_on_switch
-    } else {
-        false
-    };
-    let next_ghcp_opencode_auth_overwrite_on_switch = ghcp_opencode_auth_overwrite_on_switch
-        .unwrap_or(current.ghcp_opencode_auth_overwrite_on_switch);
-    let next_ghcp_opencode_sync_on_switch = if next_ghcp_opencode_auth_overwrite_on_switch {
-        ghcp_opencode_sync_on_switch.unwrap_or(current.ghcp_opencode_sync_on_switch)
-    } else {
-        false
-    };
-    let current_app_auto_launch_enabled = current.app_auto_launch_enabled;
-    #[cfg(target_os = "macos")]
-    let hide_dock_icon_changed = current.hide_dock_icon != hide_dock_icon_value;
-    #[cfg(target_os = "macos")]
-    let tray_icon_style_changed = current.tray_icon_style != tray_icon_style_value;
+    let minimize_behavior_value = minimize_behavior.as_deref().and_then(|value| match value {
+        "dock_and_tray" => Some(MinimizeWindowBehavior::DockAndTray),
+        "tray_only" => Some(MinimizeWindowBehavior::TrayOnly),
+        _ => None,
+    });
+    let tray_icon_style_value = tray_icon_style.as_deref().map(TrayIconStyle::from_str);
 
-    let new_config = UserConfig {
-        // 保留网络设置不变
-        ws_enabled: current.ws_enabled,
-        ws_port: current.ws_port,
-        report_enabled: current.report_enabled,
-        report_port: current.report_port,
-        report_token: current.report_token,
-        global_proxy_enabled: current.global_proxy_enabled,
-        global_proxy_url: current.global_proxy_url,
-        global_proxy_no_proxy: current.global_proxy_no_proxy,
-        diagnostics_error_reporting_enabled: current.diagnostics_error_reporting_enabled,
-        diagnostics_error_reporting_debug: current.diagnostics_error_reporting_debug,
-        // 更新通用设置
-        language: normalized_language.clone(),
-        default_terminal: default_terminal.unwrap_or(current.default_terminal),
-        theme,
-        ui_scale: normalized_ui_scale,
-        auto_refresh_minutes,
-        codex_auto_refresh_minutes,
-        codex_sync_wsl: codex_sync_wsl.unwrap_or(current.codex_sync_wsl),
-        codex_wsl_config_dir: normalized_codex_wsl_config_dir,
-        zed_auto_refresh_minutes: zed_auto_refresh_minutes
-            .unwrap_or(current.zed_auto_refresh_minutes),
-        ghcp_auto_refresh_minutes: ghcp_auto_refresh_minutes
-            .unwrap_or(current.ghcp_auto_refresh_minutes),
-        windsurf_auto_refresh_minutes: windsurf_auto_refresh_minutes
-            .unwrap_or(current.windsurf_auto_refresh_minutes),
-        kiro_auto_refresh_minutes: kiro_auto_refresh_minutes
-            .unwrap_or(current.kiro_auto_refresh_minutes),
-        cursor_auto_refresh_minutes: cursor_auto_refresh_minutes
-            .unwrap_or(current.cursor_auto_refresh_minutes),
-        gemini_auto_refresh_minutes: gemini_auto_refresh_minutes
-            .unwrap_or(current.gemini_auto_refresh_minutes),
-        claude_auto_refresh_minutes: claude_auto_refresh_minutes
-            .unwrap_or(current.claude_auto_refresh_minutes),
-        gemini_sync_wsl: gemini_sync_wsl.unwrap_or(current.gemini_sync_wsl),
-        codebuddy_auto_refresh_minutes: codebuddy_auto_refresh_minutes
-            .unwrap_or(current.codebuddy_auto_refresh_minutes),
-        codebuddy_cn_auto_refresh_minutes: codebuddy_cn_auto_refresh_minutes
-            .unwrap_or(current.codebuddy_cn_auto_refresh_minutes),
-        workbuddy_auto_refresh_minutes: workbuddy_auto_refresh_minutes
-            .unwrap_or(current.workbuddy_auto_refresh_minutes),
-        qoder_auto_refresh_minutes: qoder_auto_refresh_minutes
-            .unwrap_or(current.qoder_auto_refresh_minutes),
-        zcode_auto_refresh_minutes: zcode_auto_refresh_minutes
-            .unwrap_or(current.zcode_auto_refresh_minutes),
-        trae_auto_refresh_minutes: trae_auto_refresh_minutes
-            .unwrap_or(current.trae_auto_refresh_minutes),
-        trae_solo_auto_refresh_minutes: trae_solo_auto_refresh_minutes
-            .unwrap_or(current.trae_solo_auto_refresh_minutes),
-        trae_cn_auto_refresh_minutes: trae_cn_auto_refresh_minutes
-            .unwrap_or(current.trae_cn_auto_refresh_minutes),
-        trae_solo_cn_auto_refresh_minutes: trae_solo_cn_auto_refresh_minutes
-            .unwrap_or(current.trae_solo_cn_auto_refresh_minutes),
-        close_behavior: close_behavior_enum,
-        minimize_behavior: minimize_behavior_enum,
-        hide_dock_icon: hide_dock_icon_value,
-        tray_icon_style: tray_icon_style_value,
-        floating_card_show_on_startup: floating_card_show_on_startup_value,
-        startup_minimized: startup_minimized_value,
-        floating_card_always_on_top: floating_card_always_on_top_value,
-        app_auto_launch_enabled: app_auto_launch_enabled_value,
-        token_keeper_enabled: token_keeper_enabled_value,
-        antigravity_startup_wakeup_enabled: antigravity_startup_wakeup_enabled_value,
-        antigravity_startup_wakeup_delay_seconds: antigravity_startup_wakeup_delay_seconds_value,
-        codex_startup_wakeup_enabled: codex_startup_wakeup_enabled_value,
-        codex_startup_wakeup_delay_seconds: codex_startup_wakeup_delay_seconds_value,
-        floating_card_confirm_on_close: floating_card_confirm_on_close_value,
-        floating_card_position_x: current.floating_card_position_x,
-        floating_card_position_y: current.floating_card_position_y,
-        opencode_app_path: normalized_opencode_path,
-        antigravity_app_path: normalized_antigravity_path,
-        codex_app_path: normalized_codex_path,
-        claude_app_path: normalized_claude_path,
-        claude_app_scan_roots: normalized_claude_app_scan_roots,
-        codex_specified_app_path: normalized_codex_specified_app_path,
-        zed_app_path: normalized_zed_path,
-        vscode_app_path: normalized_vscode_path,
-        windsurf_app_path: normalized_windsurf_path,
-        kiro_app_path: normalized_kiro_path,
-        cursor_app_path: normalized_cursor_path,
-        codebuddy_app_path: normalized_codebuddy_path,
-        codebuddy_cn_app_path: normalized_codebuddy_cn_path,
-        qoder_app_path: normalized_qoder_path,
-        zcode_app_path: normalized_zcode_path,
-        trae_app_path: normalized_trae_path,
-        trae_solo_app_path: normalized_trae_solo_path,
-        trae_cn_app_path: normalized_trae_cn_path,
-        trae_solo_cn_app_path: normalized_trae_solo_cn_path,
-        trae_app_scan_roots: normalized_trae_app_scan_roots,
-        trae_solo_app_scan_roots: normalized_trae_solo_app_scan_roots,
-        trae_cn_app_scan_roots: normalized_trae_cn_app_scan_roots,
-        trae_solo_cn_app_scan_roots: normalized_trae_solo_cn_app_scan_roots,
-        workbuddy_app_path: normalized_workbuddy_path,
-        opencode_sync_on_switch: next_opencode_sync_on_switch,
-        opencode_auth_overwrite_on_switch: next_opencode_auth_overwrite_on_switch,
-        ghcp_opencode_sync_on_switch: next_ghcp_opencode_sync_on_switch,
-        ghcp_opencode_auth_overwrite_on_switch: next_ghcp_opencode_auth_overwrite_on_switch,
-        ghcp_launch_on_switch: ghcp_launch_on_switch.unwrap_or(current.ghcp_launch_on_switch),
-        openclaw_auth_overwrite_on_switch: openclaw_auth_overwrite_on_switch
-            .unwrap_or(current.openclaw_auth_overwrite_on_switch),
-        codex_launch_on_switch,
-        antigravity_launch_on_switch: antigravity_launch_on_switch
-            .unwrap_or(current.antigravity_launch_on_switch),
-        codex_restart_specified_app_on_switch: codex_restart_specified_app_on_switch
-            .unwrap_or(current.codex_restart_specified_app_on_switch),
-        codex_local_access_entry_visible: codex_local_access_entry_visible
-            .unwrap_or(current.codex_local_access_entry_visible),
-        top_right_ad_visible: top_right_ad_visible.unwrap_or(current.top_right_ad_visible),
-        antigravity_dual_switch_no_restart_enabled: antigravity_dual_switch_no_restart_enabled
-            .unwrap_or(current.antigravity_dual_switch_no_restart_enabled),
-        auto_switch_enabled: auto_switch_enabled.unwrap_or(current.auto_switch_enabled),
-        auto_switch_threshold: auto_switch_threshold.unwrap_or(current.auto_switch_threshold),
-        auto_switch_credits_enabled: auto_switch_credits_enabled
-            .unwrap_or(current.auto_switch_credits_enabled),
-        auto_switch_credits_threshold: auto_switch_credits_threshold
-            .unwrap_or(current.auto_switch_credits_threshold),
-        auto_switch_scope_mode: auto_switch_scope_mode
+    let mut language_changed = false;
+    let mut token_keeper_enabled_changed = false;
+    let mut auto_import_from_local_enabled_changed = false;
+    let mut current_app_auto_launch_enabled = false;
+    #[cfg(target_os = "macos")]
+    let mut hide_dock_icon_changed = false;
+    #[cfg(target_os = "macos")]
+    let mut tray_icon_style_changed = false;
+
+    let new_config = config::patch_user_config(|current| {
+        language_changed = current.language != normalized_language;
+        token_keeper_enabled_changed = token_keeper_enabled
+            .map(|enabled| current.token_keeper_enabled != enabled)
+            .unwrap_or(false);
+        auto_import_from_local_enabled_changed = auto_import_from_local_enabled
+            .map(|enabled| current.auto_import_from_local_enabled != enabled)
+            .unwrap_or(false);
+        current_app_auto_launch_enabled = current.app_auto_launch_enabled;
+        #[cfg(target_os = "macos")]
+        {
+            hide_dock_icon_changed = hide_dock_icon
+                .map(|hidden| current.hide_dock_icon != hidden)
+                .unwrap_or(false);
+            tray_icon_style_changed = tray_icon_style_value
+                .as_ref()
+                .map(|style| current.tray_icon_style != *style)
+                .unwrap_or(false);
+        }
+
+        current.language = normalized_language.clone();
+        if let Some(value) = default_terminal {
+            current.default_terminal = value;
+        }
+        current.theme = theme;
+        current.ui_scale = sanitize_ui_scale(ui_scale.unwrap_or(current.ui_scale));
+        current.auto_refresh_minutes = auto_refresh_minutes;
+        current.codex_auto_refresh_minutes = codex_auto_refresh_minutes;
+        if let Some(value) = codex_sync_wsl {
+            current.codex_sync_wsl = value;
+        }
+        if let Some(value) = normalized_codex_wsl_config_dir {
+            current.codex_wsl_config_dir = value;
+        }
+        if let Some(value) = zed_auto_refresh_minutes {
+            current.zed_auto_refresh_minutes = value;
+        }
+        if let Some(value) = ghcp_auto_refresh_minutes {
+            current.ghcp_auto_refresh_minutes = value;
+        }
+        if let Some(value) = windsurf_auto_refresh_minutes {
+            current.windsurf_auto_refresh_minutes = value;
+        }
+        if let Some(value) = kiro_auto_refresh_minutes {
+            current.kiro_auto_refresh_minutes = value;
+        }
+        if let Some(value) = cursor_auto_refresh_minutes {
+            current.cursor_auto_refresh_minutes = value;
+        }
+        if let Some(value) = grok_auto_refresh_minutes {
+            current.grok_auto_refresh_minutes = value;
+        }
+        if let Some(value) = grok_sync_official_auth_on_switch {
+            current.grok_sync_official_auth_on_switch = value;
+        }
+        if let Some(value) = claude_auto_refresh_minutes {
+            current.claude_auto_refresh_minutes = value;
+        }
+        if let Some(value) = codebuddy_auto_refresh_minutes {
+            current.codebuddy_auto_refresh_minutes = value;
+        }
+        if let Some(value) = codebuddy_cn_auto_refresh_minutes {
+            current.codebuddy_cn_auto_refresh_minutes = value;
+        }
+        if let Some(value) = workbuddy_auto_refresh_minutes {
+            current.workbuddy_auto_refresh_minutes = value;
+        }
+        if let Some(value) = qoder_auto_refresh_minutes {
+            current.qoder_auto_refresh_minutes = value;
+        }
+        if let Some(value) = zcode_auto_refresh_minutes {
+            current.zcode_auto_refresh_minutes = value;
+        }
+        if let Some(value) = trae_auto_refresh_minutes {
+            current.trae_auto_refresh_minutes = value;
+        }
+        if let Some(value) = trae_solo_auto_refresh_minutes {
+            current.trae_solo_auto_refresh_minutes = value;
+        }
+        if let Some(value) = trae_cn_auto_refresh_minutes {
+            current.trae_cn_auto_refresh_minutes = value;
+        }
+        if let Some(value) = trae_solo_cn_auto_refresh_minutes {
+            current.trae_solo_cn_auto_refresh_minutes = value;
+        }
+
+        current.close_behavior = close_behavior_value;
+        if let Some(value) = minimize_behavior_value {
+            current.minimize_behavior = value;
+        }
+        if let Some(value) = hide_dock_icon {
+            current.hide_dock_icon = value;
+        }
+        if let Some(value) = tray_icon_style_value {
+            current.tray_icon_style = value;
+        }
+        if let Some(value) = floating_card_show_on_startup {
+            current.floating_card_show_on_startup = value;
+        }
+        if let Some(value) = startup_minimized {
+            current.startup_minimized = value;
+        }
+        if let Some(value) = startup_page {
+            current.startup_page = config::normalize_startup_page(&value);
+        }
+        if let Some(value) = theme_color {
+            current.theme_color = config::normalize_theme_color(&value);
+        }
+        if let Some(value) = external_network_enabled {
+            current.external_network_enabled = value;
+        }
+        if let Some(value) = webdav_allowed_domains {
+            current.webdav_allowed_domains = value.trim().to_string();
+        }
+        if let Some(value) = floating_card_always_on_top {
+            current.floating_card_always_on_top = value;
+        }
+        if let Some(value) = app_auto_launch_enabled {
+            current.app_auto_launch_enabled = value;
+        }
+        if let Some(value) = token_keeper_enabled {
+            current.token_keeper_enabled = value;
+        }
+        if let Some(value) = auto_import_from_local_enabled {
+            current.auto_import_from_local_enabled = value;
+        }
+        if let Some(value) = antigravity_startup_wakeup_enabled {
+            current.antigravity_startup_wakeup_enabled = value;
+        }
+        if let Some(value) = antigravity_startup_wakeup_delay_seconds {
+            current.antigravity_startup_wakeup_delay_seconds =
+                sanitize_startup_wakeup_delay_seconds(value);
+        }
+        if let Some(value) = codex_startup_wakeup_enabled {
+            current.codex_startup_wakeup_enabled = value;
+        }
+        if let Some(value) = codex_startup_wakeup_delay_seconds {
+            current.codex_startup_wakeup_delay_seconds =
+                sanitize_startup_wakeup_delay_seconds(value);
+        }
+        if let Some(value) = floating_card_confirm_on_close {
+            current.floating_card_confirm_on_close = value;
+        }
+
+        current.opencode_app_path = normalized_opencode_path;
+        current.antigravity_app_path = normalized_antigravity_path;
+        current.codex_app_path = normalized_codex_path;
+        current.vscode_app_path = normalized_vscode_path;
+        if let Some(value) = normalized_claude_path {
+            current.claude_app_path = value;
+        }
+        if let Some(value) = normalized_claude_app_scan_roots {
+            current.claude_app_scan_roots = value;
+        }
+        if let Some(value) = normalized_codex_specified_app_path {
+            current.codex_specified_app_path = value;
+        }
+        if let Some(value) = normalized_zed_path {
+            current.zed_app_path = value;
+        }
+        if let Some(value) = normalized_windsurf_path {
+            current.windsurf_app_path = value;
+        }
+        if let Some(value) = normalized_kiro_path {
+            current.kiro_app_path = value;
+        }
+        if let Some(value) = normalized_cursor_path {
+            current.cursor_app_path = value;
+        }
+        if let Some(value) = normalized_codebuddy_path {
+            current.codebuddy_app_path = value;
+        }
+        if let Some(value) = normalized_codebuddy_cn_path {
+            current.codebuddy_cn_app_path = value;
+        }
+        if let Some(value) = normalized_qoder_path {
+            current.qoder_app_path = value;
+        }
+        if let Some(value) = normalized_zcode_path {
+            current.zcode_app_path = value;
+        }
+        if let Some(value) = normalized_trae_path {
+            current.trae_app_path = value;
+        }
+        if let Some(value) = normalized_trae_solo_path {
+            current.trae_solo_app_path = value;
+        }
+        if let Some(value) = normalized_trae_cn_path {
+            current.trae_cn_app_path = value;
+        }
+        if let Some(value) = normalized_trae_solo_cn_path {
+            current.trae_solo_cn_app_path = value;
+        }
+        if let Some(value) = normalized_trae_app_scan_roots {
+            current.trae_app_scan_roots = value;
+        }
+        if let Some(value) = normalized_trae_solo_app_scan_roots {
+            current.trae_solo_app_scan_roots = value;
+        }
+        if let Some(value) = normalized_trae_cn_app_scan_roots {
+            current.trae_cn_app_scan_roots = value;
+        }
+        if let Some(value) = normalized_trae_solo_cn_app_scan_roots {
+            current.trae_solo_cn_app_scan_roots = value;
+        }
+        if let Some(value) = normalized_workbuddy_path {
+            current.workbuddy_app_path = value;
+        }
+
+        let next_opencode_auth_overwrite_on_switch =
+            opencode_auth_overwrite_on_switch.unwrap_or(current.opencode_auth_overwrite_on_switch);
+        current.opencode_auth_overwrite_on_switch = next_opencode_auth_overwrite_on_switch;
+        current.opencode_sync_on_switch = if next_opencode_auth_overwrite_on_switch {
+            opencode_sync_on_switch
+        } else {
+            false
+        };
+
+        let next_ghcp_opencode_auth_overwrite_on_switch = ghcp_opencode_auth_overwrite_on_switch
+            .unwrap_or(current.ghcp_opencode_auth_overwrite_on_switch);
+        current.ghcp_opencode_auth_overwrite_on_switch =
+            next_ghcp_opencode_auth_overwrite_on_switch;
+        current.ghcp_opencode_sync_on_switch = if next_ghcp_opencode_auth_overwrite_on_switch {
+            ghcp_opencode_sync_on_switch.unwrap_or(current.ghcp_opencode_sync_on_switch)
+        } else {
+            false
+        };
+        if let Some(value) = ghcp_launch_on_switch {
+            current.ghcp_launch_on_switch = value;
+        }
+        if let Some(value) = openclaw_auth_overwrite_on_switch {
+            current.openclaw_auth_overwrite_on_switch = value;
+        }
+        if let Some(value) = hermes_auth_overwrite_on_switch {
+            current.hermes_auth_overwrite_on_switch = value;
+        }
+        current.codex_launch_on_switch = codex_launch_on_switch;
+        if let Some(value) = antigravity_launch_on_switch {
+            current.antigravity_launch_on_switch = value;
+        }
+        if let Some(value) = codex_restart_specified_app_on_switch {
+            current.codex_restart_specified_app_on_switch = value;
+        }
+        if let Some(value) = codex_local_access_entry_visible {
+            current.codex_local_access_entry_visible = value;
+        }
+        if let Some(value) = top_right_ad_visible {
+            current.top_right_ad_visible = value;
+        }
+        if let Some(value) = antigravity_dual_switch_no_restart_enabled {
+            current.antigravity_dual_switch_no_restart_enabled = value;
+        }
+
+        if let Some(value) = auto_switch_enabled {
+            current.auto_switch_enabled = value;
+        }
+        if let Some(value) = auto_switch_threshold {
+            current.auto_switch_threshold = value;
+        }
+        if let Some(value) = auto_switch_credits_enabled {
+            current.auto_switch_credits_enabled = value;
+        }
+        if let Some(value) = auto_switch_credits_threshold {
+            current.auto_switch_credits_threshold = value;
+        }
+        if let Some(value) = auto_switch_scope_mode
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .unwrap_or(current.auto_switch_scope_mode),
-        auto_switch_selected_group_ids: auto_switch_selected_group_ids
-            .unwrap_or(current.auto_switch_selected_group_ids),
-        auto_switch_account_scope_mode: normalize_auto_switch_account_scope_mode(
-            auto_switch_account_scope_mode
-                .as_deref()
-                .unwrap_or(current.auto_switch_account_scope_mode.as_str()),
-        ),
-        auto_switch_selected_account_ids: normalize_auto_switch_selected_account_ids(
-            auto_switch_selected_account_ids
-                .as_deref()
-                .unwrap_or(current.auto_switch_selected_account_ids.as_slice()),
-        ),
-        codex_auto_switch_enabled: codex_auto_switch_enabled
-            .unwrap_or(current.codex_auto_switch_enabled),
-        codex_auto_switch_primary_threshold: codex_auto_switch_primary_threshold
-            .unwrap_or(current.codex_auto_switch_primary_threshold),
-        codex_auto_switch_secondary_threshold: codex_auto_switch_secondary_threshold
-            .unwrap_or(current.codex_auto_switch_secondary_threshold),
-        codex_auto_switch_account_scope_mode: normalize_auto_switch_account_scope_mode(
-            codex_auto_switch_account_scope_mode
-                .as_deref()
-                .unwrap_or(current.codex_auto_switch_account_scope_mode.as_str()),
-        ),
-        codex_auto_switch_selected_account_ids: normalize_auto_switch_selected_account_ids(
-            codex_auto_switch_selected_account_ids
-                .as_deref()
-                .unwrap_or(current.codex_auto_switch_selected_account_ids.as_slice()),
-        ),
-        quota_alert_enabled: quota_alert_enabled.unwrap_or(current.quota_alert_enabled),
-        quota_alert_threshold: quota_alert_threshold.unwrap_or(current.quota_alert_threshold),
-        codex_quota_alert_enabled: codex_quota_alert_enabled
-            .unwrap_or(current.codex_quota_alert_enabled),
-        codex_quota_alert_threshold: next_codex_quota_alert_threshold,
-        zed_quota_alert_enabled: zed_quota_alert_enabled.unwrap_or(current.zed_quota_alert_enabled),
-        zed_quota_alert_threshold: zed_quota_alert_threshold
-            .unwrap_or(current.zed_quota_alert_threshold),
-        codex_quota_alert_primary_threshold: codex_quota_alert_primary_threshold
-            .unwrap_or(next_codex_quota_alert_threshold),
-        codex_quota_alert_secondary_threshold: codex_quota_alert_secondary_threshold
-            .unwrap_or(next_codex_quota_alert_threshold),
-        ghcp_quota_alert_enabled: ghcp_quota_alert_enabled
-            .unwrap_or(current.ghcp_quota_alert_enabled),
-        ghcp_quota_alert_threshold: ghcp_quota_alert_threshold
-            .unwrap_or(current.ghcp_quota_alert_threshold),
-        windsurf_quota_alert_enabled: windsurf_quota_alert_enabled
-            .unwrap_or(current.windsurf_quota_alert_enabled),
-        windsurf_quota_alert_threshold: windsurf_quota_alert_threshold
-            .unwrap_or(current.windsurf_quota_alert_threshold),
-        kiro_quota_alert_enabled: kiro_quota_alert_enabled
-            .unwrap_or(current.kiro_quota_alert_enabled),
-        kiro_quota_alert_threshold: kiro_quota_alert_threshold
-            .unwrap_or(current.kiro_quota_alert_threshold),
-        cursor_quota_alert_enabled: cursor_quota_alert_enabled
-            .unwrap_or(current.cursor_quota_alert_enabled),
-        cursor_quota_alert_threshold: cursor_quota_alert_threshold
-            .unwrap_or(current.cursor_quota_alert_threshold),
-        gemini_quota_alert_enabled: gemini_quota_alert_enabled
-            .unwrap_or(current.gemini_quota_alert_enabled),
-        gemini_quota_alert_threshold: gemini_quota_alert_threshold
-            .unwrap_or(current.gemini_quota_alert_threshold),
-        claude_quota_alert_enabled: claude_quota_alert_enabled
-            .unwrap_or(current.claude_quota_alert_enabled),
-        claude_quota_alert_threshold: claude_quota_alert_threshold
-            .unwrap_or(current.claude_quota_alert_threshold),
-        codebuddy_quota_alert_enabled: codebuddy_quota_alert_enabled
-            .unwrap_or(current.codebuddy_quota_alert_enabled),
-        codebuddy_quota_alert_threshold: codebuddy_quota_alert_threshold
-            .unwrap_or(current.codebuddy_quota_alert_threshold),
-        codebuddy_cn_quota_alert_enabled: codebuddy_cn_quota_alert_enabled
-            .unwrap_or(current.codebuddy_cn_quota_alert_enabled),
-        codebuddy_cn_quota_alert_threshold: codebuddy_cn_quota_alert_threshold
-            .unwrap_or(current.codebuddy_cn_quota_alert_threshold),
-        qoder_quota_alert_enabled: qoder_quota_alert_enabled
-            .unwrap_or(current.qoder_quota_alert_enabled),
-        qoder_quota_alert_threshold: qoder_quota_alert_threshold
-            .unwrap_or(current.qoder_quota_alert_threshold),
-        trae_quota_alert_enabled: trae_quota_alert_enabled
-            .unwrap_or(current.trae_quota_alert_enabled),
-        trae_quota_alert_threshold: trae_quota_alert_threshold
-            .unwrap_or(current.trae_quota_alert_threshold),
-        trae_solo_quota_alert_enabled: trae_solo_quota_alert_enabled
-            .unwrap_or(current.trae_solo_quota_alert_enabled),
-        trae_solo_quota_alert_threshold: trae_solo_quota_alert_threshold
-            .unwrap_or(current.trae_solo_quota_alert_threshold),
-        trae_cn_quota_alert_enabled: trae_cn_quota_alert_enabled
-            .unwrap_or(current.trae_cn_quota_alert_enabled),
-        trae_cn_quota_alert_threshold: trae_cn_quota_alert_threshold
-            .unwrap_or(current.trae_cn_quota_alert_threshold),
-        trae_solo_cn_quota_alert_enabled: trae_solo_cn_quota_alert_enabled
-            .unwrap_or(current.trae_solo_cn_quota_alert_enabled),
-        trae_solo_cn_quota_alert_threshold: trae_solo_cn_quota_alert_threshold
-            .unwrap_or(current.trae_solo_cn_quota_alert_threshold),
-        workbuddy_quota_alert_enabled: workbuddy_quota_alert_enabled
-            .unwrap_or(current.workbuddy_quota_alert_enabled),
-        workbuddy_quota_alert_threshold: workbuddy_quota_alert_threshold
-            .unwrap_or(current.workbuddy_quota_alert_threshold),
-        auto_backup_enabled: current.auto_backup_enabled,
-        auto_backup_include_accounts: current.auto_backup_include_accounts,
-        auto_backup_include_config: current.auto_backup_include_config,
-        auto_backup_retention_days: current.auto_backup_retention_days,
-        auto_backup_retention_days_migrated: current.auto_backup_retention_days_migrated,
-        auto_backup_last_backup_at: current.auto_backup_last_backup_at,
-        webdav_sync_enabled: current.webdav_sync_enabled,
-        webdav_sync_url: current.webdav_sync_url,
-        webdav_sync_username: current.webdav_sync_username,
-        webdav_sync_password: current.webdav_sync_password,
-        webdav_sync_remote_dir: current.webdav_sync_remote_dir,
-        webdav_sync_retention_days: current.webdav_sync_retention_days,
-        webdav_sync_last_upload_at: current.webdav_sync_last_upload_at,
-        webdav_sync_last_upload_file_name: current.webdav_sync_last_upload_file_name,
-        webdav_sync_last_download_at: current.webdav_sync_last_download_at,
-        webdav_sync_last_download_file_name: current.webdav_sync_last_download_file_name,
-    };
+        {
+            current.auto_switch_scope_mode = value;
+        }
+        if let Some(value) = auto_switch_selected_group_ids {
+            current.auto_switch_selected_group_ids = value;
+        }
+        if let Some(value) = auto_switch_account_scope_mode {
+            current.auto_switch_account_scope_mode =
+                normalize_auto_switch_account_scope_mode(&value);
+        }
+        if let Some(value) = auto_switch_selected_account_ids {
+            current.auto_switch_selected_account_ids =
+                normalize_auto_switch_selected_account_ids(&value);
+        }
+        if let Some(value) = codex_auto_switch_enabled {
+            current.codex_auto_switch_enabled = value;
+        }
+        if let Some(value) = codex_auto_switch_primary_threshold {
+            current.codex_auto_switch_primary_threshold = value;
+        }
+        if let Some(value) = codex_auto_switch_secondary_threshold {
+            current.codex_auto_switch_secondary_threshold = value;
+        }
+        if let Some(value) = codex_auto_switch_account_scope_mode {
+            current.codex_auto_switch_account_scope_mode =
+                normalize_auto_switch_account_scope_mode(&value);
+        }
+        if let Some(value) = codex_auto_switch_selected_account_ids {
+            current.codex_auto_switch_selected_account_ids =
+                normalize_auto_switch_selected_account_ids(&value);
+        }
 
-    config::save_user_config(&new_config)?;
+        if let Some(value) = quota_alert_enabled {
+            current.quota_alert_enabled = value;
+        }
+        if let Some(value) = quota_alert_threshold {
+            current.quota_alert_threshold = value;
+        }
+        if let Some(value) = codex_quota_alert_enabled {
+            current.codex_quota_alert_enabled = value;
+        }
+        apply_codex_quota_alert_thresholds(
+            current,
+            codex_quota_alert_threshold,
+            codex_quota_alert_primary_threshold,
+            codex_quota_alert_secondary_threshold,
+        );
+        if let Some(value) = zed_quota_alert_enabled {
+            current.zed_quota_alert_enabled = value;
+        }
+        if let Some(value) = zed_quota_alert_threshold {
+            current.zed_quota_alert_threshold = value;
+        }
+        if let Some(value) = ghcp_quota_alert_enabled {
+            current.ghcp_quota_alert_enabled = value;
+        }
+        if let Some(value) = ghcp_quota_alert_threshold {
+            current.ghcp_quota_alert_threshold = value;
+        }
+        if let Some(value) = windsurf_quota_alert_enabled {
+            current.windsurf_quota_alert_enabled = value;
+        }
+        if let Some(value) = windsurf_quota_alert_threshold {
+            current.windsurf_quota_alert_threshold = value;
+        }
+        if let Some(value) = kiro_quota_alert_enabled {
+            current.kiro_quota_alert_enabled = value;
+        }
+        if let Some(value) = kiro_quota_alert_threshold {
+            current.kiro_quota_alert_threshold = value;
+        }
+        if let Some(value) = cursor_quota_alert_enabled {
+            current.cursor_quota_alert_enabled = value;
+        }
+        if let Some(value) = cursor_quota_alert_threshold {
+            current.cursor_quota_alert_threshold = value;
+        }
+        if let Some(value) = grok_quota_alert_enabled {
+            current.grok_quota_alert_enabled = value;
+        }
+        if let Some(value) = grok_quota_alert_threshold {
+            current.grok_quota_alert_threshold = value;
+        }
+        if let Some(value) = claude_quota_alert_enabled {
+            current.claude_quota_alert_enabled = value;
+        }
+        if let Some(value) = claude_quota_alert_threshold {
+            current.claude_quota_alert_threshold = value;
+        }
+        if let Some(value) = codebuddy_quota_alert_enabled {
+            current.codebuddy_quota_alert_enabled = value;
+        }
+        if let Some(value) = codebuddy_quota_alert_threshold {
+            current.codebuddy_quota_alert_threshold = value;
+        }
+        if let Some(value) = codebuddy_cn_quota_alert_enabled {
+            current.codebuddy_cn_quota_alert_enabled = value;
+        }
+        if let Some(value) = codebuddy_cn_quota_alert_threshold {
+            current.codebuddy_cn_quota_alert_threshold = value;
+        }
+        if let Some(value) = qoder_quota_alert_enabled {
+            current.qoder_quota_alert_enabled = value;
+        }
+        if let Some(value) = qoder_quota_alert_threshold {
+            current.qoder_quota_alert_threshold = value;
+        }
+        if let Some(value) = trae_quota_alert_enabled {
+            current.trae_quota_alert_enabled = value;
+        }
+        if let Some(value) = trae_quota_alert_threshold {
+            current.trae_quota_alert_threshold = value;
+        }
+        if let Some(value) = trae_solo_quota_alert_enabled {
+            current.trae_solo_quota_alert_enabled = value;
+        }
+        if let Some(value) = trae_solo_quota_alert_threshold {
+            current.trae_solo_quota_alert_threshold = value;
+        }
+        if let Some(value) = trae_cn_quota_alert_enabled {
+            current.trae_cn_quota_alert_enabled = value;
+        }
+        if let Some(value) = trae_cn_quota_alert_threshold {
+            current.trae_cn_quota_alert_threshold = value;
+        }
+        if let Some(value) = trae_solo_cn_quota_alert_enabled {
+            current.trae_solo_cn_quota_alert_enabled = value;
+        }
+        if let Some(value) = trae_solo_cn_quota_alert_threshold {
+            current.trae_solo_cn_quota_alert_threshold = value;
+        }
+        if let Some(value) = workbuddy_quota_alert_enabled {
+            current.workbuddy_quota_alert_enabled = value;
+        }
+        if let Some(value) = workbuddy_quota_alert_threshold {
+            current.workbuddy_quota_alert_threshold = value;
+        }
+
+        Ok(())
+    })?;
 
     if token_keeper_enabled_changed {
         modules::provider_token_keeper::notify_config_changed(
             app.clone(),
-            token_keeper_enabled_value,
+            new_config.token_keeper_enabled,
         );
     }
 
-    if current_app_auto_launch_enabled != app_auto_launch_enabled_value {
-        apply_app_auto_launch_enabled(&app, app_auto_launch_enabled_value)?;
+    if auto_import_from_local_enabled_changed {
+        modules::auto_local_import::notify_config_changed(
+            new_config.auto_import_from_local_enabled,
+        );
+    }
+
+    if current_app_auto_launch_enabled != new_config.app_auto_launch_enabled {
+        apply_app_auto_launch_enabled(&app, new_config.app_auto_launch_enabled)?;
     }
 
     if let Err(err) = modules::floating_card_window::apply_floating_card_always_on_top(&app) {
@@ -2978,21 +3535,30 @@ pub fn save_general_config(
     }
 
     if language_changed {
-        // 广播语言变更（如果有客户端连接，会通过 WebSocket 发送）
         websocket::broadcast_language_changed(&language_for_broadcast, "desktop");
-
-        // 同时写入共享文件（供插件端离线时启动读取）
-        // 因为无法确定插件端是否收到了 WebSocket 消息，保守策略是总是写入
-        // 但为了减少写入，可以检查是否有客户端连接
-        // 这里简化处理：总是写入，插件端启动时会比较时间戳
         modules::sync_settings::write_sync_setting("language", &normalized_language);
-
-        // 仅在语言变更时刷新托盘菜单，避免无关配置触发托盘重建
         if let Err(err) = modules::tray::update_tray_menu(&app) {
             modules::logger::log_warn(&format!("[Tray] 语言变更后刷新托盘失败: {}", err));
         }
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_refresh_interval_config(
+    auto_refresh_minutes: Option<i32>,
+    codex_auto_refresh_minutes: Option<i32>,
+) -> Result<(), String> {
+    config::patch_user_config(|current| {
+        if let Some(value) = auto_refresh_minutes {
+            current.auto_refresh_minutes = value;
+        }
+        if let Some(value) = codex_auto_refresh_minutes {
+            current.codex_auto_refresh_minutes = value;
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
@@ -3018,124 +3584,84 @@ pub fn save_tray_platform_layout(
 
 #[tauri::command]
 pub fn set_app_path(app: String, path: String) -> Result<(), String> {
-    let mut current = config::get_user_config();
-    let normalized_path = path.trim().to_string();
-    match app.as_str() {
-        "antigravity" | "antigravity_ide" | "antigravity_legacy" => {
-            current.antigravity_app_path = normalized_path
+    let normalized_path = modules::process::normalize_windows_user_facing_path(&path);
+    config::patch_user_config(move |current| {
+        match app.as_str() {
+            "antigravity" | "antigravity_ide" | "antigravity_legacy" => {
+                current.antigravity_app_path = normalized_path
+            }
+            "codex" => current.codex_app_path = normalized_path,
+            "claude" => current.claude_app_path = normalized_path,
+            "zed" => current.zed_app_path = normalized_path,
+            "vscode" => current.vscode_app_path = normalized_path,
+            "windsurf" => current.windsurf_app_path = normalized_path,
+            "kiro" => current.kiro_app_path = normalized_path,
+            "cursor" => current.cursor_app_path = normalized_path,
+            "codebuddy" => current.codebuddy_app_path = normalized_path,
+            "codebuddy_cn" => current.codebuddy_cn_app_path = normalized_path,
+            "qoder" => current.qoder_app_path = normalized_path,
+            "zcode" => current.zcode_app_path = normalized_path,
+            "trae" => current.trae_app_path = normalized_path,
+            "trae_solo" => current.trae_solo_app_path = normalized_path,
+            "trae_cn" => current.trae_cn_app_path = normalized_path,
+            "trae_solo_cn" => current.trae_solo_cn_app_path = normalized_path,
+            "workbuddy" => current.workbuddy_app_path = normalized_path,
+            "opencode" => current.opencode_app_path = normalized_path,
+            _ => return Err("未知应用类型".to_string()),
         }
-        "codex" => current.codex_app_path = normalized_path,
-        "claude" => current.claude_app_path = normalized_path,
-        "zed" => current.zed_app_path = normalized_path,
-        "vscode" => current.vscode_app_path = normalized_path,
-        "windsurf" => current.windsurf_app_path = normalized_path,
-        "kiro" => current.kiro_app_path = normalized_path,
-        "cursor" => current.cursor_app_path = normalized_path,
-        "codebuddy" => current.codebuddy_app_path = normalized_path,
-        "codebuddy_cn" => current.codebuddy_cn_app_path = normalized_path,
-        "qoder" => current.qoder_app_path = normalized_path,
-        "zcode" => current.zcode_app_path = normalized_path,
-        "trae" => current.trae_app_path = normalized_path,
-        "trae_solo" => current.trae_solo_app_path = normalized_path,
-        "trae_cn" => current.trae_cn_app_path = normalized_path,
-        "trae_solo_cn" => current.trae_solo_cn_app_path = normalized_path,
-        "workbuddy" => current.workbuddy_app_path = normalized_path,
-        "opencode" => current.opencode_app_path = normalized_path,
-        _ => return Err("未知应用类型".to_string()),
-    }
-    config::save_user_config(&current)?;
+        Ok(())
+    })?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn set_claude_app_scan_roots(scan_roots: String) -> Result<(), String> {
-    let current = config::get_user_config();
     let normalized = scan_roots.trim().to_string();
-    if current.claude_app_scan_roots == normalized {
-        return Ok(());
-    }
-    let new_config = UserConfig {
-        claude_app_scan_roots: normalized,
-        ..current
-    };
-    config::save_user_config(&new_config)
+    config::patch_user_config(move |current| {
+        current.claude_app_scan_roots = normalized;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[tauri::command]
 pub fn set_trae_app_scan_roots(app: Option<String>, scan_roots: String) -> Result<(), String> {
-    let current = config::get_user_config();
     let normalized = scan_roots.trim().to_string();
     let target = app
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("trae");
-    let new_config = match target {
-        "trae" => {
-            if current.trae_app_scan_roots == normalized {
-                return Ok(());
-            }
-            UserConfig {
-                trae_app_scan_roots: normalized,
-                ..current
-            }
+        .unwrap_or("trae")
+        .to_string();
+    config::patch_user_config(move |current| {
+        match target.as_str() {
+            "trae" => current.trae_app_scan_roots = normalized,
+            "trae_solo" => current.trae_solo_app_scan_roots = normalized,
+            "trae_cn" => current.trae_cn_app_scan_roots = normalized,
+            "trae_solo_cn" => current.trae_solo_cn_app_scan_roots = normalized,
+            _ => return Err("鏈煡搴旂敤绫诲瀷".to_string()),
         }
-        "trae_solo" => {
-            if current.trae_solo_app_scan_roots == normalized {
-                return Ok(());
-            }
-            UserConfig {
-                trae_solo_app_scan_roots: normalized,
-                ..current
-            }
-        }
-        "trae_cn" => {
-            if current.trae_cn_app_scan_roots == normalized {
-                return Ok(());
-            }
-            UserConfig {
-                trae_cn_app_scan_roots: normalized,
-                ..current
-            }
-        }
-        "trae_solo_cn" => {
-            if current.trae_solo_cn_app_scan_roots == normalized {
-                return Ok(());
-            }
-            UserConfig {
-                trae_solo_cn_app_scan_roots: normalized,
-                ..current
-            }
-        }
-        _ => return Err("鏈煡搴旂敤绫诲瀷".to_string()),
-    };
-    config::save_user_config(&new_config)
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[tauri::command]
 pub fn set_codex_launch_on_switch(enabled: bool) -> Result<(), String> {
-    let current = config::get_user_config();
-    if current.codex_launch_on_switch == enabled {
-        return Ok(());
-    }
-    let new_config = UserConfig {
-        codex_launch_on_switch: enabled,
-        ..current
-    };
-    config::save_user_config(&new_config)
+    config::patch_user_config(|current| {
+        current.codex_launch_on_switch = enabled;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[tauri::command]
 pub fn set_codex_local_access_entry_visible(enabled: bool) -> Result<(), String> {
-    let current = config::get_user_config();
-    if current.codex_local_access_entry_visible == enabled {
-        return Ok(());
-    }
-    let new_config = UserConfig {
-        codex_local_access_entry_visible: enabled,
-        ..current
-    };
-    config::save_user_config(&new_config)
+    config::patch_user_config(|current| {
+        current.codex_local_access_entry_visible = enabled;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -3158,18 +3684,46 @@ pub fn detect_app_path(app: String, force: Option<bool>) -> Result<Option<String
 }
 
 #[tauri::command]
-pub fn scan_claude_desktop_launch_targets(
+pub async fn scan_claude_desktop_launch_targets(
     scan_roots: Option<String>,
 ) -> Result<Vec<modules::claude_instance::ClaudeDesktopLaunchCandidate>, String> {
-    let roots = scan_roots
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    Ok(modules::claude_instance::scan_claude_desktop_launch_targets(roots))
+    #[cfg(target_os = "windows")]
+    {
+        let _ = scan_roots;
+        let task = tauri::async_runtime::spawn_blocking(|| {
+            modules::process::scan_app_launch_targets("claude", None)
+        });
+        let candidates = match tokio::time::timeout(Duration::from_secs(2), task).await {
+            Ok(Ok(result)) => result?,
+            Ok(Err(error)) => return Err(format!("检测运行中的 Claude 任务失败: {error}")),
+            Err(_) => return Err("检测运行中的 Claude 超时，请重试".to_string()),
+        };
+        return Ok(candidates
+            .into_iter()
+            .map(
+                |candidate| modules::claude_instance::ClaudeDesktopLaunchCandidate {
+                    target_type: candidate.target_type,
+                    label: candidate.label,
+                    target: candidate.target,
+                    source: candidate.source,
+                    supports_multi_instance: candidate.supports_multi_instance,
+                },
+            )
+            .collect());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let roots = scan_roots
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        Ok(modules::claude_instance::scan_claude_desktop_launch_targets(roots))
+    }
 }
 
 #[tauri::command]
-pub fn scan_app_launch_targets(
+pub async fn scan_app_launch_targets(
     app: String,
     scan_roots: Option<String>,
 ) -> Result<Vec<modules::process::AppLaunchCandidate>, String> {
@@ -3180,28 +3734,16 @@ pub fn scan_app_launch_targets(
         | "opencode" => {}
         _ => return Err("未知应用类型".to_string()),
     }
+    let _ = scan_roots;
 
-    let roots = scan_roots
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    if app == "claude" {
-        return Ok(
-            modules::claude_instance::scan_claude_desktop_launch_targets(roots)
-                .into_iter()
-                .map(|candidate| modules::process::AppLaunchCandidate {
-                    target_type: candidate.target_type,
-                    label: candidate.label,
-                    target: candidate.target,
-                    source: candidate.source,
-                    supports_multi_instance: candidate.supports_multi_instance,
-                })
-                .collect(),
-        );
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        modules::process::scan_app_launch_targets(app.as_str(), None)
+    });
+    match tokio::time::timeout(Duration::from_secs(2), task).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(format!("检测运行中的应用任务失败: {error}")),
+        Err(_) => Err("检测运行中的应用超时，请重试".to_string()),
     }
-
-    modules::process::scan_app_launch_targets(app.as_str(), roots)
 }
 
 #[tauri::command]
@@ -3255,29 +3797,30 @@ pub fn handle_window_close(
 
     // 如果需要记住选择，更新配置
     if remember {
-        let current = config::get_user_config();
         let close_behavior = match action.as_str() {
             "minimize" => CloseWindowBehavior::Minimize,
             "quit" => CloseWindowBehavior::Quit,
             _ => CloseWindowBehavior::Ask,
         };
-
-        let new_config = UserConfig {
-            close_behavior,
-            ..current
-        };
-
-        config::save_user_config(&new_config)?;
+        config::patch_user_config(move |current| {
+            current.close_behavior = close_behavior;
+            Ok(())
+        })?;
         modules::logger::log_info(&format!("[Window] 已保存关闭行为设置: {}", action));
     }
 
     // 执行操作
     match action.as_str() {
         "minimize" => {
-            let _ = window.hide();
-            modules::logger::log_info("[Window] 窗口已最小化到托盘");
+            if let Err(err) = modules::floating_card_window::destroy_main_window_to_tray(&window) {
+                modules::logger::log_warn(&format!("[Window] 销毁主窗口失败，回退隐藏: {}", err));
+                let _ = window.hide();
+                modules::process_memory::trim_idle_process_memory();
+            }
+            modules::logger::log_info("[Window] 窗口已关闭到托盘");
         }
         "quit" => {
+            modules::floating_card_window::request_app_exit();
             window.app_handle().exit(0);
         }
         _ => {
@@ -3286,6 +3829,11 @@ pub fn handle_window_close(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub fn main_window_take_pending_navigation() -> Result<Option<String>, String> {
+    modules::floating_card_window::take_pending_main_window_navigation()
 }
 
 #[tauri::command]
@@ -3323,16 +3871,10 @@ pub fn set_floating_card_always_on_top(
     app: tauri::AppHandle,
     always_on_top: bool,
 ) -> Result<(), String> {
-    let current = config::get_user_config();
-    if current.floating_card_always_on_top == always_on_top {
-        return modules::floating_card_window::apply_floating_card_always_on_top(&app);
-    }
-
-    let new_config = UserConfig {
-        floating_card_always_on_top: always_on_top,
-        ..current
-    };
-    config::save_user_config(&new_config)?;
+    config::patch_user_config(|current| {
+        current.floating_card_always_on_top = always_on_top;
+        Ok(())
+    })?;
     modules::floating_card_window::apply_floating_card_always_on_top(&app)
 }
 
@@ -3348,36 +3890,31 @@ pub fn set_current_floating_card_window_always_on_top(
 
 #[tauri::command]
 pub fn set_floating_card_confirm_on_close(confirm_on_close: bool) -> Result<(), String> {
-    let current = config::get_user_config();
-    if current.floating_card_confirm_on_close == confirm_on_close {
-        return Ok(());
-    }
-
-    let new_config = UserConfig {
-        floating_card_confirm_on_close: confirm_on_close,
-        ..current
-    };
-    config::save_user_config(&new_config)
+    config::patch_user_config(|current| {
+        current.floating_card_confirm_on_close = confirm_on_close;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[tauri::command]
 pub fn save_floating_card_position(x: i32, y: i32) -> Result<(), String> {
-    let current = config::get_user_config();
-    if current.floating_card_position_x == Some(x) && current.floating_card_position_y == Some(y) {
-        return Ok(());
-    }
-
-    let new_config = UserConfig {
-        floating_card_position_x: Some(x),
-        floating_card_position_y: Some(y),
-        ..current
-    };
-    config::save_user_config(&new_config)
+    config::patch_user_config(|current| {
+        current.floating_card_position_x = Some(x);
+        current.floating_card_position_y = Some(y);
+        Ok(())
+    })?;
+    Ok(())
 }
 
+/// Must run window recreate on the UI/main thread. Sync invoke handlers run on a
+/// worker pool; building a WebView there hangs on Windows after tray destroy.
 #[tauri::command]
-pub fn show_main_window_and_navigate(app: tauri::AppHandle, page: String) -> Result<(), String> {
-    modules::floating_card_window::show_main_window_and_navigate(&app, &page)
+pub async fn show_main_window_and_navigate(
+    app: tauri::AppHandle,
+    page: String,
+) -> Result<(), String> {
+    modules::floating_card_window::show_main_window_and_navigate_async(app, page).await
 }
 
 #[tauri::command]
@@ -3486,4 +4023,110 @@ pub async fn delete_corrupted_file(path: String) -> Result<(), String> {
     ));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_codex_quota_alert_thresholds, apply_general_config_updates,
+        lock_general_config_transaction, UserConfig,
+    };
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn general_config_transaction_lock_serializes_side_effecting_writes() {
+        let first_guard = lock_general_config_transaction().expect("acquire first transaction");
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+
+        let worker = thread::spawn(move || {
+            attempt_tx.send(()).expect("signal lock attempt");
+            let _guard = lock_general_config_transaction().expect("acquire second transaction");
+            acquired_tx.send(()).expect("signal lock acquisition");
+        });
+
+        attempt_rx.recv().expect("wait for lock attempt");
+        assert!(acquired_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        drop(first_guard);
+        acquired_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second transaction should continue after unlock");
+        worker.join().expect("join transaction worker");
+    }
+
+    #[test]
+    fn general_config_patch_only_changes_submitted_fields() {
+        let mut config = UserConfig {
+            theme: "dark".to_string(),
+            auto_refresh_minutes: 10,
+            ..UserConfig::default()
+        };
+        let updates = serde_json::json!({ "theme": "light" })
+            .as_object()
+            .expect("patch should be an object")
+            .clone();
+
+        apply_general_config_updates(&mut config, &updates).expect("patch should succeed");
+
+        assert_eq!(config.theme, "light");
+        assert_eq!(config.auto_refresh_minutes, 10);
+    }
+
+    #[test]
+    fn general_config_patch_rejects_non_general_fields() {
+        let mut config = UserConfig::default();
+        let updates = serde_json::json!({ "webdav_sync_password": "secret" })
+            .as_object()
+            .expect("patch should be an object")
+            .clone();
+
+        let error = apply_general_config_updates(&mut config, &updates)
+            .expect_err("unsupported field should fail");
+
+        assert!(error.contains("webdav_sync_password"));
+    }
+
+    #[test]
+    fn unrelated_general_save_preserves_distinct_codex_quota_thresholds() {
+        let mut config = UserConfig {
+            codex_quota_alert_threshold: 20,
+            codex_quota_alert_primary_threshold: 10,
+            codex_quota_alert_secondary_threshold: 30,
+            ..UserConfig::default()
+        };
+
+        apply_codex_quota_alert_thresholds(&mut config, Some(20), None, None);
+
+        assert_eq!(config.codex_quota_alert_primary_threshold, 10);
+        assert_eq!(config.codex_quota_alert_secondary_threshold, 30);
+    }
+
+    #[test]
+    fn changed_legacy_codex_quota_threshold_updates_both_windows() {
+        let mut config = UserConfig {
+            codex_quota_alert_threshold: 20,
+            codex_quota_alert_primary_threshold: 10,
+            codex_quota_alert_secondary_threshold: 30,
+            ..UserConfig::default()
+        };
+
+        apply_codex_quota_alert_thresholds(&mut config, Some(40), None, None);
+
+        assert_eq!(config.codex_quota_alert_threshold, 40);
+        assert_eq!(config.codex_quota_alert_primary_threshold, 40);
+        assert_eq!(config.codex_quota_alert_secondary_threshold, 40);
+    }
+
+    #[test]
+    fn explicit_codex_quota_window_thresholds_take_precedence() {
+        let mut config = UserConfig::default();
+
+        apply_codex_quota_alert_thresholds(&mut config, Some(40), Some(15), Some(25));
+
+        assert_eq!(config.codex_quota_alert_threshold, 40);
+        assert_eq!(config.codex_quota_alert_primary_threshold, 15);
+        assert_eq!(config.codex_quota_alert_secondary_threshold, 25);
+    }
 }

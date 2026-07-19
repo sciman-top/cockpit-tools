@@ -1013,7 +1013,7 @@
 
 .codex-local-access-custom-routing-guide {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1164,7 +1164,8 @@
 .codex-local-access-custom-routing-list {
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .codex-local-access-custom-routing-row {
@@ -1290,6 +1291,92 @@
   width: 100%;
 }
 
+.codex-local-access-custom-routing-backup-field {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.codex-local-access-custom-routing-backup-label {
+  display: inline;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.codex-local-access-custom-routing-switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.codex-local-access-custom-routing-switch input[type="checkbox"] {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.codex-local-access-custom-routing-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 24%, var(--bg-card));
+  transition:
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.codex-local-access-custom-routing-switch-track::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  transition: transform 0.16s ease;
+}
+
+.codex-local-access-custom-routing-switch
+  input:checked
+  + .codex-local-access-custom-routing-switch-track {
+  background: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.codex-local-access-custom-routing-switch
+  input:checked
+  + .codex-local-access-custom-routing-switch-track::before {
+  transform: translateX(16px);
+}
+
+.codex-local-access-custom-routing-switch
+  input:focus-visible
+  + .codex-local-access-custom-routing-switch-track {
+  outline: 2px solid color-mix(in srgb, var(--primary) 50%, transparent);
+  outline-offset: 2px;
+}
+
+.codex-local-access-custom-routing-switch input:disabled {
+  cursor: not-allowed;
+}
+
+.codex-local-access-custom-routing-backup-field:has(input:disabled) {
+  opacity: 0.65;
+}
+
 .codex-local-access-custom-routing-muted {
   color: var(--text-muted);
   font-size: 12px;
@@ -1297,6 +1384,58 @@
 
 .codex-local-access-custom-routing-footer {
   padding: 16px 24px 20px;
+}
+
+.codex-local-access-backup-confirm-overlay {
+  z-index: 10020;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.68);
+}
+
+.codex-local-access-backup-confirm-dialog {
+  width: min(420px, calc(100vw - 40px));
+  max-width: calc(100vw - 40px);
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--primary) 18%, var(--border));
+  border-radius: 12px;
+  background: var(--bg-surface);
+  box-shadow: 0 24px 64px rgba(2, 6, 23, 0.36);
+}
+
+.codex-local-access-backup-confirm-header {
+  padding: 18px 20px 14px;
+}
+
+.codex-local-access-backup-confirm-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.codex-local-access-backup-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 20px;
+}
+
+.codex-local-access-backup-confirm-body strong {
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.codex-local-access-backup-confirm-body p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.codex-local-access-backup-confirm-footer {
+  gap: 10px;
+  padding: 14px 20px 18px;
 }
 
 .codex-local-access-section {
@@ -1360,6 +1499,24 @@
   flex-wrap: wrap;
 }
 
+.codex-local-access-member-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.codex-local-access-member-routing {
+  min-width: 150px;
+  max-width: min(240px, 42vw);
+}
+
+.codex-local-access-member-routing .single-select-dropdown-trigger {
+  min-height: 34px;
+  border-radius: 10px;
+}
+
 .codex-local-access-free-toggle {
   display: inline-flex;
   align-items: center;
@@ -1380,9 +1537,107 @@
   accent-color: var(--primary);
 }
 
+.codex-local-access-member-backup-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-height: 28px;
+  margin: 0;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  line-height: 1;
+  touch-action: manipulation;
+}
+
+.codex-local-access-member-backup-field:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  color: var(--text-primary);
+}
+
+.codex-local-access-member-backup-field:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 50%, transparent);
+  outline-offset: 2px;
+}
+
+.codex-local-access-member-backup-field:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.codex-local-access-member-backup-label {
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.codex-local-access-member-backup-switch {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+.codex-local-access-member-backup-switch-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 24%, var(--bg-card));
+  transition:
+    background 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.codex-local-access-member-backup-switch-track::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.2);
+  transition: transform 0.16s ease;
+}
+
+.codex-local-access-member-backup-field.is-on
+  .codex-local-access-member-backup-switch-track {
+  background: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.codex-local-access-member-backup-field.is-on
+  .codex-local-access-member-backup-switch-track::before {
+  transform: translateX(14px);
+}
+
+.codex-local-access-custom-routing-backup-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
+  background: color-mix(in srgb, var(--primary) 12%, var(--bg-card));
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .codex-local-access-stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -1430,6 +1685,10 @@
 
 .codex-local-access-stat-card-specialTokens {
   color: #7c3aed;
+}
+
+.codex-local-access-stat-card-cost {
+  color: #059669;
 }
 
 .codex-local-access-stat-card-latency {
@@ -1500,9 +1759,19 @@
 }
 
 .codex-local-access-health-pool-card {
+  font-family: inherit;
+  cursor: pointer;
   border-color: rgba(22, 163, 74, 0.2);
   background: rgba(240, 253, 244, 0.72);
   color: #166534;
+}
+
+.codex-local-access-health-pool-card:hover,
+.codex-local-access-health-pool-card:focus-visible {
+  filter: brightness(0.98);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.48),
+    0 0 0 2px color-mix(in srgb, currentColor 18%, transparent);
 }
 
 .codex-local-access-health-pool-card.has-issue {
@@ -1947,42 +2216,6 @@
   flex-wrap: wrap;
 }
 
-.codex-local-access-member-sort-direction {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 36px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-card);
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition:
-    border-color 0.15s ease,
-    background 0.15s ease,
-    color 0.15s ease;
-}
-
-.codex-local-access-member-sort-direction:hover:not(:disabled) {
-  border-color: var(--border-hover);
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.codex-local-access-member-sort-direction:focus-visible {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
-}
-
-.codex-local-access-member-sort-direction:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
 .codex-local-access-member-section .account-filter-surface .tag-filter-panel {
   min-width: 300px;
 }
@@ -2099,32 +2332,126 @@
   gap: 8px;
 }
 
+/*
+ * Simple flex rows (no subgrid): checkbox sits tight against the mainline.
+ * Horizontal scroll is on the whole list.
+ */
 .codex-local-access-member-list {
   max-height: min(34vh, 340px);
   padding-right: 4px;
+  overflow-x: auto;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.codex-local-access-member-list::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.codex-local-access-member-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 35%, transparent);
+}
+
+.codex-local-access-member-list > .group-account-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  /* Override default 12px; keep checkbox close to email. */
+  gap: 6px;
+  min-width: max-content;
+  /* Selection only via checkbox or email; other fields are not click targets. */
+  cursor: default;
+}
+
+.codex-local-access-member-list
+  > .group-account-item
+  > input.codex-local-access-member-select {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.codex-local-access-member-list .group-account-main {
+  display: block;
+  flex: 1 0 auto;
+  min-width: 0;
 }
 
 .codex-local-access-member-mainline {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  min-width: 0;
+  width: max-content;
+  min-width: 100%;
   flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
 }
 
-.codex-local-access-member-mainline::-webkit-scrollbar {
-  display: none;
+.codex-local-access-member-list .group-account-email {
+  flex: 0 0 12rem;
+  width: 12rem;
+  min-width: 12rem;
+  max-width: 12rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
 }
 
-.codex-local-access-member-mainline .codex-local-access-member-metric,
-.codex-local-access-member-mainline .codex-local-access-quota-line,
-.codex-local-access-member-mainline .tier-badge {
+.codex-local-access-member-list .group-account-email:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.codex-local-access-member-list .group-account-email:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.codex-local-access-member-list .codex-local-access-member-plan,
+.codex-local-access-member-list .codex-local-access-member-backup-slot,
+.codex-local-access-member-list .codex-local-access-member-metric,
+.codex-local-access-member-list .codex-local-access-member-trailing {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* Slightly pull backup toward the plan area without affecting checkbox/email. */
+.codex-local-access-member-list .codex-local-access-member-backup-slot {
+  margin-left: 0;
+}
+
+.codex-local-access-member-list .codex-local-access-member-trailing {
+  gap: 8px;
   flex-wrap: nowrap;
-  flex-shrink: 0;
+}
+
+.codex-local-access-member-list .codex-local-access-member-metric,
+.codex-local-access-member-list .codex-local-access-quota-line {
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
+.codex-local-access-member-list .codex-local-access-quota-line {
+  width: auto;
+  max-width: none;
+  overflow: visible;
 }
 
 .codex-local-access-member-unsupported {
@@ -2200,14 +2527,7 @@
   border: 1px solid var(--plan-pro-border);
 }
 
-.codex-local-access-member-mainline .group-account-email {
-  flex: 1 0 180px;
-  min-width: 140px;
-  color: var(--text-primary);
-}
-
 .codex-local-access-member-section .group-account-email {
-  min-width: 0;
   font-size: 13px;
   font-weight: 600;
 }
@@ -2236,7 +2556,6 @@
 }
 
 @media (max-width: 980px) {
-  .codex-local-access-stats-grid,
   .codex-local-access-config-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2345,7 +2664,7 @@
   }
 
   .codex-local-access-custom-routing-row {
-    grid-template-columns: 24px minmax(0, 1fr) 76px 76px;
+    grid-template-columns: 24px minmax(76px, 1fr) minmax(76px, 1fr);
     align-items: start;
     gap: 10px;
     padding: 13px 12px;
@@ -2368,10 +2687,17 @@
   .codex-local-access-custom-routing-number-field span {
     display: inline;
   }
+
+  .codex-local-access-custom-routing-number-field.is-priority {
+    grid-column: 2;
+  }
+
+  .codex-local-access-custom-routing-number-field.is-weight {
+    grid-column: 3;
+  }
 }
 
 @media (max-width: 640px) {
-  .codex-local-access-stats-grid,
   .codex-local-access-config-grid,
   .codex-local-access-config-extra-grid {
     grid-template-columns: 1fr;
@@ -2484,10 +2810,7 @@
   }
 
   .codex-local-access-custom-routing-row {
-    grid-template-columns: 22px minmax(0, 1fr) minmax(70px, 0.48fr) minmax(
-        70px,
-        0.48fr
-      );
+    grid-template-columns: 22px minmax(70px, 1fr) minmax(70px, 1fr);
   }
 
   .codex-local-access-custom-routing-account {

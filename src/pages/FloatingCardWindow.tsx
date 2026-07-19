@@ -12,7 +12,7 @@ import {
   buildCodebuddyAccountPresentation,
   buildCodexAccountPresentation,
   buildCursorAccountPresentation,
-  buildGeminiAccountPresentation,
+  buildGrokAccountPresentation,
   buildGitHubCopilotAccountPresentation,
   buildKiroAccountPresentation,
   buildQoderAccountPresentation,
@@ -44,11 +44,12 @@ import { useCodebuddyAccountStore } from '../stores/useCodebuddyAccountStore';
 import { useCodebuddyCnAccountStore } from '../stores/useCodebuddyCnAccountStore';
 import { useCodexAccountStore } from '../stores/useCodexAccountStore';
 import { useCursorAccountStore } from '../stores/useCursorAccountStore';
-import { useGeminiAccountStore } from '../stores/useGeminiAccountStore';
+import { useGrokAccountStore } from '../stores/useGrokAccountStore';
 import { useGitHubCopilotAccountStore } from '../stores/useGitHubCopilotAccountStore';
 import { useKiroAccountStore } from '../stores/useKiroAccountStore';
 import { usePlatformLayoutStore } from '../stores/usePlatformLayoutStore';
 import { useRemoteConfigStore } from '../stores/useRemoteConfigStore';
+import { applyReducedMotion } from '../utils/reducedMotion';
 import { useQoderAccountStore } from '../stores/useQoderAccountStore';
 import { useZcodeAccountStore } from '../stores/useZcodeAccountStore';
 import { useTraeAccountStore } from '../stores/useTraeAccountStore';
@@ -61,7 +62,7 @@ import { useClaudeInstanceStore } from '../stores/useClaudeInstanceStore';
 import { useCodebuddyInstanceStore } from '../stores/useCodebuddyInstanceStore';
 import { useCodexInstanceStore } from '../stores/useCodexInstanceStore';
 import { useCursorInstanceStore } from '../stores/useCursorInstanceStore';
-import { useGeminiInstanceStore } from '../stores/useGeminiInstanceStore';
+import { useGrokInstanceStore } from '../stores/useGrokInstanceStore';
 import { useGitHubCopilotInstanceStore } from '../stores/useGitHubCopilotInstanceStore';
 import type { InstanceStoreState } from '../stores/createInstanceStore';
 import { useInstanceStore } from '../stores/useInstanceStore';
@@ -76,7 +77,7 @@ import {
 import { useWindsurfInstanceStore } from '../stores/useWindsurfInstanceStore';
 import { useWorkbuddyInstanceStore } from '../stores/useWorkbuddyInstanceStore';
 import { useZcodeInstanceStore } from '../stores/useZcodeInstanceStore';
-import { ALL_PLATFORM_IDS, PLATFORM_PAGE_MAP, PlatformId } from '../types/platform';
+import { ALL_PLATFORM_IDS, isAccountPlatform, PLATFORM_PAGE_MAP, PlatformId } from '../types/platform';
 import type { InstanceProfile } from '../types/instance';
 import { isPrivacyModeEnabledByDefault, maskSensitiveValue } from '../utils/privacy';
 import { getPlatformLabel, renderPlatformIcon } from '../utils/platformMeta';
@@ -87,7 +88,7 @@ import {
   getRecommendedCodebuddyCnAccount,
   getRecommendedCodexAccount,
   getRecommendedCursorAccount,
-  getRecommendedGeminiAccount,
+  getRecommendedGrokAccount,
   getRecommendedGitHubCopilotAccount,
   getRecommendedKiroAccount,
   getRecommendedQoderAccount,
@@ -101,15 +102,18 @@ import {
 import { changeLanguage, normalizeLanguage } from '../i18n';
 import {
   ACCOUNTS_CHANGED_EVENT,
+  ACTIVE_PLATFORM_FOCUS_EVENT,
   CURRENT_ACCOUNT_CHANGED_EVENT,
+  FLOATING_CARD_PLATFORM_STORAGE_KEY,
+  persistFloatingCardPlatform,
   type AccountSyncEventPayload,
+  type ActivePlatformFocusPayload,
 } from '../utils/accountSyncEvents';
 import './FloatingCardWindow.css';
 
 const windowInstance = getCurrentWindow();
 const FLOATING_CARD_WINDOW_LABEL = 'floating-card';
 const INSTANCE_FLOATING_CARD_WINDOW_LABEL_PREFIX = 'instance-floating-card-';
-const FLOATING_CARD_PLATFORM_STORAGE_KEY = 'agtools.floating_card.platform';
 const DEFAULT_INSTANCE_ID = '__default__';
 const FLOATING_CARD_BASE_HEIGHT = 290;
 const FLOATING_CARD_MAX_HEIGHT = 520;
@@ -119,6 +123,7 @@ const FLOATING_CARD_NO_DRAG_SELECTOR =
 type FloatingCardGeneralConfig = {
   language: string;
   theme: string;
+  reduced_motion_enabled: boolean;
   ui_scale?: number;
   floating_card_always_on_top?: boolean;
   floating_card_confirm_on_close?: boolean;
@@ -132,7 +137,7 @@ type FloatingCardAccount =
   | ReturnType<typeof useWindsurfAccountStore.getState>['accounts'][number]
   | ReturnType<typeof useKiroAccountStore.getState>['accounts'][number]
   | ReturnType<typeof useCursorAccountStore.getState>['accounts'][number]
-  | ReturnType<typeof useGeminiAccountStore.getState>['accounts'][number]
+  | ReturnType<typeof useGrokAccountStore.getState>['accounts'][number]
   | ReturnType<typeof useCodebuddyAccountStore.getState>['accounts'][number]
   | ReturnType<typeof useCodebuddyCnAccountStore.getState>['accounts'][number]
   | ReturnType<typeof useQoderAccountStore.getState>['accounts'][number]
@@ -190,6 +195,8 @@ function resolveInstanceStoreApi(platformId: PlatformId): FloatingCardInstanceSt
       return useInstanceStore.getState();
     case 'codex':
       return useCodexInstanceStore.getState();
+    case 'codex_api_service':
+      return null;
     case 'claude_manager':
       return useClaudeInstanceStore.getState();
     case 'github-copilot':
@@ -200,8 +207,8 @@ function resolveInstanceStoreApi(platformId: PlatformId): FloatingCardInstanceSt
       return useKiroInstanceStore.getState();
     case 'cursor':
       return useCursorInstanceStore.getState();
-    case 'gemini':
-      return useGeminiInstanceStore.getState();
+    case 'grok':
+      return useGrokInstanceStore.getState();
     case 'codebuddy':
       return useCodebuddyInstanceStore.getState();
     case 'codebuddy_cn':
@@ -237,6 +244,8 @@ export function FloatingCardWindow() {
     INSTANCE_FLOATING_CARD_WINDOW_LABEL_PREFIX,
   );
   const orderedPlatformIds = usePlatformLayoutStore((state) => state.orderedPlatformIds);
+  // 与平台布局「菜单栏显示」勾选一致（trayPlatformIds）
+  const trayPlatformIds = usePlatformLayoutStore((state) => state.trayPlatformIds);
   const remoteHiddenPlatformIds = useRemoteConfigStore((state) => state.hiddenPlatformIds);
   const fetchRemoteConfigState = useRemoteConfigStore((state) => state.fetchState);
   const { accounts: agAccounts, currentAccountsByTarget: agCurrentAccountsByTarget } = useAccountStore();
@@ -262,9 +271,9 @@ export function FloatingCardWindow() {
     currentAccountId: cursorCurrentId,
   } = useCursorAccountStore();
   const {
-    accounts: geminiAccounts,
-    currentAccountId: geminiCurrentId,
-  } = useGeminiAccountStore();
+    accounts: grokAccounts,
+    currentAccountId: grokCurrentId,
+  } = useGrokAccountStore();
   const {
     accounts: codebuddyAccounts,
     currentAccountId: codebuddyCurrentId,
@@ -318,31 +327,50 @@ export function FloatingCardWindow() {
   const platformOrder = useMemo(() => {
     const seen = new Set<PlatformId>();
     const ordered: PlatformId[] = [];
+    const trayEnabled = new Set(trayPlatformIds);
 
+    // Prefer layout order, but only platforms enabled for menu bar (菜单栏显示).
     for (const platformId of orderedPlatformIds) {
       if (!ALL_PLATFORM_IDS.includes(platformId) || seen.has(platformId)) continue;
+      if (!isAccountPlatform(platformId)) continue;
       if (remoteHiddenPlatformSet.has(platformId)) continue;
+      if (!trayEnabled.has(platformId)) continue;
       ordered.push(platformId);
       seen.add(platformId);
     }
 
-    for (const platformId of ALL_PLATFORM_IDS) {
-      if (seen.has(platformId)) continue;
+    // Keep tray-enabled platforms that are not yet in orderedPlatformIds.
+    for (const platformId of trayPlatformIds) {
+      if (!ALL_PLATFORM_IDS.includes(platformId) || seen.has(platformId)) continue;
+      if (!isAccountPlatform(platformId)) continue;
       if (remoteHiddenPlatformSet.has(platformId)) continue;
       ordered.push(platformId);
       seen.add(platformId);
     }
 
     return ordered;
-  }, [orderedPlatformIds, remoteHiddenPlatformSet]);
+  }, [orderedPlatformIds, remoteHiddenPlatformSet, trayPlatformIds]);
 
   useEffect(() => {
     void fetchRemoteConfigState(false);
   }, [fetchRemoteConfigState]);
 
   useEffect(() => {
+    if (platformOrder.length === 0) {
+      return;
+    }
     if (platformOrder.includes(selectedPlatform)) {
       return;
+    }
+    // 当前选中平台被隐藏时，优先保留存储中的平台，再回退到列表首项
+    try {
+      const saved = localStorage.getItem(FLOATING_CARD_PLATFORM_STORAGE_KEY) as PlatformId | null;
+      if (saved && platformOrder.includes(saved)) {
+        setSelectedPlatform(saved);
+        return;
+      }
+    } catch {
+      // ignore
     }
     setSelectedPlatform(platformOrder[0] ?? 'antigravity');
   }, [platformOrder, selectedPlatform]);
@@ -426,7 +454,10 @@ export function FloatingCardWindow() {
     [instanceContext?.instanceName, isInstanceFloatingCardWindow, isPrimaryFloatingCardWindow, t],
   );
 
-  const fetchPlatformData = useCallback(async (platformId: PlatformId) => {
+  const fetchPlatformData = useCallback(async (
+    platformId: PlatformId,
+    options?: { allowEmpty?: boolean },
+  ) => {
     setPlatformLoading(true);
     try {
       switch (platformId) {
@@ -442,9 +473,15 @@ export function FloatingCardWindow() {
         }
         case 'codex':
           await Promise.allSettled([
-            useCodexAccountStore.getState().fetchAccounts(),
-            useCodexAccountStore.getState().fetchCurrentAccount(),
+            useCodexAccountStore.getState().fetchAccounts({
+              allowEmpty: options?.allowEmpty,
+            }),
+            useCodexAccountStore.getState().fetchCurrentAccount({
+              allowEmpty: options?.allowEmpty,
+            }),
           ]);
+          break;
+        case 'codex_api_service':
           break;
         case 'claude_manager':
           await Promise.allSettled([
@@ -464,8 +501,8 @@ export function FloatingCardWindow() {
         case 'cursor':
           await useCursorAccountStore.getState().fetchAccounts();
           break;
-        case 'gemini':
-          await useGeminiAccountStore.getState().fetchAccounts();
+        case 'grok':
+          await useGrokAccountStore.getState().fetchAccounts();
           break;
         case 'codebuddy':
           await useCodebuddyAccountStore.getState().fetchAccounts();
@@ -505,6 +542,7 @@ export function FloatingCardWindow() {
     let disposed = false;
     let unlistenAccountsChanged: (() => void) | null = null;
     let unlistenCurrentAccountChanged: (() => void) | null = null;
+    let unlistenActivePlatformFocus: (() => void) | null = null;
 
     const bindAccountSyncListeners = async () => {
       unlistenAccountsChanged = await listen<AccountSyncEventPayload>(
@@ -518,7 +556,9 @@ export function FloatingCardWindow() {
           ) {
             return;
           }
-          await fetchPlatformData(payload.platformId);
+          await fetchPlatformData(payload.platformId, {
+            allowEmpty: payload.reason === 'delete',
+          });
         },
       );
 
@@ -528,11 +568,15 @@ export function FloatingCardWindow() {
           const payload = event.payload;
           if (
             !payload ||
-            payload.platformId !== selectedPlatform ||
             payload.sourceWindowLabel === currentWindowLabel ||
             instanceContext
           ) {
             return;
+          }
+          // 主窗口在某平台切号/使用时，悬浮窗跟随到该平台（例如 Grok），不再锁死 antigravity
+          if (payload.platformId !== selectedPlatform) {
+            if (disposed) return;
+            setSelectedPlatform(payload.platformId);
           }
           await fetchPlatformData(payload.platformId);
           if (disposed) return;
@@ -540,6 +584,23 @@ export function FloatingCardWindow() {
             ...prev,
             [payload.platformId]: payload.accountId ?? null,
           }));
+        },
+      );
+
+      unlistenActivePlatformFocus = await listen<ActivePlatformFocusPayload>(
+        ACTIVE_PLATFORM_FOCUS_EVENT,
+        (event) => {
+          const payload = event.payload;
+          if (!payload?.platformId || instanceContext) {
+            return;
+          }
+          if (payload.sourceWindowLabel === currentWindowLabel) {
+            return;
+          }
+          if (!ALL_PLATFORM_IDS.includes(payload.platformId)) {
+            return;
+          }
+          setSelectedPlatform(payload.platformId);
         },
       );
     };
@@ -550,6 +611,7 @@ export function FloatingCardWindow() {
       disposed = true;
       unlistenAccountsChanged?.();
       unlistenCurrentAccountChanged?.();
+      unlistenActivePlatformFocus?.();
     };
   }, [
     currentWindowLabel,
@@ -574,6 +636,7 @@ export function FloatingCardWindow() {
   useEffect(() => {
     let disposed = false;
     let cleanupThemeWatcher: (() => void) | null = null;
+    let unlistenFocus: (() => void) | null = null;
 
     const applyTheme = (theme: string) => {
       const appliedTheme = resolveAppliedTheme(theme);
@@ -606,7 +669,10 @@ export function FloatingCardWindow() {
         if (disposed) return;
 
         await changeLanguage(normalizeLanguage(config.language));
+        cleanupThemeWatcher?.();
+        cleanupThemeWatcher = null;
         applyTheme(config.theme);
+        applyReducedMotion(config.reduced_motion_enabled);
         if (config.theme === 'system') {
           cleanupThemeWatcher = watchSystemTheme();
         }
@@ -622,11 +688,17 @@ export function FloatingCardWindow() {
       }
     };
 
-    void loadGeneralConfig();
+    const bindGeneralConfig = async () => {
+      await loadGeneralConfig();
+      unlistenFocus = await listen(TauriEvent.WINDOW_FOCUS, loadGeneralConfig);
+    };
+
+    void bindGeneralConfig();
 
     return () => {
       disposed = true;
       cleanupThemeWatcher?.();
+      unlistenFocus?.();
     };
   }, []);
 
@@ -703,11 +775,7 @@ export function FloatingCardWindow() {
     if (instanceContext) {
       return;
     }
-    try {
-      localStorage.setItem(FLOATING_CARD_PLATFORM_STORAGE_KEY, selectedPlatform);
-    } catch {
-      // ignore storage write failures
-    }
+    persistFloatingCardPlatform(selectedPlatform);
   }, [instanceContext, selectedPlatform]);
 
   const githubCopilotCurrent = useMemo(
@@ -726,9 +794,9 @@ export function FloatingCardWindow() {
     () => resolveCurrentAccountById(cursorAccounts, cursorCurrentId),
     [cursorAccounts, cursorCurrentId],
   );
-  const geminiCurrent = useMemo(
-    () => resolveCurrentAccountById(geminiAccounts, geminiCurrentId),
-    [geminiAccounts, geminiCurrentId],
+  const grokCurrent = useMemo(
+    () => resolveCurrentAccountById(grokAccounts, grokCurrentId),
+    [grokAccounts, grokCurrentId],
   );
   const codebuddyCurrent = useMemo(
     () => resolveCurrentAccountById(codebuddyAccounts, codebuddyCurrentId),
@@ -772,6 +840,11 @@ export function FloatingCardWindow() {
           accounts: codexAccounts,
           actualCurrentAccount: codexCurrent,
         };
+      case 'codex_api_service':
+        return {
+          accounts: [],
+          actualCurrentAccount: null,
+        };
       case 'claude_manager':
         return {
           accounts: claudeAccounts,
@@ -797,10 +870,10 @@ export function FloatingCardWindow() {
           accounts: cursorAccounts,
           actualCurrentAccount: cursorCurrent,
         };
-      case 'gemini':
+      case 'grok':
         return {
-          accounts: geminiAccounts,
-          actualCurrentAccount: geminiCurrent,
+          accounts: grokAccounts,
+          actualCurrentAccount: grokCurrent,
         };
       case 'codebuddy':
         return {
@@ -840,6 +913,11 @@ export function FloatingCardWindow() {
           accounts: zcodeAccounts,
           actualCurrentAccount: zcodeCurrent,
         };
+      default:
+        return {
+          accounts: [],
+          actualCurrentAccount: null,
+        };
     }
   }, [
     agAccounts,
@@ -854,8 +932,9 @@ export function FloatingCardWindow() {
     codexCurrent,
     cursorAccounts,
     cursorCurrent,
-    geminiAccounts,
-    geminiCurrent,
+
+    grokAccounts,
+    grokCurrent,
     githubCopilotAccounts,
     githubCopilotCurrent,
     kiroAccounts,
@@ -893,6 +972,8 @@ export function FloatingCardWindow() {
         return getRecommendedAntigravityAccount(agAccounts, effectiveCurrentId);
       case 'codex':
         return getRecommendedCodexAccount(codexAccounts, effectiveCurrentId);
+      case 'codex_api_service':
+        return null;
       case 'claude_manager':
         return getRecommendedClaudeAccount(claudeAccounts, effectiveCurrentId);
       case 'github-copilot':
@@ -903,8 +984,8 @@ export function FloatingCardWindow() {
         return getRecommendedKiroAccount(kiroAccounts, effectiveCurrentId);
       case 'cursor':
         return getRecommendedCursorAccount(cursorAccounts, effectiveCurrentId);
-      case 'gemini':
-        return getRecommendedGeminiAccount(geminiAccounts, effectiveCurrentId);
+      case 'grok':
+        return getRecommendedGrokAccount(grokAccounts, effectiveCurrentId);
       case 'codebuddy':
         return getRecommendedCodebuddyAccount(codebuddyAccounts, effectiveCurrentId);
       case 'codebuddy_cn':
@@ -922,6 +1003,8 @@ export function FloatingCardWindow() {
         return getRecommendedWorkbuddyAccount(workbuddyAccounts, effectiveCurrentId);
       case 'zed':
         return getRecommendedZedAccount(zedAccounts, effectiveCurrentId);
+      default:
+        return null;
     }
   }, [
     agAccounts,
@@ -931,7 +1014,8 @@ export function FloatingCardWindow() {
     codexAccounts,
     currentAccount?.id,
     cursorAccounts,
-    geminiAccounts,
+
+    grokAccounts,
     githubCopilotAccounts,
     kiroAccounts,
     qoderAccounts,
@@ -987,6 +1071,8 @@ export function FloatingCardWindow() {
         return buildAntigravityAccountPresentation(viewedAccount as typeof agAccounts[number], displayGroups, t);
       case 'codex':
         return buildCodexAccountPresentation(viewedAccount as typeof codexAccounts[number], t);
+      case 'codex_api_service':
+        return null;
       case 'claude_manager':
         return buildClaudeAccountPresentation(viewedAccount as typeof claudeAccounts[number], t);
       case 'github-copilot':
@@ -997,8 +1083,8 @@ export function FloatingCardWindow() {
         return buildKiroAccountPresentation(viewedAccount as typeof kiroAccounts[number], t);
       case 'cursor':
         return buildCursorAccountPresentation(viewedAccount as typeof cursorAccounts[number], t);
-      case 'gemini':
-        return buildGeminiAccountPresentation(viewedAccount as typeof geminiAccounts[number], t);
+      case 'grok':
+        return buildGrokAccountPresentation(viewedAccount as typeof grokAccounts[number], t);
       case 'codebuddy':
         return buildCodebuddyAccountPresentation(viewedAccount as typeof codebuddyAccounts[number], t);
       case 'codebuddy_cn':
@@ -1016,6 +1102,8 @@ export function FloatingCardWindow() {
         return buildZedAccountPresentation(viewedAccount as typeof zedAccounts[number], t);
       case 'zcode':
         return buildZcodeAccountPresentation(viewedAccount as typeof zcodeAccounts[number], t);
+      default:
+        return null;
     }
   }, [
     agAccounts,
@@ -1025,7 +1113,8 @@ export function FloatingCardWindow() {
     codexAccounts,
     cursorAccounts,
     displayGroups,
-    geminiAccounts,
+
+    grokAccounts,
     githubCopilotAccounts,
     kiroAccounts,
     qoderAccounts,
@@ -1096,8 +1185,8 @@ export function FloatingCardWindow() {
           case 'cursor':
             await useCursorAccountStore.getState().refreshToken(viewedAccount.id);
             break;
-          case 'gemini':
-            await useGeminiAccountStore.getState().refreshToken(viewedAccount.id);
+          case 'grok':
+            await useGrokAccountStore.getState().refreshToken(viewedAccount.id);
             break;
           case 'codebuddy':
             await useCodebuddyAccountStore.getState().refreshToken(viewedAccount.id);
@@ -1173,6 +1262,18 @@ export function FloatingCardWindow() {
         const instances = await instanceStore.refreshInstances();
         const targetInstance = findInstanceById(instances, instanceContext.instanceId);
         const wasRunning = targetInstance?.running === true;
+        if (
+          selectedPlatform === 'grok' &&
+          instanceContext.instanceId !== DEFAULT_INSTANCE_ID &&
+          wasRunning
+        ) {
+          throw new Error(
+            t(
+              'floatingCard.errors.stopInstanceBeforeSwitch',
+              '请先停止实例再切换账号',
+            ),
+          );
+        }
         await instanceStore.updateInstance({
           instanceId: instanceContext.instanceId,
           bindAccountId: viewedAccount.id,
@@ -1214,8 +1315,8 @@ export function FloatingCardWindow() {
           case 'cursor':
             await useCursorAccountStore.getState().switchAccount(viewedAccount.id);
             break;
-          case 'gemini':
-            await useGeminiAccountStore.getState().switchAccount(viewedAccount.id);
+          case 'grok':
+            await useGrokAccountStore.getState().switchAccount(viewedAccount.id);
             break;
           case 'codebuddy':
             await useCodebuddyAccountStore.getState().switchAccount(viewedAccount.id);

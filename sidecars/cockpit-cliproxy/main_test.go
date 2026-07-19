@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -24,8 +27,130 @@ import (
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
 
+type responsesTerminalEventTestError struct {
+	event []byte
+}
+
+func (e responsesTerminalEventTestError) Error() string { return "server overloaded" }
+func (e responsesTerminalEventTestError) StatusCode() int {
+	return http.StatusServiceUnavailable
+}
+func (e responsesTerminalEventTestError) ResponsesStreamEvent() []byte {
+	return bytes.Clone(e.event)
+}
+
+func TestWriteStreamTerminalErrorForResponsesPreservesResponseFailed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	event := []byte(`{"type":"response.failed","response":{"status":"failed","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded"}}}`)
+
+	writeStreamTerminalErrorForFormat(c, responsesTerminalEventTestError{event: event}, sdktranslator.FormatOpenAIResponse)
+
+	body := recorder.Body.String()
+	if !strings.Contains(body, "event: response.failed") {
+		t.Fatalf("expected response.failed event name, got %q", body)
+	}
+	if !strings.Contains(body, `"type":"response.failed"`) {
+		t.Fatalf("expected top-level response.failed type, got %q", body)
+	}
+}
+
+func TestResponsesSSEFramerBuffersPartialJSONAcrossChunks(t *testing.T) {
+	framer := newRelayStreamFramer(sdktranslator.FormatOpenAIResponse, "/v1/responses")
+	var output strings.Builder
+
+	first := []byte("event: response.completed\ndata: {\"type\":\"response.comp")
+	if err := framer.Write(&output, first); err != nil {
+		t.Fatalf("write first chunk: %v", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("partial JSON should remain buffered, got %q", output.String())
+	}
+
+	second := []byte("leted\",\"response\":{\"id\":\"resp_1\"}}")
+	if err := framer.Write(&output, second); err != nil {
+		t.Fatalf("write second chunk: %v", err)
+	}
+	if err := framer.Close(&output); err != nil {
+		t.Fatalf("close framer: %v", err)
+	}
+
+	want := "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n"
+	if got := output.String(); got != want {
+		t.Fatalf("framed output = %q, want %q", got, want)
+	}
+}
+
+func TestResponsesSSEFramerRepairsConcatenatedJSONDocuments(t *testing.T) {
+	first := `{"type":"response.in_progress","response":{"id":"resp_1"}}`
+	second := `{"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}`
+
+	tests := []struct {
+		name  string
+		chunk string
+	}{
+		{
+			name:  "plain JSON chunk",
+			chunk: first + second,
+		},
+		{
+			name:  "SSE data line",
+			chunk: "event: response.in_progress\ndata: " + first + second + "\n\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			framer := newRelayStreamFramer(sdktranslator.FormatOpenAIResponse, "/v1/responses")
+			var output strings.Builder
+			if err := framer.Write(&output, []byte(tc.chunk)); err != nil {
+				t.Fatalf("write concatenated chunk: %v", err)
+			}
+			if err := framer.Close(&output); err != nil {
+				t.Fatalf("close framer: %v", err)
+			}
+
+			frames := strings.Split(strings.TrimSpace(output.String()), "\n\n")
+			wantTypes := []string{"response.in_progress", "response.output_item.added"}
+			if len(frames) != len(wantTypes) {
+				t.Fatalf("frame count = %d, want %d; output=%q", len(frames), len(wantTypes), output.String())
+			}
+			for i, frame := range frames {
+				lines := strings.Split(frame, "\n")
+				if len(lines) != 2 {
+					t.Fatalf("frame %d lines = %d, want 2; frame=%q", i, len(lines), frame)
+				}
+				if got := strings.TrimSpace(strings.TrimPrefix(lines[0], "event:")); got != wantTypes[i] {
+					t.Fatalf("frame %d event = %q, want %q", i, got, wantTypes[i])
+				}
+				data := strings.TrimSpace(strings.TrimPrefix(lines[1], "data:"))
+				if !json.Valid([]byte(data)) {
+					t.Fatalf("frame %d data is invalid JSON: %q", i, data)
+				}
+				var envelope struct {
+					Type string `json:"type"`
+				}
+				if err := json.Unmarshal([]byte(data), &envelope); err != nil {
+					t.Fatalf("decode frame %d: %v", i, err)
+				}
+				if envelope.Type != wantTypes[i] {
+					t.Fatalf("frame %d payload type = %q, want %q", i, envelope.Type, wantTypes[i])
+				}
+			}
+		})
+	}
+}
+
+func TestSplitResponsesConcatenatedJSONDocumentsRejectsMalformedPayload(t *testing.T) {
+	payload := []byte(`{"type":"response.in_progress"}{"missing_type":true}`)
+	if documents, repaired := splitResponsesConcatenatedJSONDocuments(payload); repaired || documents != nil {
+		t.Fatalf("malformed payload should not be repaired: %#v", documents)
+	}
+}
+
 func TestCodexClientModelsResponseShape(t *testing.T) {
-	response := buildCodexClientModelsResponse([]string{"gpt-5.4", "gpt-image-2", codexAutoReviewModel})
+	response := buildCodexClientModelsResponse([]string{"gpt-5.4", "gpt-image-2", codexAutoReviewModel}, &apiKeySpec{})
 	models, ok := response["models"].([]map[string]any)
 	if !ok {
 		t.Fatalf("models response should contain a models array: %#v", response["models"])
@@ -39,8 +164,8 @@ func TestCodexClientModelsResponseShape(t *testing.T) {
 	if textModel == nil || imageModel == nil || reviewModel == nil {
 		t.Fatalf("expected all requested models, got %#v", models)
 	}
-	if _, ok := textModel["prefer_websockets"].(bool); !ok {
-		t.Fatalf("text model should keep websocket preference: %#v", textModel)
+	if got, ok := textModel["prefer_websockets"].(bool); !ok || got {
+		t.Fatalf("text model prefer_websockets = %#v, want false by default", textModel["prefer_websockets"])
 	}
 	if textModel["visibility"] != "list" {
 		t.Fatalf("text model should be listed in Codex client catalog: %#v", textModel)
@@ -51,11 +176,440 @@ func TestCodexClientModelsResponseShape(t *testing.T) {
 	if _, ok := textModel["input_modalities"].([]any); !ok {
 		t.Fatalf("text model should keep input modalities: %#v", textModel)
 	}
+	// Official catalog service tiers / context must not be hard-cleared by main.go.
+	if tiers, ok := textModel["service_tiers"].([]any); !ok || len(tiers) == 0 {
+		t.Fatalf("text model should keep official service_tiers: %#v", textModel["service_tiers"])
+	}
+	if cw := intFromAny(textModel["max_context_window"]); cw != 1000000 {
+		// gpt-5.4 template uses max_context_window=1000000; ensure we did not wipe it.
+		t.Fatalf("text model max_context_window should keep template value 1000000, got %#v", textModel["max_context_window"])
+	}
+	if cw := intFromAny(textModel["context_window"]); cw != 272000 {
+		t.Fatalf("text model context_window should keep template value 272000, got %#v", textModel["context_window"])
+	}
 	if imageModel["visibility"] != "hide" {
 		t.Fatalf("image model should be hidden in Codex client catalog: %#v", imageModel)
 	}
 	if reviewModel["visibility"] != "hide" {
 		t.Fatalf("auto review model should be hidden in Codex client catalog: %#v", reviewModel)
+	}
+}
+
+func TestCodexClientModelsResponsePreserves56Template(t *testing.T) {
+	response := buildCodexClientModelsResponse([]string{"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "custom-compat-model"}, &apiKeySpec{})
+	models, ok := response["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models response should contain a models array: %#v", response["models"])
+	}
+	sol := findCodexClientModelForTest(models, "gpt-5.6-sol")
+	if sol == nil {
+		t.Fatal("expected gpt-5.6-sol")
+	}
+	if intFromAny(sol["context_window"]) != 372000 || intFromAny(sol["max_context_window"]) != 372000 {
+		t.Fatalf("sol context windows = %#v / %#v", sol["context_window"], sol["max_context_window"])
+	}
+	if tiers, ok := sol["service_tiers"].([]any); !ok || len(tiers) != 1 {
+		t.Fatalf("sol service_tiers = %#v", sol["service_tiers"])
+	}
+	if got, ok := sol["supports_search_tool"].(bool); !ok || !got {
+		t.Fatalf("sol supports_search_tool = %#v, want true", sol["supports_search_tool"])
+	}
+	if got, ok := sol["prefer_websockets"].(bool); !ok || got {
+		t.Fatalf("sol prefer_websockets = %#v, want false by default", sol["prefer_websockets"])
+	}
+	if got := stringFromAny(sol["minimal_client_version"]); got != "0.144.0" {
+		t.Fatalf("sol minimal_client_version = %q, want 0.144.0", got)
+	}
+	levels, ok := sol["supported_reasoning_levels"].([]any)
+	if !ok {
+		t.Fatalf("sol reasoning levels = %#v", sol["supported_reasoning_levels"])
+	}
+	hasUltra := false
+	for _, raw := range levels {
+		level, _ := raw.(map[string]any)
+		if stringFromAny(level["effort"]) == "ultra" {
+			hasUltra = true
+		}
+	}
+	if !hasUltra {
+		t.Fatalf("sol should expose ultra reasoning: %#v", levels)
+	}
+
+	custom := findCodexClientModelForTest(models, "custom-compat-model")
+	if custom == nil {
+		t.Fatal("expected synthesized custom model")
+	}
+	if got, ok := custom["supports_search_tool"].(bool); !ok || got {
+		t.Fatalf("custom supports_search_tool = %#v, want false", custom["supports_search_tool"])
+	}
+}
+
+func TestCodexClientModelsResponseDoesNotInjectFastMode(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		spec *apiKeySpec
+	}{
+		{name: "plain API key", spec: &apiKeySpec{}},
+		{name: "OAuth-bound API key", spec: &apiKeySpec{BoundOAuth: true}},
+		{name: "provider gateway", spec: &apiKeySpec{ProviderGateway: &providerGatewaySpec{}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := buildCodexClientModelsResponse([]string{"gpt-5.6-sol", "custom-compat-model"}, test.spec)
+			models, ok := response["models"].([]map[string]any)
+			if !ok {
+				t.Fatalf("models response should contain a models array: %#v", response["models"])
+			}
+			for _, slug := range []string{"gpt-5.6-sol", "custom-compat-model"} {
+				model := findCodexClientModelForTest(models, slug)
+				if model == nil {
+					t.Fatalf("expected model %s", slug)
+				}
+				hasFast := false
+				for _, raw := range model["service_tiers"].([]any) {
+					tier, _ := raw.(map[string]any)
+					id := strings.ToLower(strings.TrimSpace(stringFromAny(tier["id"])))
+					name := strings.ToLower(strings.TrimSpace(stringFromAny(tier["name"])))
+					if id == "priority" || id == "fast" || name == "fast" {
+						hasFast = true
+					}
+				}
+				wantFast := slug == "gpt-5.6-sol"
+				if hasFast != wantFast {
+					t.Fatalf("model %s Fast tier = %v, want %v: %#v", slug, hasFast, wantFast, model["service_tiers"])
+				}
+			}
+		})
+	}
+}
+
+func TestCodexClientModelsResponseEnablesWebsocketsWhenConfigured(t *testing.T) {
+	response := buildCodexClientModelsResponse([]string{"gpt-5.6-sol"}, &apiKeySpec{
+		ResponsesWebsockets: true,
+	})
+	models, ok := response["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models response should contain a models array: %#v", response["models"])
+	}
+	sol := findCodexClientModelForTest(models, "gpt-5.6-sol")
+	if sol == nil {
+		t.Fatal("expected gpt-5.6-sol")
+	}
+	if got, ok := sol["prefer_websockets"].(bool); !ok || !got {
+		t.Fatalf("sol prefer_websockets = %#v, want true", sol["prefer_websockets"])
+	}
+}
+
+func TestBuildCockpitQuotaResponseAggregatesShortestWindowWithoutClamp(t *testing.T) {
+	hourlyPresent := true
+	weeklyPresent := true
+	hourlyMinutes := int64(300)
+	weeklyMinutes := int64(10080)
+	accounts := map[string]quotaPoolAccountState{
+		"team-1": {
+			Primary: &quotaPoolWindowState{Present: &weeklyPresent, RemainingPercent: intPtrForTest(100), WindowMinutes: &weeklyMinutes},
+		},
+		"plus-with-hourly": {
+			Primary:   &quotaPoolWindowState{Present: &hourlyPresent, RemainingPercent: intPtrForTest(80), WindowMinutes: &hourlyMinutes},
+			Secondary: &quotaPoolWindowState{Present: &weeklyPresent, RemainingPercent: intPtrForTest(40), WindowMinutes: &weeklyMinutes},
+		},
+	}
+	accountIDs := make([]string, 0, 16)
+	for index := 0; index < 15; index++ {
+		accountID := fmt.Sprintf("plus-%d", index+1)
+		remaining := 86
+		if index == 14 {
+			remaining = 83
+		}
+		accounts[accountID] = quotaPoolAccountState{
+			Primary: &quotaPoolWindowState{Present: &weeklyPresent, RemainingPercent: intPtrForTest(remaining), WindowMinutes: &weeklyMinutes},
+		}
+		accountIDs = append(accountIDs, accountID)
+	}
+	accountIDs = append(accountIDs, "team-1")
+	state := quotaPoolStateFile{Accounts: accounts}
+	response := buildCockpitQuotaResponse(&apiKeySpec{AccountIDs: accountIDs}, state, time.Now())
+	if response.RemainingPercent == nil || *response.RemainingPercent != 1387 {
+		t.Fatalf("remaining percent = %#v, want 1387", response.RemainingPercent)
+	}
+	if response.WeeklyRemainingPercent == nil || *response.WeeklyRemainingPercent != 1387 {
+		t.Fatalf("weekly percent = %#v, want 1387", response.WeeklyRemainingPercent)
+	}
+	if response.FiveHourRemainingPercent != nil {
+		t.Fatalf("five-hour percent should be absent: %#v", response.FiveHourRemainingPercent)
+	}
+	if response.IncludedAccountCount != 16 || response.MissingAccountCount != 0 {
+		t.Fatalf("account counts = %d/%d, want 16/0", response.IncludedAccountCount, response.MissingAccountCount)
+	}
+	shortest := buildCockpitQuotaResponse(&apiKeySpec{AccountIDs: []string{"plus-with-hourly"}}, state, time.Now())
+	if shortest.RemainingPercent == nil || *shortest.RemainingPercent != 80 {
+		t.Fatalf("shortest window percent = %#v, want 80", shortest.RemainingPercent)
+	}
+	if shortest.WeeklyRemainingPercent == nil || *shortest.WeeklyRemainingPercent != 40 {
+		t.Fatalf("weekly percent = %#v, want 40", shortest.WeeklyRemainingPercent)
+	}
+	if shortest.FiveHourRemainingPercent == nil || *shortest.FiveHourRemainingPercent != 80 {
+		t.Fatalf("five-hour percent = %#v, want 80", shortest.FiveHourRemainingPercent)
+	}
+	emptyScope := buildCockpitQuotaResponse(&apiKeySpec{}, state, time.Now())
+	if emptyScope.RemainingPercent != nil || emptyScope.AccountCount != 0 {
+		t.Fatalf("empty API key scope must not expose the full quota pool: %#v", emptyScope)
+	}
+}
+
+func TestRelayServerCockpitQuotaRequiresKeyAndIsolatesAccountScopes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	statePath := filepath.Join(t.TempDir(), "quota-pool-state.json")
+	present := true
+	minutes := int64(300)
+	state := quotaPoolStateFile{Accounts: map[string]quotaPoolAccountState{
+		"account-a": {
+			Primary: &quotaPoolWindowState{Present: &present, RemainingPercent: intPtrForTest(80), WindowMinutes: &minutes},
+		},
+		"account-b": {
+			Primary: &quotaPoolWindowState{Present: &present, RemainingPercent: intPtrForTest(55), WindowMinutes: &minutes},
+		},
+	}}
+	content, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal quota state: %v", err)
+	}
+	if err := os.WriteFile(statePath, content, 0o600); err != nil {
+		t.Fatalf("write quota state: %v", err)
+	}
+
+	keyA := &apiKeySpec{ID: "key-a", Key: "client-a", Enabled: true, AccountIDs: []string{"account-a"}}
+	keyB := &apiKeySpec{ID: "key-b", Key: "client-b", Enabled: true, AccountIDs: []string{"account-b"}}
+	manifest := &manifest{apiKeyByValue: map[string]*apiKeySpec{
+		keyA.Key: keyA,
+		keyB.Key: keyB,
+	}}
+	router := (&relayServer{
+		runtime:            &fakeRuntime{},
+		cfg:                &config.Config{},
+		manifest:           manifest,
+		policy:             &requestPolicy{manifest: manifest},
+		quotaPoolStatePath: statePath,
+	}).router()
+
+	for _, key := range []string{"", "wrong-key"} {
+		req := httptest.NewRequest(http.MethodGet, cockpitQuotaPath, nil)
+		if key != "" {
+			req.Header.Set("Authorization", "Bearer "+key)
+		}
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("key %q status = %d, want 401; body=%s", key, w.Code, w.Body.String())
+		}
+	}
+
+	for key, want := range map[string]int{"client-a": 80, "client-b": 55} {
+		req := httptest.NewRequest(http.MethodGet, cockpitQuotaPath, nil)
+		req.Header.Set("Authorization", "Bearer "+key)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("key %q status = %d, want 200; body=%s", key, w.Code, w.Body.String())
+		}
+		var response cockpitQuotaResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode key %q response: %v", key, err)
+		}
+		if response.RemainingPercent == nil || *response.RemainingPercent != want || response.AccountCount != 1 {
+			t.Fatalf("key %q received another scope: %#v", key, response)
+		}
+	}
+}
+
+func TestRelayServerCockpitQuotaUpstreamFailureReturnsScopedEmptyState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusBadGateway)
+	}))
+	defer upstream.Close()
+
+	statePath := filepath.Join(t.TempDir(), "quota-pool-state.json")
+	if err := os.WriteFile(statePath, []byte(`{"accounts":{}}`), 0o600); err != nil {
+		t.Fatalf("write quota state: %v", err)
+	}
+	spec := &apiKeySpec{
+		ID:         "provider-key",
+		Key:        "client-key",
+		Enabled:    true,
+		AccountIDs: []string{"provider-account"},
+		ProviderGateway: &providerGatewaySpec{
+			BaseURL: upstream.URL,
+			APIKey:  "upstream-key",
+		},
+	}
+	manifest := &manifest{apiKeyByValue: map[string]*apiKeySpec{spec.Key: spec}}
+	router := (&relayServer{
+		runtime:            &fakeRuntime{},
+		cfg:                &config.Config{},
+		manifest:           manifest,
+		policy:             &requestPolicy{manifest: manifest},
+		quotaPoolStatePath: statePath,
+	}).router()
+
+	req := httptest.NewRequest(http.MethodGet, cockpitQuotaPath, nil)
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var response cockpitQuotaResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.RemainingPercent != nil || response.AccountCount != 1 || response.MissingAccountCount != 1 {
+		t.Fatalf("upstream failure should keep local scoped empty state: %#v", response)
+	}
+}
+
+func TestCodexClientModelsResponseDisablesSearchForProviderGateway(t *testing.T) {
+	response := buildCodexClientModelsResponse([]string{"gpt-5.6-sol"}, &apiKeySpec{
+		ProviderGateway: &providerGatewaySpec{},
+	})
+	models, ok := response["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models response should contain a models array: %#v", response["models"])
+	}
+	sol := findCodexClientModelForTest(models, "gpt-5.6-sol")
+	if sol == nil {
+		t.Fatal("expected gpt-5.6-sol")
+	}
+	if got, ok := sol["supports_search_tool"].(bool); !ok || got {
+		t.Fatalf("provider gateway supports_search_tool = %#v, want false", sol["supports_search_tool"])
+	}
+}
+
+func TestCodexClientModelsResponseGatesProviderGatewayImageInput(t *testing.T) {
+	tests := []struct {
+		name          string
+		gateway       *providerGatewaySpec
+		model         string
+		supportsImage bool
+	}{
+		{
+			name: "text only",
+			gateway: &providerGatewaySpec{
+				UpstreamModels: []string{"deepseek-v4-pro"},
+			},
+			model: "deepseek-v4-pro",
+		},
+		{
+			name: "model supports vision",
+			gateway: &providerGatewaySpec{
+				UpstreamModels: []string{"qwen-vl-plus"},
+				ModelCapabilities: map[string]providerGatewayModelCapability{
+					"qwen-vl-plus": {SupportsVision: true},
+				},
+			},
+			model:         "qwen-vl-plus",
+			supportsImage: true,
+		},
+		{
+			name: "routes images to vision model",
+			gateway: &providerGatewaySpec{
+				UpstreamModels:     []string{"deepseek-v4-pro", "qwen-vl-plus"},
+				VisionRoutingModel: "qwen-vl-plus",
+				ModelCapabilities: map[string]providerGatewayModelCapability{
+					"qwen-vl-plus": {SupportsVision: true},
+				},
+			},
+			model:         "deepseek-v4-pro",
+			supportsImage: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := buildCodexClientModelsResponse([]string{test.model}, &apiKeySpec{
+				ProviderGateway: test.gateway,
+			})
+			models, ok := response["models"].([]map[string]any)
+			if !ok {
+				t.Fatalf("models response should contain a models array: %#v", response["models"])
+			}
+			entry := findCodexClientModelForTest(models, test.model)
+			if entry == nil {
+				t.Fatalf("expected model %s", test.model)
+			}
+			modalities, ok := entry["input_modalities"].([]any)
+			if !ok {
+				t.Fatalf("input_modalities = %#v", entry["input_modalities"])
+			}
+			want := []any{"text"}
+			if test.supportsImage {
+				want = []any{"text", "image"}
+			}
+			if !reflect.DeepEqual(modalities, want) {
+				t.Fatalf("input_modalities = %#v, want %#v", modalities, want)
+			}
+			_, hasImageDetail := entry["supports_image_detail_original"]
+			if hasImageDetail != test.supportsImage {
+				t.Fatalf("supports_image_detail_original present = %v, want %v", hasImageDetail, test.supportsImage)
+			}
+		})
+	}
+}
+
+func TestProviderGatewayVisionDetectionIgnoresToolSchemaFieldNames(t *testing.T) {
+	body := []byte(`{
+		"model":"deepseek-v4-pro",
+		"tools":[{
+			"type":"function",
+			"name":"inspect_url",
+			"parameters":{
+				"type":"object",
+				"properties":{"image_url":{"type":"string"}}
+			}
+		}]
+	}`)
+	if providerGatewayRequestHasVisionInput(body) {
+		t.Fatal("tool schema field names must not be treated as image input")
+	}
+}
+
+func intFromAny(value any) int {
+	switch v := value.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+func stringFromAny(value any) string {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func TestCodexSparkUsesCompleteCodexClientCatalogTemplate(t *testing.T) {
+	response := buildCodexClientModelsResponse([]string{codexSparkCatalogTemplateModel, codexSparkModel}, &apiKeySpec{})
+	models, ok := response["models"].([]map[string]any)
+	if !ok {
+		t.Fatalf("models response should contain a models array: %#v", response["models"])
+	}
+	template := findCodexClientModelForTest(models, codexSparkCatalogTemplateModel)
+	spark := findCodexClientModelForTest(models, codexSparkModel)
+	if template == nil || spark == nil {
+		t.Fatalf("expected template and Spark models, got %#v", models)
+	}
+	if spark["display_name"] != "GPT-5.3 Codex Spark" || spark["visibility"] != "list" || spark["supported_in_api"] != true {
+		t.Fatalf("Spark should be listed as an API model: %#v", spark)
+	}
+	for _, field := range []string{"available_in_plans", "base_instructions", "minimal_client_version", "model_messages", "prefer_websockets"} {
+		if spark[field] == nil || !reflect.DeepEqual(spark[field], template[field]) {
+			t.Fatalf("Spark should inherit %s from the Codex client template: %#v", field, spark[field])
+		}
 	}
 }
 
@@ -102,6 +656,176 @@ func TestClientCatalogModelsIncludesAutoReviewWithoutPrefix(t *testing.T) {
 	}
 }
 
+func TestCockpitSelectorRestrictsAuthsToClientAPIKeyAccountScope(t *testing.T) {
+	highQuotaAccount := &accountSpec{
+		ID:       "account-high",
+		AuthID:   "account-high.json",
+		PlanRank: intPtrForTest(500),
+	}
+	scopedAccount := &accountSpec{
+		ID:       "account-scoped",
+		AuthID:   "account-scoped.json",
+		PlanRank: intPtrForTest(300),
+	}
+	selector := &cockpitSelector{
+		manifest: &manifest{
+			RoutingStrategy: "auto",
+			accountByAuthID: map[string]*accountSpec{
+				"account-high.json":   highQuotaAccount,
+				"account-scoped.json": scopedAccount,
+			},
+			accountByID: map[string]*accountSpec{
+				"account-high":   highQuotaAccount,
+				"account-scoped": scopedAccount,
+			},
+		},
+	}
+	apiKey := &apiKeySpec{
+		ID:         "key-scoped",
+		Label:      "Scoped client",
+		AccountIDs: []string{"account-scoped"},
+	}
+	ctx := context.WithValue(context.Background(), clientAPIKeyContextKey, apiKey)
+	auths := []*coreauth.Auth{
+		{ID: "account-high.json", Provider: "codex", Status: coreauth.StatusActive},
+		{ID: "account-scoped.json", Provider: "codex", Status: coreauth.StatusActive},
+	}
+
+	selected, err := selector.Pick(ctx, "codex", "gpt-5.6-sol", cliproxyexecutor.Options{}, auths)
+
+	if err != nil {
+		t.Fatalf("pick scoped auth: %v", err)
+	}
+	if selected.ID != "account-scoped.json" {
+		t.Fatalf("expected only scoped account to be selected, got %q", selected.ID)
+	}
+}
+
+func TestAPIKeyPriorityStateOrdersFallbackAccountsWithoutRestart(t *testing.T) {
+	tempDir := t.TempDir()
+	priorityPath := filepath.Join(tempDir, "api-key-priorities.json")
+	if err := os.WriteFile(priorityPath, []byte(`{"priorityAccountIds":{"key-team":["account-a","account-b"]}}`), 0o600); err != nil {
+		t.Fatalf("write priority state: %v", err)
+	}
+	store := newAPIKeyPriorityStateStore(filepath.Join(tempDir, "manifest.json"))
+
+	accountA := &accountSpec{ID: "account-a"}
+	accountB := &accountSpec{ID: "account-b"}
+	accountC := &accountSpec{ID: "account-c"}
+	selector := &cockpitSelector{
+		manifest: &manifest{
+			accountByAuthID: map[string]*accountSpec{
+				"auth-a": accountA,
+				"auth-b": accountB,
+				"auth-c": accountC,
+			},
+		},
+		priorities: store,
+	}
+	ctx := context.WithValue(context.Background(), clientAPIKeyContextKey, &apiKeySpec{ID: "key-team"})
+	auths := []*coreauth.Auth{{ID: "auth-c"}, {ID: "auth-b"}, {ID: "auth-a"}}
+	ordered := selector.prioritizeAuthsForAPIKey(ctx, auths)
+	if ordered[0].ID != "auth-a" || ordered[1].ID != "auth-b" || ordered[2].ID != "auth-c" {
+		t.Fatalf("priority accounts should lead in order, got %#v", ordered)
+	}
+	fallbackAuths := []*coreauth.Auth{{ID: "auth-c"}, {ID: "auth-b"}}
+	ordered = selector.prioritizeAuthsForAPIKey(ctx, fallbackAuths)
+	if ordered[0].ID != "auth-b" {
+		t.Fatalf("next priority account should lead when the first is unavailable, got %#v", ordered)
+	}
+
+	if err := os.WriteFile(priorityPath, []byte(`{"priorityAccountIds":{"key-team":["account-b","account-a"]}}`), 0o600); err != nil {
+		t.Fatalf("update priority state: %v", err)
+	}
+	updatedAt := time.Now().Add(time.Second)
+	if err := os.Chtimes(priorityPath, updatedAt, updatedAt); err != nil {
+		t.Fatalf("advance priority state timestamp: %v", err)
+	}
+	ordered = selector.prioritizeAuthsForAPIKey(ctx, auths)
+	if ordered[0].ID != "auth-b" || ordered[1].ID != "auth-a" {
+		t.Fatalf("updated priority should apply without a sidecar restart, got %#v", ordered)
+	}
+}
+
+func TestCockpitSessionAffinitySeparatesClientAPIKeyScopes(t *testing.T) {
+	highQuotaAccount := &accountSpec{
+		ID:       "account-high",
+		AuthID:   "account-high.json",
+		PlanRank: intPtrForTest(500),
+	}
+	scopedAccount := &accountSpec{
+		ID:       "account-scoped",
+		AuthID:   "account-scoped.json",
+		PlanRank: intPtrForTest(300),
+	}
+	fallback := &cockpitSelector{
+		manifest: &manifest{
+			RoutingStrategy: "auto",
+			accountByAuthID: map[string]*accountSpec{
+				"account-high.json":   highQuotaAccount,
+				"account-scoped.json": scopedAccount,
+			},
+			accountByID: map[string]*accountSpec{
+				"account-high":   highQuotaAccount,
+				"account-scoped": scopedAccount,
+			},
+		},
+	}
+	selector := &cockpitSessionAffinitySelector{
+		inner: coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
+			Fallback: fallback,
+			TTL:      time.Hour,
+		}),
+	}
+	auths := []*coreauth.Auth{
+		{ID: "account-high.json", Provider: "codex", Status: coreauth.StatusActive},
+		{ID: "account-scoped.json", Provider: "codex", Status: coreauth.StatusActive},
+	}
+	opts := cliproxyexecutor.Options{
+		Headers: http.Header{"X-Session-ID": []string{"shared-session"}},
+	}
+	defaultKey := &apiKeySpec{
+		ID:         "default-key",
+		AccountIDs: []string{"account-high", "account-scoped"},
+	}
+	scopedKey := &apiKeySpec{
+		ID:         "scoped-key",
+		AccountIDs: []string{"account-scoped"},
+	}
+
+	first, err := selector.Pick(
+		context.WithValue(context.Background(), clientAPIKeyContextKey, defaultKey),
+		"codex",
+		"gpt-5.4",
+		opts,
+		auths,
+	)
+	if err != nil {
+		t.Fatalf("pick default key auth: %v", err)
+	}
+	if first.ID != "account-high.json" {
+		t.Fatalf("expected default key to select high quota auth, got %q", first.ID)
+	}
+
+	second, err := selector.Pick(
+		context.WithValue(context.Background(), clientAPIKeyContextKey, scopedKey),
+		"codex",
+		"gpt-5.4",
+		opts,
+		auths,
+	)
+	if err != nil {
+		t.Fatalf("pick scoped key auth: %v", err)
+	}
+	if second.ID != "account-scoped.json" {
+		t.Fatalf("expected scoped key not to reuse default key affinity auth, got %q", second.ID)
+	}
+}
+
+func intPtrForTest(value int) *int {
+	return &value
+}
+
 func TestCanonicalModelForClientModelHandlesPrefixAliasAndSnapshot(t *testing.T) {
 	spec := &apiKeySpec{ModelPrefix: "team"}
 	m := &manifest{
@@ -140,6 +864,40 @@ func TestLoadManifestIndexesAPIKeyAccounts(t *testing.T) {
 	}
 	if account.ID != "api-account" || account.UpstreamAPIKey != "sk-upstream" {
 		t.Fatalf("unexpected indexed account: %#v", account)
+	}
+}
+
+func TestLoadManifestIndexesTokenAccounts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(path, []byte(`{
+		"accounts": [{
+			"id":"token-account",
+			"email":" token@example.com ",
+			"authId":"nested/token-account.json",
+			"authKind":"access_token",
+			"accessTokenOnly":true,
+			"chatgptAccountId":" acct-token "
+		}]
+	}`), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	m, err := loadManifest(path)
+	if err != nil {
+		t.Fatalf("load manifest: %v", err)
+	}
+
+	if got := m.accountByAuthID["nested/token-account.json"]; got == nil || got.ID != "token-account" {
+		t.Fatalf("auth id should index token account, got %#v", got)
+	}
+	if got := m.accountByAuthID["token-account.json"]; got == nil || got.ID != "token-account" {
+		t.Fatalf("auth file basename should index token account, got %#v", got)
+	}
+	if got := m.accountByChatGPT["acct-token"]; got == nil || got.ID != "token-account" {
+		t.Fatalf("chatgpt account id should index token account, got %#v", got)
+	}
+	if got := m.accountByEmail["token@example.com"]; got == nil || got.ID != "token-account" {
+		t.Fatalf("email should index token account, got %#v", got)
 	}
 }
 
@@ -236,6 +994,91 @@ func TestCockpitSelectorPickSkipsBoundOAuthAtEitherQuotaReserve(t *testing.T) {
 				t.Fatalf("expected normal auth after reserve filtering, got %#v", selected)
 			}
 		})
+	}
+}
+
+func TestCockpitSelectorPrefersAccountWithFewerImageJobs(t *testing.T) {
+	busyAccount := &accountSpec{ID: "busy", AuthID: "busy.json"}
+	idleAccount := &accountSpec{ID: "idle", AuthID: "idle.json"}
+	tracker := newRequestUsageTracker()
+	if !tracker.tryReserveImageJob("existing-image", "busy.json", 1) {
+		t.Fatal("expected initial busy image reservation")
+	}
+	if tracker.tryReserveImageJob("competing-image", "busy.json", 1) {
+		t.Fatal("expected busy image auth to reject a second concurrent reservation")
+	}
+	selector := &cockpitSelector{
+		manifest: &manifest{accountByAuthID: map[string]*accountSpec{
+			"busy.json": busyAccount,
+			"idle.json": idleAccount,
+		}},
+		tracker: tracker,
+	}
+	ctx := internallogging.WithRequestID(context.Background(), "new-image")
+	ctx = context.WithValue(ctx, requestKindContextKey, "image_generation")
+
+	selected, err := selector.Pick(
+		ctx,
+		"codex",
+		"gpt-5.4-mini",
+		cliproxyexecutor.Options{},
+		[]*coreauth.Auth{{ID: "busy.json"}, {ID: "idle.json"}},
+	)
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if selected == nil || selected.ID != "idle.json" {
+		t.Fatalf("expected idle auth, got %#v", selected)
+	}
+	if got := tracker.imageInFlightCount("idle.json"); got != 1 {
+		t.Fatalf("idle auth in-flight count = %d, want 1", got)
+	}
+
+	changed := tracker.imageJobChangeSignal()
+	tracker.releaseImageJobs("new-image")
+	select {
+	case <-changed:
+	default:
+		t.Fatal("expected image slot release notification")
+	}
+	if got := tracker.imageInFlightCount("idle.json"); got != 0 {
+		t.Fatalf("idle auth in-flight count after release = %d, want 0", got)
+	}
+}
+
+func TestRequestUsageTrackerHonorsConfiguredImageJobLimit(t *testing.T) {
+	tracker := newRequestUsageTracker()
+	if !tracker.tryReserveImageJob("first-image", "shared.json", 2) {
+		t.Fatal("expected first image reservation")
+	}
+	if !tracker.tryReserveImageJob("second-image", "shared.json", 2) {
+		t.Fatal("expected second image reservation within configured limit")
+	}
+	if tracker.tryReserveImageJob("third-image", "shared.json", 2) {
+		t.Fatal("expected image reservation above configured limit to be rejected")
+	}
+	if got := tracker.imageInFlightCount("shared.json"); got != 2 {
+		t.Fatalf("shared auth in-flight count = %d, want 2", got)
+	}
+}
+
+func TestImageRequestSelectorBypassesSessionAffinityFallback(t *testing.T) {
+	imageAuth := &coreauth.Auth{ID: "image.json"}
+	affinityAuth := &coreauth.Auth{ID: "affinity.json"}
+	imageFallback := &countingSelector{auth: imageAuth}
+	affinityFallback := &countingSelector{auth: affinityAuth}
+	selector := &imageRequestSelector{
+		imageFallback: imageFallback,
+		fallback:      affinityFallback,
+	}
+	ctx := context.WithValue(context.Background(), requestKindContextKey, "image_generation")
+
+	selected, err := selector.Pick(ctx, "codex", "gpt-5.4-mini", cliproxyexecutor.Options{}, []*coreauth.Auth{imageAuth, affinityAuth})
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if selected != imageAuth || imageFallback.count != 1 || affinityFallback.count != 0 {
+		t.Fatalf("image request should use image fallback, selected=%#v image=%d affinity=%d", selected, imageFallback.count, affinityFallback.count)
 	}
 }
 
@@ -552,6 +1395,58 @@ func TestQuotaReserveSelectorFiltersCachedSessionAffinityAuth(t *testing.T) {
 	}
 }
 
+func TestBackupAccountSelectorOverridesCachedAffinityWhenRegularRecovers(t *testing.T) {
+	regularAccount := &accountSpec{ID: "regular", AuthID: "regular.json"}
+	backupAccount := &accountSpec{ID: "backup", AuthID: "backup.json"}
+	m := &manifest{
+		Accounts:        []accountSpec{*regularAccount, *backupAccount},
+		RoutingStrategy: "custom",
+		CustomRoutingRules: []customRoutingRule{
+			{AccountID: "regular", Priority: 0, Weight: 1},
+			{AccountID: "backup", Priority: 100, Weight: 1, IsBackup: true},
+		},
+		accountByID: map[string]*accountSpec{
+			"regular": regularAccount,
+			"backup":  backupAccount,
+		},
+		accountByAuthID: map[string]*accountSpec{
+			"regular.json": regularAccount,
+			"backup.json":  backupAccount,
+		},
+		originalIndexByID: map[string]int{"regular": 0, "backup": 1},
+	}
+	cfg := &config.Config{}
+	cfg.Routing.SessionAffinity = true
+	cfg.Routing.SessionAffinityTTL = time.Minute.String()
+	selector := buildCoreAuthSelector(cfg, &cockpitSelector{manifest: m}, m, nil)
+	if stoppable, ok := selector.(coreauth.StoppableSelector); ok {
+		defer stoppable.Stop()
+	}
+
+	regularAuth := &coreauth.Auth{
+		ID:             "regular.json",
+		Unavailable:    true,
+		NextRetryAfter: time.Now().Add(time.Minute),
+	}
+	backupAuth := &coreauth.Auth{ID: "backup.json"}
+	auths := []*coreauth.Auth{regularAuth, backupAuth}
+	opts := cliproxyexecutor.Options{
+		OriginalRequest: []byte(`{"metadata":{"user_id":"user_xxx_account__session_43d54db9-d7ba-4b2f-b09a-47f238dc78ac"}}`),
+	}
+
+	selected, err := selector.Pick(context.Background(), "codex", "gpt-5.4", opts, auths)
+	if err != nil || selected == nil || selected.ID != "backup.json" {
+		t.Fatalf("expected backup while regular is unavailable, got auth=%#v err=%v", selected, err)
+	}
+
+	regularAuth.Unavailable = false
+	regularAuth.NextRetryAfter = time.Time{}
+	selected, err = selector.Pick(context.Background(), "codex", "gpt-5.4", opts, auths)
+	if err != nil || selected == nil || selected.ID != "regular.json" {
+		t.Fatalf("expected recovered regular auth to override backup affinity, got auth=%#v err=%v", selected, err)
+	}
+}
+
 func int64PointerForTest(value int64) *int64 {
 	return &value
 }
@@ -587,7 +1482,7 @@ func TestSidecarRuntimeRegistersConfigCodexAPIKeyAuths(t *testing.T) {
 		accountByAPIKey: map[string]*accountSpec{"sk-upstream": account},
 		ModelIDs:        []string{"gpt-5.4"},
 	}
-	manager := buildCoreAuthManager(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil)
+	manager := buildCoreAuthManager(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker())
 
 	runtime, err := newSidecarRuntime(context.Background(), configPath, cfg, m, manager)
 	if err != nil {
@@ -610,6 +1505,83 @@ func TestSidecarRuntimeRegistersConfigCodexAPIKeyAuths(t *testing.T) {
 	}
 	if got := m.accountByAuthID[strings.ToLower(codexAPIKeyAuth.ID)]; got == nil || got.ID != "api-account" {
 		t.Fatalf("expected auth to be linked to manifest account, got %#v", got)
+	}
+}
+
+func TestSidecarRuntimeRegistersManifestCodexAccessTokenAuths(t *testing.T) {
+	tempDir := t.TempDir()
+	authDir := filepath.Join(tempDir, "auths")
+	if err := os.MkdirAll(authDir, 0o755); err != nil {
+		t.Fatalf("create auth dir: %v", err)
+	}
+	configPath := filepath.Join(tempDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("write config path: %v", err)
+	}
+	authFile := filepath.Join(authDir, "token-account.json")
+	if err := os.WriteFile(authFile, []byte(`{
+		"type":"codex",
+		"email":"token@example.com",
+		"access_token":"session-runtime-token",
+		"personal_access_token":"at-runtime-token",
+		"at_token":"at-runtime-token",
+		"account_id":"acct-token",
+		"openai_auth_mode":"personal_access_token",
+		"proxy_url":"http://127.0.0.1:9"
+	}`), 0o600); err != nil {
+		t.Fatalf("write auth file: %v", err)
+	}
+
+	cfg := &config.Config{AuthDir: authDir}
+	account := &accountSpec{
+		ID:               "token-account",
+		Email:            "token@example.com",
+		AuthID:           "token-account.json",
+		AuthKind:         "access_token",
+		AccessTokenOnly:  true,
+		ChatGPTAccountID: "acct-token",
+	}
+	m := &manifest{
+		Accounts:         []accountSpec{*account},
+		accountByID:      map[string]*accountSpec{"token-account": account},
+		accountByAuthID:  map[string]*accountSpec{"token-account.json": account},
+		accountByAPIKey:  map[string]*accountSpec{},
+		accountByChatGPT: map[string]*accountSpec{"acct-token": account},
+		accountByEmail:   map[string]*accountSpec{"token@example.com": account},
+		ModelIDs:         []string{"gpt-5.4"},
+	}
+	manager := buildCoreAuthManager(cfg, &cockpitSelector{manifest: m}, &authHook{manifest: m}, m, nil, newRequestUsageTracker())
+
+	runtime, err := newSidecarRuntime(context.Background(), configPath, cfg, m, manager)
+	if err != nil {
+		t.Fatalf("newSidecarRuntime: %v", err)
+	}
+	defer runtime.Stop()
+
+	var tokenAuth *coreauth.Auth
+	for _, auth := range manager.List() {
+		if auth == nil || !strings.EqualFold(auth.Provider, "codex") {
+			continue
+		}
+		if auth.Metadata != nil && auth.Metadata["access_token"] == "at-runtime-token" {
+			tokenAuth = auth
+			break
+		}
+	}
+	if tokenAuth == nil {
+		t.Fatalf("expected codex access token auth to be registered, got %#v", manager.List())
+	}
+	if tokenAuth.ProxyURL != "http://127.0.0.1:9" {
+		t.Fatalf("expected proxy url from auth metadata, got %q", tokenAuth.ProxyURL)
+	}
+	if got := m.accountByAuthID[strings.ToLower(tokenAuth.ID)]; got == nil || got.ID != "token-account" {
+		t.Fatalf("expected token auth to be linked to manifest account, got %#v", got)
+	}
+	if info := findModelInfoForTest(
+		registry.GetGlobalRegistry().GetModelsForClient(tokenAuth.ID),
+		"gpt-5.4",
+	); info == nil {
+		t.Fatalf("expected manifest models to be registered for token auth")
 	}
 }
 
@@ -680,7 +1652,7 @@ func TestManifestRegisteredModelsPreserveReasoningEffortThroughThinkingPipeline(
 		Provider: "codex",
 		Status:   coreauth.StatusActive,
 	}
-	manager := buildCoreAuthManager(&config.Config{}, &cockpitSelector{}, nil, nil, nil)
+	manager := buildCoreAuthManager(&config.Config{}, &cockpitSelector{}, nil, nil, nil, nil)
 	registered, err := manager.Register(context.Background(), auth)
 	if err != nil {
 		t.Fatalf("register auth: %v", err)
@@ -841,6 +1813,10 @@ func TestWriteExecutorErrorThrottlesRetryableDownstreamError(t *testing.T) {
 
 func TestRequestUsageTrackerFinalizesWithLastSuccessfulAttempt(t *testing.T) {
 	tracker := newRequestUsageTracker()
+	tracker.recordSelectedAccount("req-1", &accountSpec{
+		ID:    "account-ok",
+		Email: "ok@example.com",
+	}, "auth-ok")
 	tracker.record(usagePayload{
 		Type:          "usage",
 		RequestID:     "req-1",
@@ -860,6 +1836,7 @@ func TestRequestUsageTrackerFinalizesWithLastSuccessfulAttempt(t *testing.T) {
 		AccountEmail: "ok@example.com",
 		Model:        "gpt-5.5",
 		RequestKind:  "text",
+		ServiceTier:  "priority",
 		Success:      true,
 		Status:       http.StatusOK,
 		Usage: usageDetails{
@@ -889,6 +1866,116 @@ func TestRequestUsageTrackerFinalizesWithLastSuccessfulAttempt(t *testing.T) {
 	}
 	if payload.LatencyMS != 446_000 || payload.APIKeyID != "key_1" {
 		t.Fatalf("final request metadata was not applied: %#v", payload)
+	}
+	if payload.ServiceTier != "priority" {
+		t.Fatalf("expected service tier to be preserved, got %#v", payload)
+	}
+}
+
+func TestRequestUsageTrackerFinalizesWithSelectedAccount(t *testing.T) {
+	tracker := newRequestUsageTracker()
+	tracker.recordSelectedAccount("req-selected", &accountSpec{
+		ID:    "account-selected",
+		Email: "selected@example.com",
+	}, "auth-selected")
+
+	payload, ok := tracker.finalize("req-selected", usageFinalizeInput{
+		spec:          &apiKeySpec{ID: "key_1", Label: "Default"},
+		requestKind:   "text",
+		model:         "gpt-5.5",
+		status:        http.StatusOK,
+		latencyMS:     100,
+		completedAtMS: 123,
+	})
+
+	if !ok {
+		t.Fatal("expected finalized usage payload")
+	}
+	if payload.AccountID != "account-selected" || payload.AccountEmail != "selected@example.com" || payload.AuthID != "auth-selected" {
+		t.Fatalf("expected selected account metadata, got %#v", payload)
+	}
+}
+
+func TestRequestUsageTrackerSelectedAccountOverridesUsageAccount(t *testing.T) {
+	tracker := newRequestUsageTracker()
+	tracker.recordSelectedAccount("req-usage", &accountSpec{
+		ID:    "account-selected",
+		Email: "selected@example.com",
+	}, "auth-selected")
+	tracker.record(usagePayload{
+		Type:         "usage",
+		RequestID:    "req-usage",
+		AccountID:    "account-usage",
+		AccountEmail: "usage@example.com",
+		AuthID:       "auth-usage",
+		Success:      true,
+	})
+
+	payload, ok := tracker.finalize("req-usage", usageFinalizeInput{
+		status:        http.StatusOK,
+		latencyMS:     100,
+		completedAtMS: 123,
+	})
+
+	if !ok {
+		t.Fatal("expected finalized usage payload")
+	}
+	if payload.AccountID != "account-selected" || payload.AccountEmail != "selected@example.com" || payload.AuthID != "auth-selected" {
+		t.Fatalf("selected account metadata should win, got %#v", payload)
+	}
+}
+
+type countingSelector struct {
+	auth  *coreauth.Auth
+	count int
+}
+
+func (s *countingSelector) Pick(context.Context, string, string, cliproxyexecutor.Options, []*coreauth.Auth) (*coreauth.Auth, error) {
+	s.count++
+	return s.auth, nil
+}
+
+func TestRecordingSelectorRecordsSessionAffinityCacheHit(t *testing.T) {
+	account := &accountSpec{ID: "account-selected", Email: "selected@example.com"}
+	m := &manifest{
+		accountByAuthID: map[string]*accountSpec{"auth-selected": account},
+		accountByID:     map[string]*accountSpec{"account-selected": account},
+		accountByAPIKey: map[string]*accountSpec{},
+	}
+	auth := &coreauth.Auth{ID: "auth-selected", Provider: "codex", Status: coreauth.StatusActive}
+	fallback := &countingSelector{auth: auth}
+	affinity := coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
+		Fallback: fallback,
+		TTL:      time.Hour,
+	})
+	tracker := newRequestUsageTracker()
+	selector := &recordingSelector{inner: affinity, manifest: m, tracker: tracker}
+	headers := make(http.Header)
+	headers.Set("X-Session-ID", "session-selected")
+	opts := cliproxyexecutor.Options{Headers: headers}
+
+	ctx1 := internallogging.WithRequestID(context.Background(), "req-first")
+	if _, err := selector.Pick(ctx1, "codex", "gpt-5.5", opts, []*coreauth.Auth{auth}); err != nil {
+		t.Fatalf("first pick: %v", err)
+	}
+	ctx2 := internallogging.WithRequestID(context.Background(), "req-cache")
+	if _, err := selector.Pick(ctx2, "codex", "gpt-5.5", opts, []*coreauth.Auth{auth}); err != nil {
+		t.Fatalf("cache pick: %v", err)
+	}
+	if fallback.count != 1 {
+		t.Fatalf("expected second pick to use affinity cache, fallback count=%d", fallback.count)
+	}
+
+	payload, ok := tracker.finalize("req-cache", usageFinalizeInput{
+		status:        http.StatusOK,
+		latencyMS:     100,
+		completedAtMS: 123,
+	})
+	if !ok {
+		t.Fatal("expected finalized usage payload")
+	}
+	if payload.AccountID != "account-selected" || payload.AccountEmail != "selected@example.com" || payload.AuthID != "auth-selected" {
+		t.Fatalf("expected cache hit selected account metadata, got %#v", payload)
 	}
 }
 
@@ -1034,10 +2121,14 @@ func TestAuthHookEmitsRequestScopedResultDiagnostics(t *testing.T) {
 
 	out := captureStdout(t, func() {
 		hook.OnResult(ctx, coreauth.Result{
-			AuthID:   "auth.json",
-			Provider: "codex",
-			Model:    "upstream-model",
-			Success:  false,
+			AuthID:          "auth.json",
+			Provider:        "codex",
+			Model:           "upstream-model",
+			Success:         false,
+			AuthStateKnown:  true,
+			AuthAvailable:   false,
+			NextRetryAt:     time.Now().Add(30 * time.Minute),
+			AuthStateReason: "unauthorized",
 			Error: &coreauth.Error{
 				Code:       "upstream_timeout",
 				Message:    "upstream timed out",
@@ -1062,6 +2153,9 @@ func TestAuthHookEmitsRequestScopedResultDiagnostics(t *testing.T) {
 	}
 	if payload.HTTPStatus != http.StatusGatewayTimeout || payload.ErrorCode != "upstream_timeout" {
 		t.Fatalf("unexpected failure details: %#v", payload)
+	}
+	if payload.AuthAvailable == nil || *payload.AuthAvailable || payload.NextRetryAtMS <= time.Now().UnixMilli() || payload.AuthStateReason != "unauthorized" {
+		t.Fatalf("scheduler state should be preserved: %#v", payload)
 	}
 }
 
@@ -1098,6 +2192,63 @@ func TestRelayServerExecutesNonStreamingRequestThroughRuntime(t *testing.T) {
 	}
 	if w.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("CORS header should match CPA server behavior")
+	}
+}
+
+func TestRelayServerRejectsGPTImageModelsOnChatCompletionsBeforeRuntime(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	runtime := &fakeRuntime{}
+	apiKey := &apiKeySpec{
+		ID:          "key_1",
+		Label:       "Test key",
+		Key:         "client-key",
+		ModelPrefix: "team",
+		Enabled:     true,
+	}
+	m := &manifest{
+		APIKeys:  []apiKeySpec{*apiKey},
+		ModelIDs: []string{"gpt-5.5", "gpt-image-2"},
+		ModelAliases: []modelAliasSpec{{
+			SourceModel: "gpt-image-2",
+			Alias:       "image-latest",
+		}},
+		apiKeyByValue: map[string]*apiKeySpec{"client-key": apiKey},
+		aliasToSource: map[string]string{"image-latest": "gpt-image-2"},
+	}
+	router := (&relayServer{
+		runtime:  runtime,
+		cfg:      &config.Config{},
+		manifest: m,
+		policy:   &requestPolicy{manifest: m},
+	}).router()
+
+	for _, model := range []string{"team/gpt-image-2", "team/image-latest"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"draw"}]}`, model)))
+		req.Header.Set("Authorization", "Bearer client-key")
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		router.ServeHTTP(w, req)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("model %q status = %d, want %d; body=%s", model, w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		var payload struct {
+			Error struct {
+				Message string `json:"message"`
+				Type    string `json:"type"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("model %q response should be JSON: %v", model, err)
+		}
+		if payload.Error.Type != "invalid_request_error" || !strings.Contains(payload.Error.Message, "Chat Completions") {
+			t.Fatalf("model %q unexpected error payload: %#v", model, payload.Error)
+		}
+	}
+
+	if runtime.executeCalls != 0 || runtime.streamCalls != 0 {
+		t.Fatalf("image-only models must be rejected before runtime scheduling: execute=%d stream=%d", runtime.executeCalls, runtime.streamCalls)
 	}
 }
 
@@ -1515,11 +2666,12 @@ func TestRelayServerProviderGatewayUsesSelectedUpstreamModel(t *testing.T) {
 	}
 }
 
-func TestRelayServerProviderGatewayRejectsVisionInputWhenUnsupported(t *testing.T) {
+func TestRelayServerProviderGatewayOmitsVisionInputWhenUnsupported(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	upstreamCalled := false
+	var upstreamBody string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamCalled = true
+		body, _ := io.ReadAll(r.Body)
+		upstreamBody = string(body)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl_1","object":"chat.completion","created":1,"model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 	}))
@@ -1552,14 +2704,20 @@ func TestRelayServerProviderGatewayRejectsVisionInputWhenUnsupported(t *testing.
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
+	if w.Code != http.StatusOK {
 		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
 	}
-	if upstreamCalled {
-		t.Fatal("unsupported image input without routing model should not call upstream")
+	if upstreamBody == "" {
+		t.Fatal("text-only fallback should call upstream")
 	}
-	if !strings.Contains(w.Body.String(), "unsupported_image_input") {
-		t.Fatalf("unsupported image input should return explicit error: %s", w.Body.String())
+	if strings.Contains(upstreamBody, "image_url") || strings.Contains(upstreamBody, "data:image") {
+		t.Fatalf("text-only fallback should omit image data: %s", upstreamBody)
+	}
+	if !strings.Contains(upstreamBody, providerGatewayOmittedImageText) {
+		t.Fatalf("text-only fallback should explain the omitted image: %s", upstreamBody)
+	}
+	if !strings.Contains(upstreamBody, `"model":"deepseek-v4-flash"`) {
+		t.Fatalf("text-only fallback should keep the selected model: %s", upstreamBody)
 	}
 }
 
@@ -1803,6 +2961,54 @@ func TestRelayServerModelsExposeCodexAutoReview(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), codexAutoReviewModel) {
 		t.Fatalf("models response should expose auto review model: %s", w.Body.String())
+	}
+}
+
+func TestRelayServerResetAuthStateClearsSelectedAccountCooldown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	manager := coreauth.NewManager(nil, &coreauth.RoundRobinSelector{}, nil)
+	if _, err := manager.Register(context.Background(), &coreauth.Auth{
+		ID:       "auth-1.json",
+		Provider: "codex",
+		Metadata: map[string]any{"type": "codex"},
+		ModelStates: map[string]*coreauth.ModelState{
+			"gpt-5.5": {
+				Status:         coreauth.StatusError,
+				Unavailable:    true,
+				NextRetryAfter: time.Now().Add(30 * time.Minute),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+	spec := &apiKeySpec{ID: "key_1", Key: "client-key", Enabled: true, AccountIDs: []string{"account-1"}}
+	account := &accountSpec{ID: "account-1", AuthID: "auth-1.json"}
+	m := &manifest{
+		APIKeys:       []apiKeySpec{*spec},
+		Accounts:      []accountSpec{*account},
+		apiKeyByValue: map[string]*apiKeySpec{"client-key": spec},
+		accountByID:   map[string]*accountSpec{"account-1": account},
+	}
+	router := (&relayServer{
+		runtime:     &fakeRuntime{},
+		cfg:         &config.Config{},
+		manifest:    m,
+		authManager: manager,
+		policy:      &requestPolicy{manifest: m},
+	}).router()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/cockpit/auth/reset", strings.NewReader(`{"accountIds":["account-1"]}`))
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	updated, ok := manager.GetByID("auth-1.json")
+	if !ok || updated == nil || len(updated.ModelStates) != 0 || updated.Unavailable {
+		t.Fatalf("auth state was not reset: %#v", updated)
 	}
 }
 
@@ -2284,6 +3490,15 @@ type fakeRuntime struct {
 	streamCalls  int
 	lastReq      cliproxyexecutor.Request
 	lastOpts     cliproxyexecutor.Options
+
+	alphaSearchStatus  int
+	alphaSearchHeaders http.Header
+	alphaSearchPayload []byte
+	alphaSearchErr     error
+	alphaSearchCalls   int
+	lastAlphaModel     string
+	lastAlphaBody      []byte
+	lastAlphaHeaders   http.Header
 }
 
 func (r *fakeRuntime) Execute(_ context.Context, _ []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -2291,6 +3506,24 @@ func (r *fakeRuntime) Execute(_ context.Context, _ []string, req cliproxyexecuto
 	r.lastReq = req
 	r.lastOpts = opts
 	return r.response, r.err
+}
+
+func (r *fakeRuntime) CodexAlphaSearch(_ context.Context, model string, body []byte, headers http.Header) (int, http.Header, []byte, error) {
+	r.alphaSearchCalls++
+	r.lastAlphaModel = model
+	r.lastAlphaBody = append([]byte(nil), body...)
+	if headers != nil {
+		r.lastAlphaHeaders = headers.Clone()
+	}
+	status := r.alphaSearchStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
+	payload := r.alphaSearchPayload
+	if payload == nil {
+		payload = []byte(`{"ok":true}`)
+	}
+	return status, r.alphaSearchHeaders, payload, r.alphaSearchErr
 }
 
 func (r *fakeRuntime) ExecuteStream(ctx context.Context, _ []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
@@ -2361,4 +3594,314 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatalf("read stdout pipe: %v", err)
 	}
 	return string(data)
+}
+
+func TestRelayAcceptsResponsesPathAppendedToChatCompletionsBase(t *testing.T) {
+	t.Parallel()
+	// Route registration only: ensure compatibility paths are not NoRoute 404.
+	m := &manifest{}
+	policy := &requestPolicy{manifest: m}
+	router := (&relayServer{
+		manifest: m,
+		policy:   policy,
+	}).router()
+	for _, path := range []string{
+		"/v1/chat/completions/v1/responses",
+		"/v1/chat/completions/v1/responses/compact",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer unused")
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		if w.Code == http.StatusNotFound {
+			t.Fatalf("path %s should not be NoRoute 404 (got %d body=%s)", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestSanitizeCodexAlphaSearchBodyRemovesLocalRoutingFields(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"query":"hello","prompt_cache_key":"drop-me","prompt_cache_retention":"24h","id":"sess-1"}`)
+	out := sanitizeCodexAlphaSearchBody(body)
+	if strings.Contains(string(out), "prompt_cache_key") || strings.Contains(string(out), "prompt_cache_retention") {
+		t.Fatalf("local routing fields survived: %s", out)
+	}
+	if !strings.Contains(string(out), `"query":"hello"`) || !strings.Contains(string(out), `"id":"sess-1"`) {
+		t.Fatalf("expected search fields preserved: %s", out)
+	}
+}
+
+func TestResolveCodexAlphaSearchURL(t *testing.T) {
+	t.Parallel()
+	if got := resolveCodexAlphaSearchURL(nil); got != defaultCodexAlphaSearchURL {
+		t.Fatalf("nil auth = %q, want default", got)
+	}
+	auth := &coreauth.Auth{Attributes: map[string]string{"base_url": "https://example.test/backend-api/codex/"}}
+	if got := resolveCodexAlphaSearchURL(auth); got != "https://example.test/backend-api/codex/alpha/search" {
+		t.Fatalf("codex base = %q", got)
+	}
+	auth.Attributes["base_url"] = "https://example.test/backend-api"
+	if got := resolveCodexAlphaSearchURL(auth); got != "https://example.test/backend-api/codex/alpha/search" {
+		t.Fatalf("backend-api base = %q", got)
+	}
+}
+
+func TestRequestKindFromPathTreatsAlphaSearchAsText(t *testing.T) {
+	t.Parallel()
+	if got := requestKindFromPath("/v1/alpha/search"); got != "text" {
+		t.Fatalf("requestKindFromPath(/v1/alpha/search) = %q, want text", got)
+	}
+	if got := requestKindFromPath("/backend-api/codex/alpha/search"); got != "text" {
+		t.Fatalf("requestKindFromPath(direct) = %q, want text", got)
+	}
+}
+
+func TestCodexAlphaSearchRouteForwardsToRuntime(t *testing.T) {
+	t.Parallel()
+	runtime := &fakeRuntime{
+		alphaSearchStatus:  http.StatusOK,
+		alphaSearchPayload: []byte(`{"results":[{"title":"ok"}]}`),
+		alphaSearchHeaders: http.Header{"Content-Type": []string{"application/json"}},
+	}
+	m := &manifest{
+		APIKeys: []apiKeySpec{{
+			ID:      "key_1",
+			Label:   "Test key",
+			Key:     "client-key",
+			Enabled: true,
+		}},
+		ModelIDs: []string{"gpt-5.6-sol"},
+	}
+	m.apiKeyByValue = map[string]*apiKeySpec{
+		"client-key": &m.APIKeys[0],
+	}
+	router := (&relayServer{
+		runtime:  runtime,
+		cfg:      &config.Config{},
+		manifest: m,
+		policy:   &requestPolicy{manifest: m},
+	}).router()
+
+	body := `{"query":"OpenAI Codex authentication documentation","model":"gpt-5.6-sol","id":"sess-42"}`
+	req := httptest.NewRequest(http.MethodPost, codexAlphaSearchPath, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Openai-Actor-Authorization", "actor-token")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if runtime.alphaSearchCalls != 1 {
+		t.Fatalf("alphaSearchCalls = %d, want 1", runtime.alphaSearchCalls)
+	}
+	if runtime.lastAlphaModel != "gpt-5.6-sol" {
+		t.Fatalf("model = %q, want gpt-5.6-sol", runtime.lastAlphaModel)
+	}
+	if !strings.Contains(string(runtime.lastAlphaBody), `"query":"OpenAI Codex authentication documentation"`) {
+		t.Fatalf("body not forwarded: %s", runtime.lastAlphaBody)
+	}
+	if got := runtime.lastAlphaHeaders.Get("X-Session-ID"); got != "sess-42" {
+		t.Fatalf("X-Session-ID = %q, want sess-42", got)
+	}
+	if got := runtime.lastAlphaHeaders.Get("X-Openai-Actor-Authorization"); got != "actor-token" {
+		t.Fatalf("actor header = %q", got)
+	}
+	if !strings.Contains(w.Body.String(), `"results"`) {
+		t.Fatalf("response body missing results: %s", w.Body.String())
+	}
+}
+
+func TestCodexAlphaSearchDirectPathIsRegistered(t *testing.T) {
+	t.Parallel()
+	runtime := &fakeRuntime{alphaSearchPayload: []byte(`{"ok":true}`)}
+	m := &manifest{
+		APIKeys: []apiKeySpec{{ID: "key_1", Key: "client-key", Enabled: true, ResponsesWebsockets: true}},
+	}
+	m.apiKeyByValue = map[string]*apiKeySpec{"client-key": &m.APIKeys[0]}
+	router := (&relayServer{
+		runtime:  runtime,
+		manifest: m,
+		policy:   &requestPolicy{manifest: m},
+	}).router()
+
+	req := httptest.NewRequest(http.MethodPost, codexDirectAlphaSearchPath, strings.NewReader(`{"query":"ping"}`))
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code == http.StatusNotFound {
+		t.Fatalf("direct path should not be NoRoute 404: %s", w.Body.String())
+	}
+	if runtime.alphaSearchCalls != 1 {
+		t.Fatalf("alphaSearchCalls = %d, want 1", runtime.alphaSearchCalls)
+	}
+}
+
+func TestCodexAlphaSearchRequiresAPIKey(t *testing.T) {
+	t.Parallel()
+	router := (&relayServer{
+		runtime:  &fakeRuntime{},
+		manifest: &manifest{},
+		policy:   &requestPolicy{manifest: &manifest{}},
+	}).router()
+	req := httptest.NewRequest(http.MethodPost, codexAlphaSearchPath, strings.NewReader(`{"query":"ping"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestResponsesWebsocketRouteRequiresAPIKey(t *testing.T) {
+	t.Parallel()
+	called := false
+	m := &manifest{
+		APIKeys: []apiKeySpec{{
+			ID:                  "key_1",
+			Key:                 "client-key",
+			Enabled:             true,
+			ResponsesWebsockets: true,
+		}},
+	}
+	m.apiKeyByValue = map[string]*apiKeySpec{"client-key": &m.APIKeys[0]}
+	router := (&relayServer{
+		runtime:  &fakeRuntime{},
+		manifest: m,
+		policy:   &requestPolicy{manifest: m},
+		responsesWebsocket: func(c *gin.Context) {
+			called = true
+			c.Status(http.StatusSwitchingProtocols)
+		},
+	}).router()
+
+	// Missing key → 401, handler not invoked.
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("missing key status = %d, want 401 body=%s", w.Code, w.Body.String())
+	}
+	if called {
+		t.Fatal("websocket handler should not run without API key")
+	}
+
+	// Valid key → handler runs.
+	req = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if !called {
+		t.Fatal("websocket handler should run with valid API key")
+	}
+	if w.Code != http.StatusSwitchingProtocols {
+		t.Fatalf("valid key status = %d, want 101 body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestResponsesWebsocketRouteUnavailableWithoutHandler(t *testing.T) {
+	t.Parallel()
+	m := &manifest{
+		APIKeys: []apiKeySpec{{ID: "key_1", Key: "client-key", Enabled: true, ResponsesWebsockets: true}},
+	}
+	m.apiKeyByValue = map[string]*apiKeySpec{"client-key": &m.APIKeys[0]}
+	router := (&relayServer{
+		runtime:  &fakeRuntime{},
+		manifest: m,
+		policy:   &requestPolicy{manifest: m},
+	}).router()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "responses websocket unavailable") {
+		t.Fatalf("body = %s", w.Body.String())
+	}
+}
+
+func TestResponsesWebsocketRouteDisabledByDefault(t *testing.T) {
+	t.Parallel()
+	called := false
+	m := &manifest{
+		APIKeys: []apiKeySpec{{ID: "key_1", Key: "client-key", Enabled: true}},
+	}
+	m.apiKeyByValue = map[string]*apiKeySpec{"client-key": &m.APIKeys[0]}
+	router := (&relayServer{
+		runtime:  &fakeRuntime{},
+		manifest: m,
+		policy:   &requestPolicy{manifest: m},
+		responsesWebsocket: func(c *gin.Context) {
+			called = true
+			c.Status(http.StatusSwitchingProtocols)
+		},
+	}).router()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	req.Header.Set("Authorization", "Bearer client-key")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 body=%s", w.Code, w.Body.String())
+	}
+	if called {
+		t.Fatal("websocket handler should not run when disabled")
+	}
+	if !strings.Contains(w.Body.String(), "responses websocket is disabled") {
+		t.Fatalf("body = %s", w.Body.String())
+	}
+}
+
+func TestResponsesWebsocketRejectsProviderGatewayBeforeCodexAuth(t *testing.T) {
+	t.Parallel()
+	called := false
+	m := &manifest{
+		APIKeys: []apiKeySpec{{
+			ID:      "provider_gateway_deepseek",
+			Key:     "client-key",
+			Enabled: true,
+			ProviderGateway: &providerGatewaySpec{
+				BaseURL:       "https://api.deepseek.com/v1",
+				APIKey:        "sk-deepseek",
+				UpstreamModel: "deepseek-v4-pro",
+				WireAPI:       "chat_completions",
+			},
+		}},
+	}
+	m.apiKeyByValue = map[string]*apiKeySpec{"client-key": &m.APIKeys[0]}
+	router := (&relayServer{
+		runtime:  &fakeRuntime{},
+		manifest: m,
+		policy:   &requestPolicy{manifest: m},
+		responsesWebsocket: func(c *gin.Context) {
+			called = true
+			c.Status(http.StatusSwitchingProtocols)
+		},
+	}).router()
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 body=%s", w.Code, w.Body.String())
+	}
+	if called {
+		t.Fatal("provider gateway must not enter the Codex websocket auth handler")
+	}
+	if !strings.Contains(w.Body.String(), "websocket_not_supported") {
+		t.Fatalf("body = %s", w.Body.String())
+	}
 }

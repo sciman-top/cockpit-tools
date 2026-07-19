@@ -11,7 +11,6 @@ import { isCodexApiKeyAccount, type CodexAccount } from "../types/codex";
 import {
   CODEX_API_SERVICE_BIND_ID,
   CODEX_PROVIDER_GATEWAY_BIND_PREFIX,
-  type CodexLaunchCredentialChange,
   type InstanceProfile,
 } from "../types/instance";
 import { usePlatformRuntimeSupport } from "../hooks/usePlatformRuntimeSupport";
@@ -21,8 +20,13 @@ import {
 } from "../presentation/platformAccountPresentation";
 import * as codexInstanceService from "../services/codexInstanceService";
 import {
+  CODEX_ADDITIONAL_QUOTA_VISIBILITY_CHANGED_EVENT,
   CODEX_CODE_REVIEW_QUOTA_VISIBILITY_CHANGED_EVENT,
+  CODEX_PLAN_BADGE_STYLE_CHANGED_EVENT,
+  getCodexPlanBadgeStyle,
+  isCodexAdditionalQuotaVisibleByDefault,
   isCodexCodeReviewQuotaVisibleByDefault,
+  type CodexPlanBadgeStyle,
 } from "../utils/codexPreferences";
 import {
   findCodexApiProviderPresetById,
@@ -36,7 +40,6 @@ import { useEscClose } from "../hooks/useEscClose";
  */
 interface CodexInstancesContentProps {
   accountsForSelect?: CodexAccount[];
-  onLaunchCredentialChange?: (change: CodexLaunchCredentialChange) => void;
 }
 
 interface CodexLaunchModalState {
@@ -58,7 +61,6 @@ function normalizeCodexApiBaseUrl(rawValue?: string | null): string {
 
 export function CodexInstancesContent({
   accountsForSelect,
-  onLaunchCredentialChange,
 }: CodexInstancesContentProps = {}) {
   const { t } = useTranslation();
   const instanceStore = useCodexInstanceStore();
@@ -69,6 +71,12 @@ export function CodexInstancesContent({
   const isSupportedPlatform = isMacOS || isWindows;
   const [showCodeReviewQuota, setShowCodeReviewQuota] = useState<boolean>(
     isCodexCodeReviewQuotaVisibleByDefault,
+  );
+  const [showAdditionalQuota, setShowAdditionalQuota] = useState<boolean>(
+    isCodexAdditionalQuotaVisibleByDefault,
+  );
+  const [planBadgeStyle, setPlanBadgeStyle] = useState<CodexPlanBadgeStyle>(
+    getCodexPlanBadgeStyle,
   );
   const [launchModal, setLaunchModal] = useState<CodexLaunchModalState | null>(
     null,
@@ -90,41 +98,65 @@ export function CodexInstancesContent({
     const syncCodeReviewVisibility = () => {
       setShowCodeReviewQuota(isCodexCodeReviewQuotaVisibleByDefault());
     };
+    const syncAdditionalQuotaVisibility = () => {
+      setShowAdditionalQuota(isCodexAdditionalQuotaVisibleByDefault());
+    };
 
     window.addEventListener(
       CODEX_CODE_REVIEW_QUOTA_VISIBILITY_CHANGED_EVENT,
       syncCodeReviewVisibility as EventListener,
+    );
+    window.addEventListener(
+      CODEX_ADDITIONAL_QUOTA_VISIBILITY_CHANGED_EVENT,
+      syncAdditionalQuotaVisibility as EventListener,
+    );
+    const syncPlanBadgeStyle = () => {
+      setPlanBadgeStyle(getCodexPlanBadgeStyle());
+    };
+    window.addEventListener(
+      CODEX_PLAN_BADGE_STYLE_CHANGED_EVENT,
+      syncPlanBadgeStyle as EventListener,
     );
     return () => {
       window.removeEventListener(
         CODEX_CODE_REVIEW_QUOTA_VISIBILITY_CHANGED_EVENT,
         syncCodeReviewVisibility as EventListener,
       );
+      window.removeEventListener(
+        CODEX_ADDITIONAL_QUOTA_VISIBILITY_CHANGED_EVENT,
+        syncAdditionalQuotaVisibility as EventListener,
+      );
+      window.removeEventListener(
+        CODEX_PLAN_BADGE_STYLE_CHANGED_EVENT,
+        syncPlanBadgeStyle as EventListener,
+      );
     };
   }, []);
 
   const resolvePresentation = (account: CodexAccount) => {
+    // Read planBadgeStyle so style event rebuilds badge classes on instances.
+    void planBadgeStyle;
     const presentation = buildCodexAccountPresentation(account, t);
-    if (showCodeReviewQuota) {
-      return presentation;
-    }
     return {
       ...presentation,
-      quotaItems: presentation.quotaItems.filter(
-        (item) => item.key !== "code_review",
-      ),
+      quotaItems: presentation.quotaItems.filter((item) => {
+        if (!showCodeReviewQuota && item.key === "code_review") return false;
+        if (!showAdditionalQuota && item.key.startsWith("additional:")) return false;
+        return true;
+      }),
     };
   };
 
   const accountsWithDisplayName = useMemo(
     () =>
       accounts.map((account) => {
+        void planBadgeStyle;
         const displayName =
           buildCodexAccountPresentation(account, t).displayName ||
           account.email;
         return { ...account, email: displayName };
       }),
-    [accounts, t],
+    [accounts, t, planBadgeStyle],
   );
 
   const resolveApiProviderDisplayName = (account: CodexAccount): string => {
@@ -213,10 +245,6 @@ export function CodexInstancesContent({
   };
 
   const handleInstanceStarted = async (instance: InstanceProfile) => {
-    if (instance.codexLaunchCredentialChange) {
-      onLaunchCredentialChange?.(instance.codexLaunchCredentialChange);
-    }
-
     if ((instance.launchMode ?? "app") !== "cli") {
       return;
     }

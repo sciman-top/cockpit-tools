@@ -135,7 +135,13 @@ func codexTerminalStreamErr(eventData []byte) (statusErr, []byte, bool) {
 	if len(body) == 0 {
 		return statusErr{}, nil, false
 	}
-	return newCodexStatusErr(http.StatusBadRequest, body), body, true
+	statusCode := http.StatusBadRequest
+	if isCodexServiceUnavailableError(body) {
+		statusCode = http.StatusServiceUnavailable
+	}
+	streamErr := newCodexStatusErr(statusCode, body)
+	streamErr.responsesStreamEvent = bytes.Clone(eventData)
+	return streamErr, body, true
 }
 
 func codexTerminalErrorBody(eventData []byte, path string) []byte {
@@ -857,9 +863,10 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = normalizeCodexInstructions(body)
-	if helps.ShouldInjectImageGenerationTool(e.cfg, requestPath, opts.Headers) {
+	if helps.ShouldInjectImageGenerationToolForModel(e.cfg, baseModel, requestPath, opts.Headers) {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
+	body, useFullResponses := normalizeCodexResponsesLiteRequest(body, opts.Headers, auth, true)
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body, replayScope := applyCodexReasoningReplayCache(ctx, from, req, opts, body)
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
@@ -874,6 +881,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	removeCodexResponsesLiteHeaderForFullResponse(httpReq.Header, useFullResponses)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -930,11 +938,13 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 			continue
 		}
 
-		eventData := bytes.TrimSpace(line[5:])
+		eventData := normalizeCodexCollaborationSpawnAgentModel(bytes.TrimSpace(line[5:]))
 		eventType := gjson.GetBytes(eventData, "type").String()
 
 		if streamErr, terminalBody, ok := codexTerminalStreamErr(eventData); ok {
 			clearCodexReasoningReplayOnInvalidSignature(replayScope, streamErr.StatusCode(), terminalBody)
+			helps.RecordAPIStreamSemanticStatus(ctx, e.cfg, streamErr.StatusCode(), eventType)
+			helps.LogWithRequestID(ctx).Debugf("codex stream terminal error: transport_status=%d semantic_status=%d event=%s", httpResp.StatusCode, streamErr.StatusCode(), eventType)
 			err = streamErr
 			return resp, err
 		}
@@ -1027,9 +1037,10 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body)
-	if helps.ShouldInjectImageGenerationTool(e.cfg, requestPath, opts.Headers) {
+	if helps.ShouldInjectImageGenerationToolForModel(e.cfg, baseModel, requestPath, opts.Headers) {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
+	body, _ = normalizeCodexResponsesLiteRequest(body, opts.Headers, auth, false)
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
@@ -1135,9 +1146,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body = normalizeCodexInstructions(body)
-	if helps.ShouldInjectImageGenerationTool(e.cfg, requestPath, opts.Headers) {
+	if helps.ShouldInjectImageGenerationToolForModel(e.cfg, baseModel, requestPath, opts.Headers) {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
+	body, useFullResponses := normalizeCodexResponsesLiteRequest(body, opts.Headers, auth, true)
 	body = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "codex executor", body)
 	body, replayScope := applyCodexReasoningReplayCache(ctx, from, req, opts, body)
 	if sourceFormatEqual(from, sdktranslator.FormatClaude) {
@@ -1152,6 +1164,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	removeCodexResponsesLiteHeaderForFullResponse(httpReq.Header, useFullResponses)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
 	if auth != nil {
@@ -1208,15 +1221,45 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		var param any
 		outputItemsByIndex := make(map[int64][]byte)
 		var outputItemsFallback [][]byte
+		var bootstrapMetadataChunks [][]byte
+		hasMeaningfulOutput := false
+		sendPayload := func(payload []byte) bool {
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		flushBootstrapMetadata := func() bool {
+			for _, payload := range bootstrapMetadataChunks {
+				if !sendPayload(payload) {
+					return false
+				}
+			}
+			bootstrapMetadataChunks = nil
+			return true
+		}
 		for scanner.Scan() {
 			line := applyCodexIdentityConfuseResponsePayload(scanner.Bytes(), identityState)
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			translatedLine := bytes.Clone(line)
+			isDataLine := false
+			eventType := ""
 
 			if bytes.HasPrefix(line, dataTag) {
+				isDataLine = true
 				data := bytes.TrimSpace(line[5:])
+				originalData := data
+				data = normalizeCodexCollaborationSpawnAgentModel(data)
+				eventType = gjson.GetBytes(data, "type").String()
+				if !bytes.Equal(data, originalData) {
+					translatedLine = append([]byte("data: "), data...)
+				}
 				if streamErr, terminalBody, ok := codexTerminalStreamErr(data); ok {
 					clearCodexReasoningReplayOnInvalidSignature(replayScope, streamErr.StatusCode(), terminalBody)
+					helps.RecordAPIStreamSemanticStatus(ctx, e.cfg, streamErr.StatusCode(), eventType)
+					helps.LogWithRequestID(ctx).Debugf("codex stream terminal error: transport_status=%d semantic_status=%d event=%s", httpResp.StatusCode, streamErr.StatusCode(), eventType)
 					helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 					reporter.PublishFailure(ctx, streamErr)
 					select {
@@ -1225,7 +1268,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 					}
 					return
 				}
-				switch gjson.GetBytes(data, "type").String() {
+				switch eventType {
 				case "response.output_item.done":
 					collectCodexOutputItemDone(data, outputItemsByIndex, &outputItemsFallback)
 				case "response.completed":
@@ -1241,10 +1284,20 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 
 			translatedLine = applyCodexIdentityExposeResponsePayload(translatedLine, identityState)
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, originalPayload, body, translatedLine, &param)
+			if !hasMeaningfulOutput && (!isDataLine || isCodexStreamBootstrapMetadataEvent(eventType)) {
+				for i := range chunks {
+					bootstrapMetadataChunks = append(bootstrapMetadataChunks, bytes.Clone(chunks[i]))
+				}
+				continue
+			}
+			if !hasMeaningfulOutput {
+				hasMeaningfulOutput = true
+				if !flushBootstrapMetadata() {
+					return
+				}
+			}
 			for i := range chunks {
-				select {
-				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
-				case <-ctx.Done():
+				if !sendPayload(chunks[i]) {
 					return
 				}
 			}
@@ -1259,6 +1312,15 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+func isCodexStreamBootstrapMetadataEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "response.created", "response.queued", "response.in_progress":
+		return true
+	default:
+		return false
+	}
 }
 
 func (e *CodexExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
@@ -1645,7 +1707,7 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
-	misc.EnsureHeader(r.Header, ginHeaders, codexResponsesLiteHeaderName, "")
+	copyCodexResponsesLiteHeader(r.Header, ginHeaders)
 	copyCodexAgtoolsDiagnosticHeaders(r.Header, ginHeaders)
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
 	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
@@ -1684,6 +1746,24 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+}
+
+func copyCodexResponsesLiteHeader(dst http.Header, src http.Header) {
+	if dst == nil || !helps.IsCodexResponsesLiteRequest(src) {
+		return
+	}
+	values := []string{""}
+	for key, sourceValues := range src {
+		if !strings.EqualFold(strings.TrimSpace(key), codexResponsesLiteHeaderName) {
+			continue
+		}
+		if len(sourceValues) > 0 {
+			values = append([]string(nil), sourceValues...)
+		}
+		break
+	}
+	deleteHeaderCaseInsensitive(dst, codexResponsesLiteHeaderName)
+	dst[http.CanonicalHeaderKey(codexResponsesLiteHeaderName)] = values
 }
 
 func copyCodexAgtoolsDiagnosticHeaders(dst http.Header, src http.Header) {
@@ -1772,6 +1852,95 @@ func normalizeCodexInstructions(body []byte) []byte {
 		body, _ = sjson.SetBytes(body, "instructions", "")
 	}
 	return body
+}
+
+func normalizeCodexResponsesLiteRequest(body []byte, headers http.Header, auth *cliproxyauth.Auth, allowFullResponsesForImage bool) ([]byte, bool) {
+	if !codexResponsesLiteEnabled(headers) || codexAuthUsesAPIKey(auth) {
+		return body, false
+	}
+
+	body, _ = sjson.SetBytes(body, "parallel_tool_calls", false)
+	if allowFullResponsesForImage && codexRequestUsesImageGeneration(body) {
+		return body, true
+	}
+
+	tools := gjson.GetBytes(body, "tools")
+	if tools.IsArray() {
+		toolItems := tools.Array()
+		for index := len(toolItems) - 1; index >= 0; index-- {
+			if codexResponsesLiteToolSupported(toolItems[index]) {
+				continue
+			}
+			body, _ = sjson.DeleteBytes(body, fmt.Sprintf("tools.%d", index))
+		}
+		if remaining := gjson.GetBytes(body, "tools"); remaining.IsArray() && len(remaining.Array()) == 0 {
+			body, _ = sjson.DeleteBytes(body, "tools")
+		}
+	}
+
+	toolChoice := gjson.GetBytes(body, "tool_choice")
+	if !toolChoice.Exists() {
+		return body, false
+	}
+	if toolChoice.Type == gjson.String {
+		switch toolChoice.String() {
+		case "auto", "none", "required":
+			return body, false
+		default:
+			body, _ = sjson.DeleteBytes(body, "tool_choice")
+			return body, false
+		}
+	}
+	if !codexResponsesLiteToolSupported(toolChoice) {
+		body, _ = sjson.DeleteBytes(body, "tool_choice")
+	}
+	return body, false
+}
+
+func codexRequestUsesImageGeneration(body []byte) bool {
+	tools := gjson.GetBytes(body, "tools")
+	if tools.IsArray() {
+		for _, tool := range tools.Array() {
+			if strings.EqualFold(strings.TrimSpace(tool.Get("type").String()), "image_generation") ||
+				codexToolConflictsWithHostedImageGeneration(tool) {
+				return true
+			}
+		}
+	}
+
+	toolChoice := gjson.GetBytes(body, "tool_choice")
+	return strings.EqualFold(strings.TrimSpace(toolChoice.String()), "image_generation") ||
+		isImageGenFunctionName(toolChoice.String()) ||
+		strings.EqualFold(strings.TrimSpace(toolChoice.Get("type").String()), "image_generation") ||
+		(strings.EqualFold(strings.TrimSpace(toolChoice.Get("type").String()), "tool") &&
+			strings.EqualFold(strings.TrimSpace(toolChoice.Get("name").String()), "image_generation")) ||
+		codexToolConflictsWithHostedImageGeneration(toolChoice)
+}
+
+func removeCodexResponsesLiteHeaderForFullResponse(headers http.Header, useFullResponses bool) {
+	if useFullResponses {
+		deleteHeaderCaseInsensitive(headers, codexResponsesLiteHeaderName)
+	}
+}
+
+func codexResponsesLiteEnabled(headers http.Header) bool {
+	for name := range headers {
+		if strings.EqualFold(name, codexResponsesLiteHeaderName) {
+			return true
+		}
+	}
+	return false
+}
+
+func codexResponsesLiteToolSupported(tool gjson.Result) bool {
+	switch strings.TrimSpace(tool.Get("type").String()) {
+	case "function", "custom", "namespace":
+		return true
+	case "tool_search":
+		return strings.EqualFold(strings.TrimSpace(tool.Get("execution").String()), "client")
+	default:
+		return false
+	}
 }
 
 var imageGenToolJSON = []byte(`{"type":"image_generation","output_format":"png"}`)
@@ -1891,6 +2060,10 @@ func isCodexModelCapacityError(errorBody []byte) bool {
 	if len(errorBody) == 0 {
 		return false
 	}
+	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(errorBody, "error.code").String()))
+	if errorCode == "model_at_capacity" {
+		return true
+	}
 	candidates := []string{
 		gjson.GetBytes(errorBody, "error.message").String(),
 		gjson.GetBytes(errorBody, "message").String(),
@@ -1907,6 +2080,20 @@ func isCodexModelCapacityError(errorBody []byte) bool {
 		}
 	}
 	return false
+}
+
+func isCodexServiceUnavailableError(errorBody []byte) bool {
+	if len(errorBody) == 0 {
+		return false
+	}
+	errorCode := strings.ToLower(strings.TrimSpace(gjson.GetBytes(errorBody, "error.code").String()))
+	errorType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(errorBody, "error.type").String()))
+	if errorCode == "server_is_overloaded" || errorCode == "server_overloaded" || errorType == "service_unavailable_error" {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(errorBody, "error.message").String()))
+	return strings.Contains(message, "servers are currently overloaded") ||
+		strings.Contains(message, "server is currently overloaded")
 }
 
 func parseCodexRetryAfter(statusCode int, errorBody []byte, now time.Time) *time.Duration {

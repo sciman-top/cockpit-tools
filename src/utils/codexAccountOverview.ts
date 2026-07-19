@@ -2,6 +2,7 @@ import type { TFunction } from "i18next";
 import type { CodexAccount } from "../types/codex";
 import {
   getCodexPlanFilterKey,
+  isCodexApiKeyAccount,
   isCodexNewApiAccount,
   isCodexPendingOAuthAccount,
 } from "../types/codex";
@@ -10,14 +11,25 @@ import { splitValidityFilterValues } from "./accountValidityFilter";
 import { compareCurrentAccountFirst } from "./currentAccountSort";
 import { normalizeAccountsOverviewScope } from "./accountsOverviewFilterPersistence";
 
-const CODEX_PRIMARY_PLAN_FILTER_KEYS = [
+export const CODEX_PRIMARY_PLAN_FILTER_KEYS = [
   "FREE",
   "PLUS",
   "PRO",
   "TEAM",
   "ENTERPRISE",
 ] as const;
-const CODEX_SPECIAL_PLAN_FILTER_KEYS = new Set(["PENDING", "ERROR", "VALID"]);
+const CODEX_SPECIAL_PLAN_FILTER_KEYS = new Set([
+  "PENDING",
+  "ERROR",
+  "VALID",
+  "ZERO_QUOTA",
+  "EXPIRED",
+]);
+
+/** Special overview filter: accounts with exhausted primary/weekly quota. */
+export const CODEX_ZERO_QUOTA_FILTER_VALUE = "ZERO_QUOTA";
+/** Special overview filter: subscription expired (or access-token-only expired). */
+export const CODEX_EXPIRED_FILTER_VALUE = "EXPIRED";
 
 export const CODEX_OVERVIEW_FILTER_SCOPE =
   normalizeAccountsOverviewScope("Codex");
@@ -43,6 +55,8 @@ export interface CodexPlanFilterCounts {
   all: number;
   VALID: number;
   ERROR: number;
+  ZERO_QUOTA: number;
+  EXPIRED: number;
   counts: Record<string, number>;
 }
 
@@ -55,6 +69,24 @@ export function normalizeCodexPlanFilterValue(value: string): string {
   return value.trim().toUpperCase();
 }
 
+export function sortCodexPlanFilterKeys(values: string[]): string[] {
+  const uniqueKeys = Array.from(
+    new Set(values.map(normalizeCodexPlanFilterValue).filter(Boolean)),
+  );
+  const primaryOrder = new Map<string, number>(
+    CODEX_PRIMARY_PLAN_FILTER_KEYS.map((key, index) => [key, index]),
+  );
+  return uniqueKeys.sort((left, right) => {
+    const leftOrder = primaryOrder.get(left);
+    const rightOrder = primaryOrder.get(right);
+    if (leftOrder !== undefined || rightOrder !== undefined) {
+      return (leftOrder ?? Number.MAX_SAFE_INTEGER) -
+        (rightOrder ?? Number.MAX_SAFE_INTEGER);
+    }
+    return left.localeCompare(right);
+  });
+}
+
 export function createCodexPlanFilterCounts(
   total: number,
 ): CodexPlanFilterCounts {
@@ -62,8 +94,43 @@ export function createCodexPlanFilterCounts(
     all: total,
     VALID: 0,
     ERROR: 0,
+    ZERO_QUOTA: 0,
+    EXPIRED: 0,
     counts: {},
   };
+}
+
+/** OAuth-style quota exhausted: known weekly/hourly remaining percent is 0. */
+export function isCodexOverviewAccountZeroQuota(account: CodexAccount): boolean {
+  if (isCodexPendingOAuthAccount(account) || isCodexNewApiAccount(account)) {
+    return false;
+  }
+  if (isCodexApiKeyAccount(account)) {
+    return false;
+  }
+  const hourly = account.quota?.hourly_percentage;
+  const weekly = account.quota?.weekly_percentage;
+  const hasHourly = typeof hourly === "number" && Number.isFinite(hourly);
+  const hasWeekly = typeof weekly === "number" && Number.isFinite(weekly);
+  if (!hasHourly && !hasWeekly) return false;
+  // Treat as zero-quota when every reported window is fully used.
+  if (hasHourly && hourly! > 0) return false;
+  if (hasWeekly && weekly! > 0) return false;
+  return true;
+}
+
+export function isCodexOverviewAccountSubscriptionExpired(
+  account: CodexAccount,
+): boolean {
+  if (isCodexPendingOAuthAccount(account) || isCodexNewApiAccount(account)) {
+    return false;
+  }
+  if (isCodexApiKeyAccount(account)) return false;
+  const until = account.subscription_active_until?.trim();
+  if (!until) return false;
+  const parsed = Date.parse(until);
+  if (Number.isNaN(parsed)) return false;
+  return parsed <= Date.now();
 }
 
 export function incrementCodexPlanFilterCount(
@@ -86,7 +153,14 @@ export function buildCodexPlanFilterOptions(
   counts: CodexPlanFilterCounts,
   options?: {
     includeValid?: boolean;
+    includePending?: boolean;
+    includeError?: boolean;
+    includeZeroQuota?: boolean;
+    includeExpired?: boolean;
     pendingLabel?: string;
+    errorLabel?: string;
+    zeroQuotaLabel?: string;
+    expiredLabel?: string;
     validOption?: CodexOverviewFilterOption;
   },
 ): CodexOverviewFilterOption[] {
@@ -118,17 +192,33 @@ export function buildCodexPlanFilterOptions(
       });
     });
 
-  result.push({
-    value: "PENDING",
-    label: `${options?.pendingLabel ?? "待授权"} (${getCodexPlanFilterCount(
-      counts,
-      "PENDING",
-    )})`,
-  });
-  result.push({
-    value: "ERROR",
-    label: `ERROR (${counts.ERROR})`,
-  });
+  if (options?.includePending ?? true) {
+    result.push({
+      value: "PENDING",
+      label: `${options?.pendingLabel ?? "待授权"} (${getCodexPlanFilterCount(
+        counts,
+        "PENDING",
+      )})`,
+    });
+  }
+  if (options?.includeError ?? true) {
+    result.push({
+      value: "ERROR",
+      label: `${options?.errorLabel ?? "ERROR"} (${counts.ERROR})`,
+    });
+  }
+  if (options?.includeZeroQuota) {
+    result.push({
+      value: CODEX_ZERO_QUOTA_FILTER_VALUE,
+      label: `${options.zeroQuotaLabel ?? "0% 额度"} (${counts.ZERO_QUOTA})`,
+    });
+  }
+  if (options?.includeExpired) {
+    result.push({
+      value: CODEX_EXPIRED_FILTER_VALUE,
+      label: `${options.expiredLabel ?? "已过期"} (${counts.EXPIRED})`,
+    });
+  }
   if (options?.includeValid && options.validOption) {
     result.push(options.validOption);
   }
@@ -227,6 +317,7 @@ export function isCodexOverviewAccountAbnormal(
 
   return (
     statusCode === "401" ||
+    errorCode === "deactivated_workspace" ||
     errorCode === "refresh_token_reused" ||
     errorCode === "refresh_token_expired" ||
     errorCode === "refresh_token_invalidated" ||
@@ -234,6 +325,7 @@ export function isCodexOverviewAccountAbnormal(
     errorCode === "invalid_grant" ||
     errorCode === "invalid_token" ||
     lowerRawMessage.includes("refresh_token_reused") ||
+    lowerRawMessage.includes("deactivated_workspace") ||
     lowerRawMessage.includes("refresh_token_expired") ||
     lowerRawMessage.includes("refresh_token_invalidated") ||
     lowerRawMessage.includes("token_invalidated") ||
@@ -384,10 +476,24 @@ export function filterAndSortCodexOverviewAccounts({
     }
     if (selectedTypes.size > 0) {
       result = result.filter((account) => {
-        if (selectedTypes.has("ERROR") && isAbnormalAccount(account)) {
-          return true;
+        const matchesSpecial =
+          (selectedTypes.has("ERROR") && isAbnormalAccount(account)) ||
+          (selectedTypes.has(CODEX_ZERO_QUOTA_FILTER_VALUE) &&
+            isCodexOverviewAccountZeroQuota(account)) ||
+          (selectedTypes.has(CODEX_EXPIRED_FILTER_VALUE) &&
+            isCodexOverviewAccountSubscriptionExpired(account));
+        const planKeys = Array.from(selectedTypes).filter(
+          (key) =>
+            key !== "ERROR" &&
+            key !== CODEX_ZERO_QUOTA_FILTER_VALUE &&
+            key !== CODEX_EXPIRED_FILTER_VALUE,
+        );
+        if (planKeys.length === 0) {
+          return matchesSpecial;
         }
-        return selectedTypes.has(getCodexPlanFilterKey(account));
+        const matchesPlan = selectedTypes.has(getCodexPlanFilterKey(account));
+        // Multi-select is OR across plan tiers and special status filters.
+        return matchesPlan || matchesSpecial;
       });
     }
   }

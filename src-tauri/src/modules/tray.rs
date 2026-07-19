@@ -168,7 +168,8 @@ pub(crate) enum PlatformId {
     Windsurf,
     Kiro,
     Cursor,
-    Gemini,
+
+    Grok,
     Codebuddy,
     CodebuddyCn,
     Qoder,
@@ -191,7 +192,7 @@ impl PlatformId {
             Self::Windsurf,
             Self::Kiro,
             Self::Cursor,
-            Self::Gemini,
+            Self::Grok,
             Self::Codebuddy,
             Self::CodebuddyCn,
             Self::Qoder,
@@ -214,7 +215,7 @@ impl PlatformId {
             crate::modules::tray_layout::PLATFORM_WINDSURF => Some(Self::Windsurf),
             crate::modules::tray_layout::PLATFORM_KIRO => Some(Self::Kiro),
             crate::modules::tray_layout::PLATFORM_CURSOR => Some(Self::Cursor),
-            crate::modules::tray_layout::PLATFORM_GEMINI => Some(Self::Gemini),
+            crate::modules::tray_layout::PLATFORM_GROK => Some(Self::Grok),
             crate::modules::tray_layout::PLATFORM_CODEBUDDY => Some(Self::Codebuddy),
             crate::modules::tray_layout::PLATFORM_CODEBUDDY_CN => Some(Self::CodebuddyCn),
             crate::modules::tray_layout::PLATFORM_QODER => Some(Self::Qoder),
@@ -238,7 +239,7 @@ impl PlatformId {
             Self::Windsurf => crate::modules::tray_layout::PLATFORM_WINDSURF,
             Self::Kiro => crate::modules::tray_layout::PLATFORM_KIRO,
             Self::Cursor => crate::modules::tray_layout::PLATFORM_CURSOR,
-            Self::Gemini => crate::modules::tray_layout::PLATFORM_GEMINI,
+            Self::Grok => crate::modules::tray_layout::PLATFORM_GROK,
             Self::Codebuddy => crate::modules::tray_layout::PLATFORM_CODEBUDDY,
             Self::CodebuddyCn => crate::modules::tray_layout::PLATFORM_CODEBUDDY_CN,
             Self::Qoder => crate::modules::tray_layout::PLATFORM_QODER,
@@ -261,7 +262,7 @@ impl PlatformId {
             Self::Windsurf => "Windsurf",
             Self::Kiro => "Kiro",
             Self::Cursor => "Cursor",
-            Self::Gemini => "Gemini Cli",
+            Self::Grok => "Grok CLI",
             Self::Codebuddy => "CodeBuddy",
             Self::CodebuddyCn => "CodeBuddy CN",
             Self::Qoder => "Qoder",
@@ -284,7 +285,7 @@ impl PlatformId {
             Self::Windsurf => "windsurf",
             Self::Kiro => "kiro",
             Self::Cursor => "cursor",
-            Self::Gemini => "gemini",
+            Self::Grok => "grok",
             Self::Codebuddy => "codebuddy",
             Self::CodebuddyCn => "codebuddy-cn",
             Self::Qoder => "qoder",
@@ -812,7 +813,7 @@ fn get_account_display_info(platform: PlatformId, lang: &str) -> AccountDisplayI
         PlatformId::Windsurf => build_windsurf_display_info(lang),
         PlatformId::Kiro => build_kiro_display_info(lang),
         PlatformId::Cursor => build_cursor_display_info(lang),
-        PlatformId::Gemini => build_gemini_display_info(lang),
+        PlatformId::Grok => build_grok_display_info(lang),
         PlatformId::Codebuddy => build_codebuddy_display_info(lang),
         PlatformId::CodebuddyCn => build_codebuddy_cn_display_info(lang),
         PlatformId::Qoder => build_qoder_display_info(lang),
@@ -1307,131 +1308,16 @@ fn build_cursor_display_info(lang: &str) -> AccountDisplayInfo {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn parse_gemini_remaining_percent(value: Option<&serde_json::Value>) -> Option<i32> {
-    let raw = value?;
-    if let Some(v) = raw.as_f64() {
-        if v.is_finite() {
-            return Some((v * 100.0).round().clamp(0.0, 100.0) as i32);
-        }
-    }
-    if let Some(text) = raw.as_str() {
-        if let Ok(v) = text.trim().parse::<f64>() {
-            if v.is_finite() {
-                return Some((v * 100.0).round().clamp(0.0, 100.0) as i32);
-            }
-        }
-    }
-    None
-}
-
-#[derive(Debug, Clone)]
-#[cfg(not(target_os = "macos"))]
-struct GeminiBucketRemaining {
-    model_id: String,
-    remaining_percent: i32,
-    reset_at: Option<i64>,
-}
-
-#[cfg(not(target_os = "macos"))]
-fn collect_gemini_bucket_remaining(
-    account: &crate::models::gemini::GeminiAccount,
-) -> Vec<GeminiBucketRemaining> {
-    let Some(raw) = account.gemini_usage_raw.as_ref() else {
-        return Vec::new();
-    };
-    let Some(groups) = raw.get("groups").and_then(|item| item.as_array()) else {
-        return Vec::new();
-    };
-
-    let mut values = Vec::new();
-    for group in groups {
-        let Some(buckets) = group.get("buckets").and_then(|item| item.as_array()) else {
-            continue;
-        };
-        for bucket in buckets {
-            let model_id = bucket
-                .get("bucketId")
-                .and_then(|item| item.as_str())
-                .map(|item| item.trim())
-                .filter(|item| !item.is_empty())
-                .map(|item| item.to_string());
-            let remaining = parse_gemini_remaining_percent(bucket.get("remainingFraction"));
-            let reset_at = bucket.get("resetTime").and_then(parse_timestamp_like);
-            let (Some(model_id), Some(remaining)) = (model_id, remaining) else {
-                continue;
-            };
-            values.push(GeminiBucketRemaining {
-                model_id,
-                remaining_percent: remaining,
-                reset_at,
-            });
-        }
-    }
-
-    values.sort_by(|a, b| a.model_id.cmp(&b.model_id));
-    values
-}
-
-#[cfg(not(target_os = "macos"))]
-fn pick_lowest_gemini_bucket<'a, F>(
-    buckets: &'a [GeminiBucketRemaining],
-    matcher: F,
-) -> Option<&'a GeminiBucketRemaining>
-where
-    F: Fn(&str) -> bool,
-{
-    let mut matched = buckets.iter().filter(|bucket| matcher(&bucket.model_id));
-    let mut best = matched.next()?;
-    for current in matched {
-        if current.remaining_percent < best.remaining_percent {
-            best = current;
-            continue;
-        }
-        if current.remaining_percent > best.remaining_percent {
-            continue;
-        }
-        match (best.reset_at, current.reset_at) {
-            (None, Some(_)) => best = current,
-            (Some(_), None) => {}
-            (Some(best_ts), Some(current_ts)) if current_ts < best_ts => best = current,
-            _ => {}
-        }
-    }
-    Some(best)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn normalize_gemini_plan_label(raw_plan: &str) -> &'static str {
-    let lower = raw_plan.trim().to_lowercase();
-    if lower.is_empty() {
-        return "UNKNOWN";
-    }
-    if lower.contains("ultra") {
-        return "ULTRA";
-    }
-    if lower == "standard-tier" {
-        return "FREE";
-    }
-    if lower.contains("pro") || lower.contains("premium") {
-        return "PRO";
-    }
-    if lower == "free-tier" || lower.contains("free") {
-        return "FREE";
-    }
-    "UNKNOWN"
-}
-
-#[cfg(not(target_os = "macos"))]
-fn resolve_gemini_current_account(
-    accounts: &[crate::models::gemini::GeminiAccount],
-) -> Option<crate::models::gemini::GeminiAccount> {
-    crate::modules::gemini_account::resolve_current_account(accounts)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn build_gemini_display_info(lang: &str) -> AccountDisplayInfo {
-    let accounts = crate::modules::gemini_account::list_accounts();
-    let Some(account) = resolve_gemini_current_account(&accounts) else {
+fn build_grok_display_info(lang: &str) -> AccountDisplayInfo {
+    let accounts = crate::modules::grok_account::list_accounts_checked().unwrap_or_default();
+    let current_id = crate::modules::grok_account::current_account_id()
+        .ok()
+        .flatten();
+    let account = current_id
+        .as_deref()
+        .and_then(|id| accounts.iter().find(|account| account.id == id))
+        .or_else(|| accounts.iter().max_by_key(|account| account.last_used));
+    let Some(account) = account else {
         return AccountDisplayInfo {
             account: format!("📧 {}", get_text("not_logged_in", lang)),
             quota_lines: vec!["—".to_string()],
@@ -1439,59 +1325,38 @@ fn build_gemini_display_info(lang: &str) -> AccountDisplayInfo {
     };
 
     let mut quota_lines = Vec::new();
-
-    if let Some(plan) = first_non_empty(&[account.plan_name.as_deref(), account.tier_id.as_deref()])
+    if let Some(plan) = account
+        .plan_type
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
     {
-        quota_lines.push(format!("Plan: {}", normalize_gemini_plan_label(plan)));
+        quota_lines.push(format!("{}: {}", get_text("plan", lang), plan));
     }
-
-    let buckets = collect_gemini_bucket_remaining(&account);
-
-    for (bucket_id, label_key, default_label) in [
-        ("gemini-5h", "gemini.quota.gemini5h", "Gemini 5h"),
-        (
-            "gemini-weekly",
-            "gemini.quota.geminiweekly",
-            "Gemini Weekly",
-        ),
-        ("3p-5h", "gemini.quota.3p5h", "Claude 5h"),
-        ("3p-weekly", "gemini.quota.3pweekly", "Claude Weekly"),
-    ] {
-        let bucket = buckets.iter().find(|b| b.model_id == bucket_id);
-        let value_text = if let Some(item) = bucket {
-            format!("{}% {}", item.remaining_percent, get_text("left", lang))
-        } else {
-            "--".to_string()
-        };
-        let reset_text = if let Some(item) = bucket {
-            format_reset_time_from_ts(lang, item.reset_at)
-        } else {
-            get_text("reset_unknown", lang)
-        };
-        let label = get_text(label_key, lang);
-        let label_ref = if label.is_empty() {
-            default_label
-        } else {
-            &label
-        };
-        quota_lines.push(format_quota_line(
-            lang,
-            label_ref,
-            &value_text,
-            Some(&reset_text),
-        ));
+    if let Some(quota) = account.quota.as_ref() {
+        if let Some(used) = quota.weekly_limit_percent {
+            quota_lines.push(format!(
+                "{}: {:.0}% {}",
+                crate::modules::i18n::translate(lang, "grok.quota.weekly", &[]),
+                (100.0 - used.clamp(0.0, 100.0)),
+                get_text("left", lang)
+            ));
+        }
+        for product in quota.products.iter().take(3) {
+            if let Some(used) = product.usage_percent {
+                quota_lines.push(format!(
+                    "{}: {:.0}% {}",
+                    product.product,
+                    (100.0 - used.clamp(0.0, 100.0)),
+                    get_text("left", lang)
+                ));
+            }
+        }
     }
-
     if quota_lines.is_empty() {
         quota_lines.push(get_text("loading", lang));
     }
-
     AccountDisplayInfo {
-        account: format!(
-            "📧 {}",
-            first_non_empty(&[Some(account.email.as_str()), Some(account.id.as_str())])
-                .unwrap_or("—")
-        ),
+        account: format!("📧 {}", account.email),
         quota_lines,
     }
 }
@@ -3616,6 +3481,7 @@ fn handle_menu_event<R: Runtime>(app: &tauri::AppHandle<R>, event: tauri::menu::
         }
         menu_ids::QUIT => {
             info!("[Tray] 用户选择退出应用");
+            crate::modules::floating_card_window::request_app_exit();
             app.exit(0);
         }
         _ => {

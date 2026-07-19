@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
@@ -61,6 +62,7 @@ import {
   deleteCodexAccounts,
   getCurrentCodexAccount,
   listCodexAccounts,
+  syncCodexApiKeyProviderAccounts,
   updateCodexApiKeyBoundOAuthAccount,
 } from "../../services/codexService";
 import {
@@ -73,12 +75,14 @@ import {
 } from "../../services/codexInstanceService";
 import {
   addApiKeyToCodexModelProvider,
+  cancelCodexModelProviderChatTest,
   countCodexModelProviderReferences,
   createCodexModelProvider,
   deleteCodexModelProvider,
   listCodexModelProviders,
   normalizeCodexModelProviderBaseUrl,
   removeApiKeyFromCodexModelProvider,
+  renameApiKeyOnCodexModelProvider,
   queryCodexModelProviderUsage,
   saveCodexModelProviderDetectedIntegrationType,
   testCodexModelProviderConnection,
@@ -121,11 +125,17 @@ import {
   splitValidityFilterValues,
 } from "../../utils/accountValidityFilter";
 import {
+  buildCodexPlanFilterOptions,
+  createCodexPlanFilterCounts,
+  incrementCodexPlanFilterCount,
+} from "../../utils/codexAccountOverview";
+import {
   resolveCodexProviderCapabilityProfile,
   type CodexProviderEnableModePreference,
   type CodexProviderWireApi,
 } from "../../utils/codexProviderGateway";
 import { emitAccountsChanged } from "../../utils/accountSyncEvents";
+import { findCodexAccountsReferencingModelProvider } from "../../utils/codexModelProviderAccountSync";
 import { CodexQuickConfigCard } from "./CodexQuickConfigCard";
 import {
   CodexServicePanelModal,
@@ -417,7 +427,12 @@ interface ProviderPreviewPaths {
   codexAuthPath: string;
 }
 
-type ProviderBatchTestStatus = "pending" | "running" | "success" | "error";
+type ProviderBatchTestStatus =
+  | "pending"
+  | "running"
+  | "success"
+  | "error"
+  | "cancelled";
 type ProviderBatchTestFilter = "all" | ProviderBatchTestStatus;
 
 type ProviderBatchTestRecordView = CodexModelProviderChatTestRecord & {
@@ -431,6 +446,7 @@ interface ProviderBatchTestSession {
   successCount: number;
   failureCount: number;
   running: boolean;
+  cancelled: boolean;
   startedAt: number;
   records: ProviderBatchTestRecordView[];
   errorText?: string;
@@ -615,8 +631,6 @@ export function CodexModelProviderManager({
   const [providerOauthSaving, setProviderOauthSaving] = useState(false);
   const [providerOauthSelectedAccountId, setProviderOauthSelectedAccountId] =
     useState("");
-  const [providerOauthUseLocalGateway, setProviderOauthUseLocalGateway] =
-    useState(false);
   const [providerOauthSearchQuery, setProviderOauthSearchQuery] = useState("");
   const [providerOauthFilterTypes, setProviderOauthFilterTypes] = useState<
     string[]
@@ -667,8 +681,10 @@ export function CodexModelProviderManager({
     useState<ProviderBatchTestFilter>("all");
   const [batchTestError, setBatchTestError] = useState<string | null>(null);
   const [batchTestDeleting, setBatchTestDeleting] = useState(false);
+  const [batchTestCancelling, setBatchTestCancelling] = useState(false);
   const [batchTestResultSelectedProviderIds, setBatchTestResultSelectedProviderIds] =
     useState<Set<string>>(() => new Set());
+  const cancelledBatchTestRunIdsRef = useRef<Set<string>>(new Set());
 
   const sponsorProviderTemplates = useMemo<SponsorProviderTemplate[]>(() => {
     const sponsors = sponsorModule?.sponsors ?? [];
@@ -1039,8 +1055,22 @@ export function CodexModelProviderManager({
         const payload = event.payload;
         setBatchTestSession((current) => {
           if (!current || current.runId !== payload.runId) return current;
+          const cancellationRequested = cancelledBatchTestRunIdsRef.current.has(
+            payload.runId,
+          );
+          const batchCancelled = payload.phase === "batch_cancelled";
+          if (cancellationRequested && !batchCancelled) return current;
 
           const nextRecords = current.records.map((record) => {
+            if (
+              batchCancelled &&
+              (record.status === "pending" || record.status === "running")
+            ) {
+              return {
+                ...record,
+                status: "cancelled" as ProviderBatchTestStatus,
+              };
+            }
             if (
               payload.phase === "provider_started" &&
               record.providerId === payload.currentProviderId
@@ -1071,6 +1101,7 @@ export function CodexModelProviderManager({
             successCount: payload.successCount,
             failureCount: payload.failureCount,
             running: payload.running,
+            cancelled: current.cancelled || batchCancelled,
             records: nextRecords,
           };
         });
@@ -1253,16 +1284,62 @@ export function CodexModelProviderManager({
     setBatchTestSearchQuery("");
     setBatchTestFilter("all");
     setBatchTestError(null);
+    setBatchTestCancelling(false);
     setBatchTestSession(null);
     setBatchTestStep("select");
     setBatchTestModalOpen(true);
   }, [filteredProviders, getSelectedProviderApiKey, selectedProviderIds]);
 
+  const markBatchTestCancelled = useCallback((runId: string) => {
+    setBatchTestSession((current) => {
+      if (!current || current.runId !== runId) return current;
+      const records = current.records.map((record) =>
+        record.status === "pending" || record.status === "running"
+          ? { ...record, status: "cancelled" as ProviderBatchTestStatus }
+          : record,
+      );
+      return {
+        ...current,
+        completed: records.filter(
+          (record) => record.status === "success" || record.status === "error",
+        ).length,
+        running: false,
+        cancelled: true,
+        records,
+      };
+    });
+  }, []);
+
+  const requestBatchTestCancellation = useCallback(
+    async (runId: string) => {
+      if (cancelledBatchTestRunIdsRef.current.has(runId)) return;
+      cancelledBatchTestRunIdsRef.current.add(runId);
+      setBatchTestCancelling(true);
+      try {
+        const accepted = await cancelCodexModelProviderChatTest(runId);
+        if (accepted) {
+          markBatchTestCancelled(runId);
+        } else {
+          cancelledBatchTestRunIdsRef.current.delete(runId);
+        }
+      } catch (err) {
+        cancelledBatchTestRunIdsRef.current.delete(runId);
+        setBatchTestError(String(err));
+      } finally {
+        setBatchTestCancelling(false);
+      }
+    },
+    [markBatchTestCancelled],
+  );
+
   const closeBatchTestModal = useCallback(() => {
-    if (batchTestSession?.running || batchTestDeleting) return;
+    const runId = batchTestSession?.running ? batchTestSession.runId : null;
+    if (runId) {
+      void requestBatchTestCancellation(runId);
+    }
     setBatchTestModalOpen(false);
     setBatchTestError(null);
-  }, [batchTestDeleting, batchTestSession?.running]);
+  }, [batchTestSession?.runId, batchTestSession?.running, requestBatchTestCancellation]);
 
   useEscClose(batchTestModalOpen, closeBatchTestModal);
 
@@ -1668,6 +1745,7 @@ export function CodexModelProviderManager({
       running: records.filter((record) => record.status === "running").length,
       success: records.filter((record) => record.status === "success").length,
       error: records.filter((record) => record.status === "error").length,
+      cancelled: records.filter((record) => record.status === "cancelled").length,
     };
   }, [batchTestSession?.records]);
 
@@ -1702,6 +1780,12 @@ export function CodexModelProviderManager({
         label: t("codex.modelProviders.batchTest.status.pending", "等待中"),
         count: providerBatchTestCounts.pending,
         tone: "pending",
+      },
+      {
+        key: "cancelled" as const,
+        label: t("common.cancelled", "已取消"),
+        count: providerBatchTestCounts.cancelled,
+        tone: "cancelled",
       },
     ],
     [providerBatchTestCounts, t],
@@ -1800,6 +1884,8 @@ export function CodexModelProviderManager({
       return;
     }
     const runId = createProviderBatchTestRunId();
+    cancelledBatchTestRunIdsRef.current.delete(runId);
+    setBatchTestCancelling(false);
     setNotice(null);
     setBatchTestError(null);
     setBatchTestResultSelectedProviderIds(new Set());
@@ -1812,6 +1898,7 @@ export function CodexModelProviderManager({
       successCount: 0,
       failureCount: 0,
       running: true,
+      cancelled: false,
       startedAt,
       records: pendingRecords,
     });
@@ -1820,6 +1907,10 @@ export function CodexModelProviderManager({
         targets,
         runId,
       });
+      if (cancelledBatchTestRunIdsRef.current.has(result.runId)) {
+        cancelledBatchTestRunIdsRef.current.delete(result.runId);
+        return;
+      }
       setBatchTestSession((current) => {
         if (!current || current.runId !== result.runId) return current;
         return {
@@ -1829,10 +1920,15 @@ export function CodexModelProviderManager({
           successCount: result.successCount,
           failureCount: result.failureCount,
           running: false,
+          cancelled: false,
           records: result.records.map(toProviderBatchTestRecordView),
         };
       });
     } catch (err) {
+      if (cancelledBatchTestRunIdsRef.current.has(runId)) {
+        cancelledBatchTestRunIdsRef.current.delete(runId);
+        return;
+      }
       const errorText = parseServiceError(err);
       setBatchTestError(errorText);
       setBatchTestSession((current) =>
@@ -1840,6 +1936,7 @@ export function CodexModelProviderManager({
           ? {
               ...current,
               running: false,
+              cancelled: false,
               errorText,
               records: current.records.map((record) =>
                 record.status === "running"
@@ -2078,6 +2175,49 @@ export function CodexModelProviderManager({
           console.warn("[CodexModelProviders] 额度类型探测失败", usageErr);
         }
       }
+      if (savedProvider && currentEditingProvider) {
+        const linkedAccountIds = findCodexAccountsReferencingModelProvider(
+          currentEditingProvider,
+          accounts,
+        );
+        if (linkedAccountIds.length > 0) {
+          const presetId = resolveCodexApiProviderPresetId(savedProvider.baseUrl);
+          const isOpenAIOfficial = presetId === "openai_official";
+          const wireApi = resolveProviderWireApi(savedProvider);
+          const updatedAccountCount = await syncCodexApiKeyProviderAccounts({
+            accountIds: linkedAccountIds,
+            apiBaseUrl: savedProvider.baseUrl,
+            apiProviderMode: isOpenAIOfficial ? "openai_builtin" : "custom",
+            apiProviderId:
+              presetId === CODEX_API_PROVIDER_CUSTOM_ID
+                ? savedProvider.id
+                : presetId,
+            apiProviderName: savedProvider.name,
+            apiModelCatalog: savedProvider.modelCatalog,
+            apiWireApi: wireApi,
+            apiSupportsWebsockets:
+              !isOpenAIOfficial &&
+              wireApi === "responses" &&
+              savedProvider.supportsWebsockets === true,
+            apiSupportsVision: savedProvider.supportsVision === true,
+            apiModelVisionSupport: Object.fromEntries(
+              Object.entries(savedProvider.modelCapabilities ?? {}).map(
+                ([model, capability]) => [
+                  model,
+                  capability.supportsVision === true,
+                ],
+              ),
+            ),
+            apiVisionRoutingModel: savedProvider.visionRoutingModel,
+          });
+          if (updatedAccountCount > 0) {
+            await emitAccountsChanged({
+              platformId: "codex",
+              reason: "provider-snapshot-sync",
+            });
+          }
+        }
+      }
       await reloadProviders();
       setShowModal(false);
       setForm(EMPTY_FORM);
@@ -2092,6 +2232,8 @@ export function CodexModelProviderManager({
       setSaving(false);
     }
   }, [
+    accounts,
+    currentEditingProvider,
     currentEditingProvider?.apiKeys.length,
     form,
     parseServiceError,
@@ -2153,6 +2295,33 @@ export function CodexModelProviderManager({
           tone: "error",
           text: t("codex.modelProviders.deleteApiKeyFailed", {
             defaultValue: "删除 API Key 失败：{{error}}",
+            error: parseServiceError(err),
+          }),
+        });
+      }
+    },
+    [parseServiceError, reloadProviders, t],
+  );
+
+  const handleRenameApiKey = useCallback(
+    async (provider: CodexModelProvider, apiKey: CodexModelProviderApiKey) => {
+      const next = window.prompt(
+        t("codex.modelProviders.renameApiKeyPrompt", "重命名 API Key"),
+        apiKey.name || "",
+      );
+      if (next === null) return;
+      try {
+        await renameApiKeyOnCodexModelProvider(provider.id, apiKey.id, next);
+        await reloadProviders();
+        setNotice({
+          tone: "success",
+          text: t("codex.modelProviders.renameApiKeySuccess", "API Key 已重命名"),
+        });
+      } catch (err) {
+        setNotice({
+          tone: "error",
+          text: t("codex.modelProviders.renameApiKeyFailed", {
+            defaultValue: "重命名 API Key 失败：{{error}}",
             error: parseServiceError(err),
           }),
         });
@@ -2271,25 +2440,22 @@ export function CodexModelProviderManager({
   );
 
   const providerOauthTierCounts = useMemo(() => {
-    const counts = new Map<string, number>();
+    const counts = createCodexPlanFilterCounts(
+      providerOauthEligibleAccounts.length,
+    );
     providerOauthEligibleAccounts.forEach((account) => {
-      const key = resolvePlanKey(account);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+      incrementCodexPlanFilterCount(counts, resolvePlanKey(account));
     });
-    return {
-      all: providerOauthEligibleAccounts.length,
-      counts,
-    };
+    return counts;
   }, [providerOauthEligibleAccounts, resolvePlanKey]);
 
   const providerOauthTierFilterOptions = useMemo<MultiSelectFilterOption[]>(
     () =>
-      Array.from(providerOauthTierCounts.counts.entries()).map(([value, count]) => ({
-        value,
-        label: `${value} (${count})`,
-        count,
-      })),
-    [providerOauthTierCounts.counts],
+      buildCodexPlanFilterOptions(providerOauthTierCounts, {
+        includeError: false,
+        pendingLabel: t("codex.pendingAuth.badge", "待授权"),
+      }),
+    [providerOauthTierCounts, t],
   );
 
   const providerOauthAvailableTags = useMemo(() => {
@@ -2396,45 +2562,16 @@ export function CodexModelProviderManager({
     defaultPageSize: OAUTH_BINDING_PAGE_SIZE_OPTIONS[0],
   });
 
-  const handleProviderOauthLocalGatewayToggle = useCallback(
-    async (checked: boolean) => {
-      if (!checked) {
-        setProviderOauthUseLocalGateway(false);
-        return;
-      }
-      const confirmed = await confirmDialog(
-        t(
-          "codex.api.oauthBinding.localGatewayConfirm.message",
-          "开启后，该 API Key 账号绑定 OAuth 后的普通文本对话会走本地网关，并在转发前移除 image_generation 工具声明，避免部分供应商报 “Image generation is not enabled”；不会删除 gpt-image 等生图模型。是否继续？",
-        ),
-        {
-          title: t(
-            "codex.api.oauthBinding.localGatewayConfirm.title",
-            "禁用 image_generation 能力",
-          ),
-          okLabel: t("common.confirm", "确认"),
-          cancelLabel: t("common.cancel", "取消"),
-        },
-      );
-      if (confirmed) {
-        setProviderOauthUseLocalGateway(true);
-      }
-    },
-    [t],
-  );
-
   const handleProviderOauthBindingChange = useCallback(
     async (
       provider: CodexModelProvider,
       boundOauthAccountId: string | null,
-      boundOauthUseLocalGateway = false,
     ) => {
       setProviderOauthSaving(true);
       setNotice(null);
       try {
         await updateCodexModelProvider(provider.id, {
           boundOauthAccountId,
-          boundOauthUseLocalGateway,
         });
         await reloadProviders();
         setNotice({
@@ -2467,7 +2604,6 @@ export function CodexModelProviderManager({
   useEffect(() => {
     if (!providerOauthTarget) {
       setProviderOauthSelectedAccountId("");
-      setProviderOauthUseLocalGateway(false);
       setProviderOauthSearchQuery("");
       setProviderOauthFilterTypes([]);
       setProviderOauthTagFilter([]);
@@ -2478,9 +2614,6 @@ export function CodexModelProviderManager({
     const bound = resolveBoundOAuthAccount(providerOauthTarget);
     setProviderOauthSelectedAccountId(
       bound && isOAuthBindingEligibleAccount(bound) ? bound.id : "",
-    );
-    setProviderOauthUseLocalGateway(
-      providerOauthTarget.boundOauthUseLocalGateway === true,
     );
     setProviderOauthSearchQuery("");
     setProviderOauthFilterTypes([]);
@@ -2620,7 +2753,6 @@ export function CodexModelProviderManager({
         await updateCodexApiKeyBoundOAuthAccount(
           account.id,
           provider.boundOauthAccountId?.trim() || null,
-          provider.boundOauthUseLocalGateway === true,
         );
 
         await updateCodexInstance({
@@ -3570,7 +3702,6 @@ export function CodexModelProviderManager({
                 className="modal-close"
                 onClick={closeBatchTestModal}
                 aria-label={t("common.close", "关闭")}
-                disabled={batchTestSession?.running || batchTestDeleting}
               >
                 <X />
               </button>
@@ -3701,7 +3832,9 @@ export function CodexModelProviderManager({
                           </div>
                           <div className="codex-wakeup-results-summary-meta">
                             <span>
-                              {batchTestSession.running
+                              {batchTestSession.cancelled
+                                ? t("common.cancelled", "已取消")
+                                : batchTestSession.running
                                 ? t(
                                     "codex.modelProviders.batchTest.status.running",
                                     "测试中",
@@ -3724,7 +3857,9 @@ export function CodexModelProviderManager({
                             {batchTestSession.completed}/{batchTestSession.total}
                           </strong>
                           <span>
-                            {batchTestSession.running
+                            {batchTestSession.cancelled
+                              ? t("common.cancelled", "已取消")
+                              : batchTestSession.running
                               ? t(
                                   "codex.modelProviders.batchTest.status.running",
                                   "测试中",
@@ -3849,7 +3984,9 @@ export function CodexModelProviderManager({
                                     "codex.modelProviders.batchTest.runningDesc",
                                     "正在发送对话请求。",
                                   )
-                                : record.status === "success"
+                              : record.status === "cancelled"
+                                ? t("common.cancelled", "已取消")
+                              : record.status === "success"
                                   ? record.reply ||
                                     t(
                                       "codex.modelProviders.batchTest.noReply",
@@ -3869,7 +4006,9 @@ export function CodexModelProviderManager({
                                     "codex.modelProviders.batchTest.status.error",
                                     "失败",
                                   )
-                                : record.status === "running"
+                              : record.status === "cancelled"
+                                ? t("common.cancelled", "已取消")
+                              : record.status === "running"
                                   ? t(
                                       "codex.modelProviders.batchTest.status.running",
                                       "测试中",
@@ -3994,10 +4133,26 @@ export function CodexModelProviderManager({
                 type="button"
                 className="btn btn-secondary"
                 onClick={closeBatchTestModal}
-                disabled={batchTestSession?.running || batchTestDeleting}
               >
                 {t("common.close", "关闭")}
               </button>
+              {batchTestStep === "results" && batchTestSession?.running && (
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() =>
+                    void requestBatchTestCancellation(batchTestSession.runId)
+                  }
+                  disabled={batchTestCancelling}
+                >
+                  {batchTestCancelling && (
+                    <RefreshCw size={14} className="loading-spinner" />
+                  )}
+                  {batchTestCancelling
+                    ? t("common.cancelling", "正在取消...")
+                    : t("common.cancel", "取消")}
+                </button>
+              )}
               {batchTestStep === "select" && (
                 <button
                   type="button"
@@ -4449,45 +4604,43 @@ export function CodexModelProviderManager({
                   </button>
                 </div>
               </div>
-              <div className="form-group">
-                <label>
-                  {t(
-                    "codex.modelProviders.fields.supportsWebsockets",
-                    "WebSocket 传输",
-                  )}
-                </label>
-                <label className="provider-vision-toggle">
-                  <span className="provider-vision-toggle-copy">
-                    <span className="provider-vision-toggle-title">
-                      {t(
-                        "codex.modelProviders.websockets.title",
-                        "允许 Codex 使用 Responses WebSocket",
-                      )}
+              {form.wireApi === "responses" && (
+                <div className="form-group">
+                  <label>
+                    {t(
+                      "codex.modelProviders.fields.supportsWebsockets",
+                      "WebSocket 传输",
+                    )}
+                  </label>
+                  <label className="provider-vision-toggle">
+                    <span className="provider-vision-toggle-copy">
+                      <span className="provider-vision-toggle-title">
+                        {t(
+                          "codex.modelProviders.websockets.title",
+                          "允许 Codex 使用 Responses WebSocket",
+                        )}
+                      </span>
+                      <span className="provider-vision-toggle-desc">
+                        {t(
+                          "codex.modelProviders.websockets.help",
+                          "仅在供应商明确支持 Responses WebSocket 时开启；连接方式可通过 Codex 或代理服务日志确认。",
+                        )}
+                      </span>
                     </span>
-                    <span className="provider-vision-toggle-desc">
-                      {t(
-                        "codex.modelProviders.websockets.help",
-                        "仅在供应商明确支持 Responses WebSocket 时开启；连接方式可通过 Codex 或代理服务日志确认。",
-                      )}
+                    <span className="provider-vision-switch">
+                      <input
+                        type="checkbox"
+                        checked={form.supportsWebsockets}
+                        onChange={(event) =>
+                          mutateForm({ supportsWebsockets: event.target.checked })
+                        }
+                        disabled={saving || selectedPresetId === "openai_official"}
+                      />
+                      <span className="provider-vision-switch-track" />
                     </span>
-                  </span>
-                  <span className="provider-vision-switch">
-                    <input
-                      type="checkbox"
-                      checked={form.supportsWebsockets}
-                      onChange={(event) =>
-                        mutateForm({ supportsWebsockets: event.target.checked })
-                      }
-                      disabled={
-                        saving ||
-                        form.wireApi !== "responses" ||
-                        selectedPresetId === "openai_official"
-                      }
-                    />
-                    <span className="provider-vision-switch-track" />
-                  </span>
-                </label>
-              </div>
+                  </label>
+                </div>
+              )}
               {form.wireApi === "chat_completions" && (
                 <>
                   <div className="form-group">
@@ -4650,6 +4803,19 @@ export function CodexModelProviderManager({
                             <code>{maskApiKey(item.apiKey)}</code>
                           </div>
                           <button
+                            className="action-btn"
+                            onClick={() =>
+                              void handleRenameApiKey(
+                                currentEditingProvider,
+                                item,
+                              )
+                            }
+                            disabled={saving}
+                            title={t("common.rename", "重命名")}
+                          >
+                            <Pencil size={12} />
+                          </button>
+                          <button
                             className="action-btn danger"
                             onClick={() =>
                               void handleDeleteApiKey(
@@ -4804,13 +4970,18 @@ export function CodexModelProviderManager({
                 {t("common.cancel", "取消")}
               </button>
               <button
-                className="btn btn-primary"
+                className="btn btn-primary codex-provider-save-button"
                 onClick={() => void handleSaveProvider()}
                 disabled={saving}
               >
-                {saving
-                  ? t("common.saving", "保存中...")
-                  : t("common.save", "保存")}
+                <span className="codex-provider-save-button-label">
+                  <span aria-hidden={saving}>
+                    {t("common.save", "保存")}
+                  </span>
+                  <span aria-hidden={!saving}>
+                    {t("common.saving", "保存中...")}
+                  </span>
+                </span>
               </button>
             </div>
           </div>
@@ -4978,31 +5149,6 @@ export function CodexModelProviderManager({
                   <div className="codex-oauth-binding-picker-header">
                     <label>
                       {t("codex.api.oauthBinding.selectLabel", "选择 OAuth 账号")}
-                    </label>
-                    <label
-                      className="codex-oauth-binding-gateway-toggle"
-                      title={t(
-                        "codex.api.oauthBinding.localGatewayTooltip",
-                        "开启后，绑定 OAuth 的 API Key 文本对话会走本地网关，并在转发前移除 image_generation 工具声明；不会删除生图模型。",
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={providerOauthUseLocalGateway}
-                        onChange={(event) =>
-                          void handleProviderOauthLocalGatewayToggle(
-                            event.target.checked,
-                          )
-                        }
-                        disabled={providerOauthSaving}
-                      />
-                      <span>
-                        {t(
-                          "codex.api.oauthBinding.useLocalGateway",
-                          "禁用 image_generation",
-                        )}
-                      </span>
-                      <HelpCircle size={14} />
                     </label>
                   </div>
                   {providerOauthAccounts.length === 0 ? (
@@ -5219,7 +5365,6 @@ export function CodexModelProviderManager({
                         void handleProviderOauthBindingChange(
                           providerOauthTarget,
                           null,
-                          false,
                         )
                       }
                       disabled={providerOauthSaving}
@@ -5241,7 +5386,6 @@ export function CodexModelProviderManager({
                       void handleProviderOauthBindingChange(
                         providerOauthTarget,
                         selectedProviderOauthAccount.id,
-                        providerOauthUseLocalGateway,
                       )
                     }
                     disabled={

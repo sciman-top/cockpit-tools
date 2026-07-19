@@ -22,6 +22,9 @@ use crate::modules::instance_store;
 static CLAUDE_INSTANCE_STORE_LOCK: std::sync::LazyLock<Mutex<()>> =
     std::sync::LazyLock::new(|| Mutex::new(()));
 
+#[cfg(target_os = "windows")]
+const WINDOWS_CLAUDE_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 const CLAUDE_INSTANCES_FILE: &str = "claude_instances.json";
 const CLAUDE_GLOBAL_CONFIG_FILE: &str = ".claude.json";
 const CLAUDE_CODE_CONFIG_FILE: &str = ".config.json";
@@ -698,11 +701,11 @@ fn spawn_command_with_trace(cmd: &mut Command) -> std::io::Result<std::process::
 }
 
 fn normalize_custom_path(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
+    let normalized = modules::process::normalize_windows_user_facing_path(value);
+    if normalized.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        Some(normalized)
     }
 }
 
@@ -1083,7 +1086,8 @@ fn scan_windows_start_apps_for_claude(
 ) {
     use std::os::windows::process::CommandExt;
 
-    let output = Command::new("powershell.exe")
+    let mut command = Command::new("powershell.exe");
+    command
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -1093,8 +1097,9 @@ fn scan_windows_start_apps_for_claude(
             "Get-StartApps | Where-Object { $_.Name -like '*Claude*' -or $_.AppID -like 'Claude_*' } | ForEach-Object { \"$($_.Name)`t$($_.AppID)\" }",
         ])
         .creation_flags(0x08000000)
-        .stdin(Stdio::null())
-        .output();
+        .stdin(Stdio::null());
+    let output =
+        modules::process_timeout::output_with_timeout(&mut command, WINDOWS_CLAUDE_PROBE_TIMEOUT);
     let Ok(output) = output else {
         return;
     };
@@ -1139,7 +1144,8 @@ fn scan_windows_appx_packages_for_claude(
         .filter(|root| !root.is_empty())
         .collect::<Vec<_>>();
 
-    let output = Command::new("powershell.exe")
+    let mut command = Command::new("powershell.exe");
+    command
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -1149,8 +1155,9 @@ fn scan_windows_appx_packages_for_claude(
             "Get-AppxPackage | Where-Object { $_.Name -like '*Claude*' -or $_.PackageFamilyName -like '*Claude*' -or $_.PackageFullName -like '*Claude*' } | ForEach-Object { $_.InstallLocation }",
         ])
         .creation_flags(0x08000000)
-        .stdin(Stdio::null())
-        .output();
+        .stdin(Stdio::null());
+    let output =
+        modules::process_timeout::output_with_timeout(&mut command, WINDOWS_CLAUDE_PROBE_TIMEOUT);
     let Ok(output) = output else {
         return false;
     };
@@ -1316,11 +1323,13 @@ fn detect_claude_exec_path() -> Option<PathBuf> {
 fn normalize_claude_path_for_config(path: &Path) -> String {
     #[cfg(target_os = "macos")]
     {
-        normalize_macos_app_root(path).unwrap_or_else(|| path.to_string_lossy().to_string())
+        normalize_macos_app_root(path).unwrap_or_else(|| {
+            modules::process::normalize_windows_user_facing_path(&path.to_string_lossy())
+        })
     }
     #[cfg(not(target_os = "macos"))]
     {
-        path.to_string_lossy().to_string()
+        modules::process::normalize_windows_user_facing_path(&path.to_string_lossy())
     }
 }
 
@@ -1334,23 +1343,27 @@ pub fn detect_and_save_claude_launch_path(force: bool) -> Option<String> {
         let custom = normalize_custom_path(&current.claude_app_path)?;
         return resolve_windows_claude_launch_target(&custom)
             .ok()
-            .map(|_| current.claude_app_path);
+            .map(|_| custom);
     }
 
     #[cfg(not(target_os = "windows"))]
     {
         if !force {
-            if let Some(custom) = normalize_custom_path(&current.claude_app_path) {
-                return Some(current.claude_app_path);
+            if let Some(configured) = normalize_custom_path(&current.claude_app_path) {
+                return Some(configured);
             }
         }
 
         let detected = detect_claude_exec_path()?;
         let normalized = normalize_claude_path_for_config(&detected);
         if current.claude_app_path != normalized {
-            let mut next = current.clone();
-            next.claude_app_path = normalized.clone();
-            if let Err(err) = modules::config::save_user_config(&next) {
+            let path = normalized.clone();
+            if let Err(err) = modules::config::patch_user_config(move |config| {
+                if force || normalize_custom_path(&config.claude_app_path).is_none() {
+                    config.claude_app_path = path;
+                }
+                Ok(())
+            }) {
                 modules::logger::log_warn(&format!("保存 Claude 启动路径失败（已忽略）: {}", err));
             }
         }

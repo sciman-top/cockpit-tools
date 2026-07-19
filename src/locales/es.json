@@ -2,16 +2,20 @@
   "common": {
     "confirm": "Confirmar",
     "cancel": "Cancelar",
+    "cancelling": "Cancelando...",
+    "cancelled": "Cancelado",
     "save": "Guardar",
     "saving": "Guardando...",
     "delete": "Eliminar",
     "refresh": "Actualizar",
+    "reauthorize": "Reautorizar",
     "loading": "Cargando...",
     "success": "Éxito",
     "failed": "Error",
     "enabled": "Habilitado",
     "disabled": "Deshabilitado",
     "close": "Cerrar",
+    "back": "Volver",
     "open": "Abrir",
     "copy": "Copiar",
     "copied": "Copiado",
@@ -176,7 +180,9 @@
         "resetDone": "Reiniciado",
         "hourly": "Sugerencias en línea",
         "weekly": "Mensajes de chat",
-        "resetAt": "Restablece: {{time}}"
+        "resetAt": "Restablece: {{time}}",
+        "expiresAt": "Vence el: {{time}}",
+        "leftPercent": "Queda un {{value}} %"
       },
       "subtitle": "Supervisa en tiempo real el estado de cuota de todas las cuentas.",
       "time": {
@@ -236,7 +242,7 @@
     "settings": "Ajustes",
     "codex": "Codex​",
     "githubCopilot": "GitHub Copilot​",
-    "windsurf": "Windsurf​",
+    "windsurf": "Devin​",
     "dashboard": "Panel",
     "morePlatforms": "Más plataformas",
     "instances": "Multi-Instancia",
@@ -246,7 +252,6 @@
       "restart": "Reiniciar",
       "installing": "Instalando"
     },
-    "gemini": "Gemini Cli​",
     "codebuddy": "CodeBuddy​",
     "qoder": "Qoder​",
     "trae": "Trae​",
@@ -267,7 +272,9 @@
     "switchClassicLayoutConfirm": "Cambiar ahora",
     "2faManager": "Gestión 2FA",
     "apiRelay": "Relé",
-    "claude": "Claude"
+    "claude": "Claude",
+    "openrouter": "OpenRouter",
+    "opencode": "OpenCode"
   },
   "sponsors": {
     "pageTitle": "Patrocinadores",
@@ -490,6 +497,7 @@
       "noneRunning": "No se encontraron instancias en ejecución",
       "syncThreadsNeedTwo": "Se requieren al menos dos instancias para sincronizar hilos",
       "launchPrepared": "El comando de inicio está listo",
+      "codexManagedStoreLaunchUnsafe": "Windows Store no puede transferir de forma fiable el directorio de la instancia, por lo que se bloqueó la apertura de la cuenta predeterminada. Cambia esta instancia al modo de inicio CLI e inténtalo de nuevo. Detalles: {{detail}}",
       "speedUpdated": "Velocidad actualizada"
     },
     "runningDialog": {
@@ -581,7 +589,7 @@
       "themeDark": "Oscuro",
       "themeSystem": "Sistema",
       "uiScale": "Escala de la interfaz",
-      "uiScaleDesc": "Ajusta la escala de la interfaz",
+      "uiScaleDesc": "Ajustar la escala de la interfaz (⌘+/⌘- o Ctrl+/Ctrl-, ⌘0/Ctrl+0 restablecer)",
       "accountManagement": "Gestión de Cuentas",
       "autoRefresh": "Actualización automática de cuota de Antigravity IDE",
       "codexAutoRefresh": "Actualización automática de cuota de Codex",
@@ -601,6 +609,8 @@
       "closeBehaviorQuit": "Salir de la aplicación",
       "startupMinimized": "Iniciar minimizada",
       "startupMinimizedDesc": "Minimiza automáticamente la ventana principal tras iniciar la app; restáurala desde el Dock, la barra de tareas o la bandeja",
+      "rememberMainWindowState": "Recordar posición y tamaño de la ventana",
+      "rememberMainWindowStateDesc": "Restaura la posición y el tamaño tras reiniciar o abrir desde la bandeja; desactivado de forma predeterminada",
       "minimizeBehavior": "Comportamiento al minimizar la ventana (solo macOS)",
       "minimizeBehaviorDesc": "Elige si al minimizar la ventana permanece en el Dock y la barra de menús, o solo en la barra de menús",
       "minimizeBehaviorDockAndTray": "Dock + barra de menús (recomendado)",
@@ -640,6 +650,11 @@
       "codexPathReset": "Restablecer predeterminado",
       "codexSyncWsl": "Sincronizar Codex con WSL",
       "codexSyncWslDesc": "Después de cambiar la cuenta predeterminada de Codex, también se escriben auth.json y config.toml en el directorio de Codex en WSL.",
+      "codexAppUiInjection": "Cuota del servicio API",
+      "codexAppUiInjectionDesc": "Tras reiniciar una instancia de Codex, muestra debajo del compositor el número de cuentas y las cuotas semanal y de 5 horas del servicio API de Cockpit Tools. Cockpit Tools debe seguir ejecutándose en segundo plano; las actualizaciones se detienen al cerrarlo por completo o si no hay red.",
+      "codexAppUiInjectionPoolLabel": "Cuentas",
+      "codexAppUiInjectionWeeklyLabel": "Semana",
+      "codexAppUiInjectionFiveHourLabel": "5 h",
       "codexWslConfigDir": "Directorio Codex en WSL",
       "codexWslConfigDirDesc": "Introduce el directorio .codex dentro de WSL. Se admiten rutas \\\\wsl.localhost\\.",
       "codexWslConfigDirPlaceholder": "Ejemplo: \\\\wsl.localhost\\Ubuntu-24.04\\home\\user\\.codex",
@@ -657,10 +672,10 @@
       "githubCopilotSettingsTitle": "Configuración de GitHub Copilot",
       "ghcpAutoRefresh": "Actualización automática de cuota de GitHub Copilot",
       "ghcpAutoRefreshDesc": "Frecuencia de actualización en segundo plano",
-      "windsurfSettingsTitle": "Configuración de Windsurf",
-      "windsurfAutoRefresh": "Actualización automática de cuota de Windsurf",
+      "windsurfSettingsTitle": "Configuración de Devin",
+      "windsurfAutoRefresh": "Actualización automática de cuota de Devin",
       "windsurfAutoRefreshDesc": "Frecuencia de actualización en segundo plano",
-      "windsurfAppPath": "Ruta de la app de Windsurf",
+      "windsurfAppPath": "Ruta de la app de Devin",
       "windsurfAppPathDesc": "Déjalo vacío para usar la ruta predeterminada",
       "windsurfAppPathPlaceholder": "Ruta predeterminada",
       "windsurfPathSelect": "Seleccionar",
@@ -750,7 +765,7 @@
       "codexAutoSwitchAccountScope": "Alcance de cambio automático de cuentas de Codex",
       "codexAutoSwitchAccountScopeDesc": "Estado actual de cambio automático de Codex: {{status}}. Solo se considerarán cuentas dentro de este alcance.",
       "defaultTerminal": "Terminal predeterminado",
-      "defaultTerminalDesc": "La terminal utilizada al abrir Gemini CLI",
+      "defaultTerminalDesc": "La terminal utilizada al abrir CLI",
       "terminalSystem": "Predeterminado del sistema",
       "currentAccountRefreshRequiresAutoRefresh": "Activa primero «Actualización automática de cuota» para configurar la actualización de la cuenta actual.",
       "codebuddyCnAppPath": "Ruta de la aplicación CodeBuddy CN",
@@ -803,7 +818,35 @@
       "platformAutoRefresh": "Actualización automática de cuota de {{platform}}",
       "traeSoloAppPath": "Ruta de inicio de TRAE SOLO",
       "traeCnAppPath": "Ruta de inicio de Trae CN",
-      "traeSoloCnAppPath": "Ruta de inicio de TRAE SOLO CN"
+      "traeSoloCnAppPath": "Ruta de inicio de TRAE SOLO CN",
+      "reducedMotion": "Reducir animación",
+      "reducedMotionDesc": "Reduce fundidos, transiciones de modal, sombras, desenfoque y desplazamiento suave; solo deja la carga esencial",
+      "autoImportFromLocal": "Importar cuentas locales auto",
+      "autoImportFromLocalDesc": "Al activar, escanea e importa inicios locales; luego al cambiar de cuenta en el cliente oficial. Puede pedir permiso del llavero.",
+      "autoImportFromLocalScanning": "Escaneando cuentas locales… puedes desactivar cuando quieras",
+      "autoImportFromLocalScanDone": "Listo: {{scanned}} halladas, {{imported}} importadas",
+      "autoImportFromLocalScanEmpty": "Listo: sin inicios importables",
+      "autoImportFromLocalScanPartial": "Listo: fallos parciales",
+      "autoImportFromLocalScanFailed": "Error de escaneo: {{error}}",
+      "autoImportFromLocalScanCancelled": "Desactivado; se ignorará el escaneo en curso",
+      "startupPage": "Página de inicio",
+      "startupPageDesc": "Página al arranque en frío. «Recordar última» restaura la página anterior.",
+      "startupPageLast": "Recordar última",
+      "startupPageCodexApi": "Servicio API Codex",
+      "hermesAuthOverwrite": "Sincronizar Hermes al cambiar Codex",
+      "hermesAuthOverwriteDesc": "Solo OAuth: escribe openai-codex en ~/.hermes/auth.json (desactivado por defecto)",
+      "themeColor": "Paquete de color",
+      "themeColorDesc": "Aplica un paquete sobre claro/oscuro",
+      "themeColorDefault": "Predeterminado",
+      "themeColorNord": "Nord",
+      "themeColorTokyoNight": "Tokyo Night",
+      "themeColorCatppuccin": "Catppuccin",
+      "themeColorGruvbox": "Gruvbox",
+      "themeColorEverforest": "Everforest",
+      "externalNetwork": "Permitir red externa",
+      "externalNetworkDesc": "Desactivado: bloquea WebDAV, uso de OpenRouter, anuncios y comprobaciones de actualización (lo local sigue).",
+      "webdavAllowedDomains": "Lista blanca WebDAV",
+      "webdavAllowedDomainsDesc": "Separado por comas; vacío = sin límite"
     },
     "network": {
       "apiTitle": "API de cabina antigravedad",
@@ -868,6 +911,7 @@
       "releaseHistoryLoading": "Cargando notas de la versión...",
       "releaseHistoryEmpty": "Aún no hay notas de lanzamiento",
       "releaseHistoryLoadFailed": "No se pudo cargar: {{error}}",
+      "releaseHistorySectionHighlights": "Novedades destacadas",
       "releaseHistorySectionAdded": "Agregado",
       "releaseHistorySectionChanged": "Cambió",
       "releaseHistorySectionFixed": "Fijado",
@@ -948,7 +992,7 @@
       "importModalDesc": "Elige qué importar. Las copias antiguas de cuentas se procesan como importación solo de cuentas.",
       "selectionTitle": "Alcance de los datos",
       "accountsOptionTitle": "Datos de cuentas",
-      "accountsOptionDesc": "Incluye copias de seguridad de cuentas de las plataformas y mantiene compatibilidad con el JSON heredado de cuentas.",
+      "accountsOptionDesc": "Incluye copias de seguridad restaurables de las cuentas y mantiene la compatibilidad con el JSON heredado. Las credenciales de Grok CLI se excluyen; importa el auth.json oficial por separado.",
       "configOptionTitle": "Datos de configuración",
       "configOptionDesc": "Incluye ajustes de la app, grupos, instancias, tareas de activación y configuración de proveedores de modelos.",
       "exportConfirm": "Exportar datos",
@@ -1032,6 +1076,19 @@
       "retentionUnit": "days",
       "collapseAll": "Collapse remote backups",
       "expandAll": "Expand all remote backups ({{count}} more)"
+    },
+    "keysVault": {
+      "title": "OpenRouter / OpenCode Key",
+      "desc": "Guarda claves API en local. Actualiza el uso de OpenRouter si hay red externa. No es una plataforma completa.",
+      "openRouter": "OpenRouter",
+      "openCode": "OpenCode Go / Zen",
+      "label": "Etiqueta",
+      "empty": "Sin claves",
+      "added": "Añadido",
+      "deleted": "Eliminado",
+      "refreshed": "Uso actualizado",
+      "usage": "Uso",
+      "tierOther": "Otro"
     }
   },
   "appPath": {
@@ -1146,7 +1203,11 @@
         "tooMany": "Puedes agregar hasta {{max}} etiquetas"
       },
       "notesLabel": "Notas",
-      "notesPlaceholder": "Introduce notas. Déjalo vacío para borrar"
+      "notesPlaceholder": "Introduce notas. Déjalo vacío para borrar",
+      "confirmGlobalDelete": "¿Eliminar la etiqueta \"{{targetTag}}\" de todas las cuentas? Esta acción no se puede deshacer.",
+      "globalDeleteHint": "Eliminar esta etiqueta globalmente",
+      "globalDeleteFailed": "Error al eliminar la etiqueta globalmente",
+      "globalRenameHint": "Renombrar esta etiqueta globalmente"
     },
     "groupByTag": "Agrupar por etiqueta",
     "untagged": "Sin etiqueta",
@@ -1217,7 +1278,9 @@
         "renameFailed": "Error al renombrar el grupo: {{error}}",
         "deleteFailed": "Error al eliminar el grupo: {{error}}",
         "addFailed": "Error al añadir al grupo: {{error}}",
-        "createAndAddFailed": "Error al crear y añadir: {{error}}"
+        "createAndAddFailed": "Error al crear y añadir: {{error}}",
+        "quotaRefreshFailed": "No se pudo actualizar la configuración de actualización de cuota: {{error}}",
+        "notFound": "No se encontró el grupo"
       },
       "addAccounts": "Agregar cuentas",
       "editTitle": "Editar grupo",
@@ -1225,7 +1288,14 @@
       "currentGroupLabel": "Grupo actual",
       "accountPickerEmpty": "No hay cuentas coincidentes",
       "filterHint": "{{count}} grupo(s) seleccionado(s) para filtrar",
-      "filterToggle": "Marca para filtrar por este grupo"
+      "filterToggle": "Marca para filtrar por este grupo",
+      "quotaRefresh": "Actualizar cuota",
+      "quotaRefreshOffBadge": "Sin actualización",
+      "quotaRefreshOffHint": "Este grupo no se actualiza; la actualización automática y completa omite sus cuentas",
+      "refreshForceHint": "Puedes actualizar este grupo manualmente cuando su política no sea heredar",
+      "quotaRefreshInherit": "Heredar de la plataforma",
+      "quotaRefreshPolicyHint": "La actualización de cuota del grupo tiene máxima prioridad: heredar de la plataforma, intervalo personalizado o desactivada",
+      "quotaRefreshMinutesBadge": "{{count}} minutos"
     },
     "switchHistory": {
       "title": "Historial de cambios",
@@ -1728,7 +1798,8 @@
       "title": "Agregar cuenta de Codex",
       "oauth": "Autorización OAuth",
       "token": "Importar JSON",
-      "local": "Importación local"
+      "local": "Importación local",
+      "accessToken": "Token de acceso"
     },
     "oauth": {
       "desc": "Haz clic abajo y completa la autorización en el navegador",
@@ -1813,6 +1884,7 @@
         "freeUnsupported": "Las cuentas gratuitas aún no son compatibles",
         "restrictFreeToggle": "Limitar cuentas Free",
         "chatApiKeyUnsupported": "Chat Completions no compatible",
+        "pendingOauthUnsupported": "Pendiente no se admite",
         "freeNoticeRestricted": "Las cuentas Free están limitadas. Desactiva esto para seleccionarlas.",
         "freeNoticeUnstable": "El proxy de cuentas Free puede ser inestable. Úsalo con cuidado.",
         "restrictFreeDisableConfirmTitle": "Permitir cuentas Free",
@@ -1840,6 +1912,10 @@
       "testConnectFailed": "No se puede conectar a {{url}}. Confirma que el servicio API esté en ejecución, que el puerto no haya cambiado y que nada lo bloquee.",
       "testAuthFailed": "El servicio responde, pero falló la autenticación: {{detail}}. Revisa la clave del servicio API o el estado de inicio de sesión de la cuenta.",
       "testServiceUnavailable": "El servicio responde, pero no está disponible: {{detail}}. Revisa si el servicio está activado, si la colección de cuentas está vacía o si las cuentas son utilizables.",
+      "gatewayErrors": {
+        "authUnavailable": "Ninguna cuenta del grupo está disponible para enrutar ahora. Puede estar en espera, sin autorización o limitada por cuota. Revisa su estado en el servicio API de Cockpit Tools.",
+        "authNotFound": "No hay ninguna cuenta utilizable configurada en el grupo. Añade o activa una cuenta en el servicio API de Cockpit Tools."
+      },
       "testRateLimited": "El servicio responde, pero el ascendente tiene límite de velocidad o cuota agotada: {{detail}}.",
       "testHttpFailed": "El servicio responde, pero la solicitud devolvió HTTP {{status}}: {{detail}}.",
       "activateAction": "Iniciar servicio API",
@@ -1864,6 +1940,7 @@
         "requestsDetail": "OK {{success}} / Fallo {{failed}} / Canc. {{canceled}} / Origen {{upstreamFailed}} / Incomp. {{incomplete}}",
         "tokens": "Tokens totales",
         "tokensDetail": "Entrada {{input}} / Salida {{output}}",
+        "cached": "Caché",
         "specialTokens": "Caché / Razonamiento",
         "specialTokensDetail": "Caché {{cached}} / Razonamiento {{reasoning}}",
         "avgLatency": "Latencia media",
@@ -1904,6 +1981,7 @@
         "planHighFirst": "Plan alto primero",
         "planLowFirst": "Plan bajo primero",
         "expirySoonFirst": "Vence antes primero",
+        "random": "Aleatorio",
         "custom": "Personalizado"
       },
       "statusUnconfigured": "Sin configurar",
@@ -1926,7 +2004,12 @@
         "label": "Rango",
         "daily": "Día",
         "weekly": "Semana",
-        "monthly": "Mes"
+        "monthly": "Mes",
+        "custom": "Personalizado",
+        "start": "Inicio",
+        "end": "Fin",
+        "apply": "Aplicar",
+        "invalid": "La hora de fin no puede ser anterior a la de inicio"
       },
       "enableBeforeActivateTitle": "Servicio desactivado",
       "enableBeforeActivateMessage": "El servicio de API está desactivado y debe activarse primero. ¿Activar y cambiar ahora?",
@@ -1959,7 +2042,10 @@
       },
       "customRoutingEdit": "Editar enrutamiento personalizado",
       "customRoutingTitle": "Enrutamiento personalizado",
-      "customRoutingDesc": "Define prioridad y peso por cuenta para controlar el orden de selección y el reparto de carga dentro del mismo nivel.",
+      "customRoutingDesc": "Define prioridad y peso para controlar el orden de selección y el reparto de carga.",
+      "customRoutingBackupTitle": "Cuenta de reserva",
+      "customRoutingBackupDesc": "Solo se usa cuando todas las cuentas normales no están disponibles. Las solicitudes nuevas vuelven automáticamente cuando se recupera una cuenta normal.",
+      "customRoutingBackupShort": "Reserva",
       "customRoutingPriorityTitle": "Prioridad",
       "customRoutingPriorityDesc": "Los valores más altos se eligen antes; las cuentas de menor prioridad solo se prueban cuando las superiores no están disponibles.",
       "customRoutingWeightTitle": "Peso",
@@ -2048,7 +2134,31 @@
         "allAvailable": "Todo OK {{count}}",
         "availableRatio": "Bien {{available}}/{{total}}",
         "issueSummary": "Error {{abnormal}} · Pausa {{cooldown}}",
-        "detail": "OK {{available}}/{{total}}, error {{abnormal}}, pausa {{cooldown}}, faltan {{missing}}, auth {{authError}}, cuota {{quotaLimited}}"
+        "detail": "OK {{available}}/{{total}}, error {{abnormal}}, pausa {{cooldown}}, faltan {{missing}}, auth {{authError}}, cuota {{quotaLimited}}",
+        "openDetails": "Ver cuentas con problemas",
+        "recover": "Recuperar estado",
+        "recoverSuccess": "Recuperación solicitada para {{count}} cuenta(s)",
+        "dialog": {
+          "title": "Cuentas con problemas",
+          "description": "Estos estados provienen del programador OAuth de Sidecar. La recuperación borra la espera y reintenta la cuenta.",
+          "noIssues": "No hay cuentas con problemas",
+          "missing": "Cuenta ausente",
+          "cooldown": "En espera",
+          "quota": "Cuota limitada",
+          "missingDetail": "La cuenta ya no está en la lista",
+          "cooldownModel": "El modelo {{model}} está en espera",
+          "cooldownUntil": "El modelo {{model}} estará en espera hasta {{time}}",
+          "authDetail": "La autorización OAuth puede haber caducado. Vuelve a autorizar e inténtalo.",
+          "quotaDetail": "La cuota no está disponible temporalmente. Espera o revisa el plan.",
+          "paymentDetail": "El plan o el pago de la cuenta no está disponible. Revisa la suscripción.",
+          "modelDetail": "Esta cuenta no admite el modelo solicitado.",
+          "upstreamDetail": "El servicio upstream no está disponible temporalmente. Se reintentará.",
+          "disabledDetail": "Esta cuenta está desactivada. Actívala primero.",
+          "unavailableDetail": "Sidecar no considera esta cuenta disponible para programar.",
+          "recover": "Recuperar",
+          "recovering": "Recuperando…",
+          "recoverAll": "Recuperar todo"
+        }
       },
       "testChatModel": "Modelo",
       "testChatClear": "Vaciar chat",
@@ -2104,7 +2214,10 @@
       "refreshFailedBadge": "Actualización fallida",
       "generic": "No se pudo actualizar la cuota, inténtalo más tarde",
       "deactivatedWorkspace": "El espacio de trabajo está desactivado, cambia de cuenta o vuelve a autorizar",
-      "requestFailedManualRetry": "Comprueba la red. No se obtuvo la cuota más reciente. Actualiza para reintentarlo."
+      "requestFailedManualRetry": "Comprueba la red. No se obtuvo la cuota más reciente. Actualiza para reintentarlo.",
+      "httpStatusSummary": "Error de la API {{status}}",
+      "viewDetails": "Detalles",
+      "detailTitle": "Detalle del error"
     },
     "plan": {
       "free": "FREE​",
@@ -2114,7 +2227,13 @@
       "enterprise": "ENTERPRISE​"
     },
     "list": {
-      "showCodeReviewQuota": "Mostrar cuota de Code Review"
+      "showCodeReviewQuota": "Mostrar cuota de Code Review",
+      "showAdditionalQuota": "Cuotas por modelo",
+      "planBadgeStyle": "Estilo de insignia",
+      "planBadgeStyleDefault": "Predeterminado",
+      "planBadgeStyleOutline": "Contorno",
+      "planBadgeStyleSoft": "Suave",
+      "planBadgeStyleMono": "Monocromo"
     },
     "time": {
       "today": "Hoy {{time}}",
@@ -2374,7 +2493,8 @@
         "selectAllSessions": "Seleccionar sesiones",
         "clearSelectedSessions": "Deseleccionar",
         "copyToInstance": "Copiar a instancia",
-        "trash": "Papelera"
+        "trash": "Papelera",
+        "openRollout": "Abrir archivo de sesión"
       },
       "confirm": {
         "title": "Mover a la papelera",
@@ -2576,7 +2696,15 @@
         "removeItem": "Retirar",
         "emptyFilteredTitle": "Sin sesiones coincidentes",
         "emptyFilteredDesc": "Ajusta búsqueda, origen o selección e inténtalo de nuevo."
-      }
+      },
+      "kindFilter": "Tipo de sesión",
+      "kind": {
+        "conversation": "Chats",
+        "external": "Externa",
+        "subagent": "Subagente",
+        "all": "Todos"
+      },
+      "pickInstancePrompt": "La sesión existe en varias instancias. Introduce el ID de instancia:"
     },
     "api": {
       "baseUrl": "URL base",
@@ -2590,6 +2718,20 @@
       "showApiKey": "Mostrar API Key",
       "hideApiKey": "Ocultar API Key",
       "apiKeyHiddenHint": "API Key oculta. Haz clic para mostrarla.",
+      "modelCatalog": {
+        "label": "Lista de modelos",
+        "fetch": "Obtener del proveedor",
+        "fetching": "Obteniendo...",
+        "count": "{{count}} modelos",
+        "placeholder": "Introduce un ID de modelo por línea o separa los ID con comas.",
+        "editHint": "Los modelos obtenidos solo se añaden a este borrador. Revísalos y edítalos antes de guardar.",
+        "syncToggle": "Sincronizar modelos del proveedor con Codex",
+        "syncDescription": "Al guardar, esta lista generará el catálogo de modelos de Codex administrado por Cockpit. Los catálogos personalizados no se sobrescriben.",
+        "fetchCredentialsRequired": "Introduce primero la API Key y la Base URL.",
+        "fetchEmpty": "El proveedor no devolvió modelos. Se conservó la lista actual.",
+        "fetchFailed": "No se pudieron obtener los modelos del proveedor: {{error}}",
+        "syncRequiresModels": "Obtén o introduce al menos un modelo antes de sincronizar con Codex."
+      },
       "actions": {
         "addAndSwitch": "Añadir y cambiar"
       },
@@ -2966,7 +3108,10 @@
         "help": "Actívalo solo si el proveedor admite explícitamente Responses mediante WebSocket; confirma el transporte en los registros de Codex o del servicio proxy.",
         "enabled": "Activado",
         "disabled": "Desactivado"
-      }
+      },
+      "renameApiKeyPrompt": "Renombrar API key",
+      "renameApiKeySuccess": "API key renombrada",
+      "renameApiKeyFailed": "Error al renombrar API key: {{error}}"
     },
     "quickSwitch": {
       "action": "Cambio rápido de proveedor",
@@ -3109,6 +3254,11 @@
         "models": "Modelos y capacidades",
         "logs": "Estadísticas y registros"
       },
+      "statsRange": {
+        "today": "Hoy",
+        "thisWeek": "Esta semana",
+        "thisMonth": "Este mes"
+      },
       "healthTitle": "Estado del servicio",
       "compat": {
         "title": "Compat. de protocolos",
@@ -3133,7 +3283,9 @@
       },
       "accountHealth": {
         "failures": "{{count}} fallos seguidos",
-        "image": "Imágenes {{status}}"
+        "image": "Imágenes {{status}}",
+        "unavailable": "No disponible temporalmente",
+        "authError": "Error de autenticación"
       },
       "models": {
         "availableTitle": "Modelos disponibles",
@@ -3148,26 +3300,62 @@
         "rulesSaved": "Reglas de modelos guardadas",
         "pricingAction": "Precios",
         "pricingTitle": "Precios de modelos",
-        "pricingDesc": "USD / 1M tokens, solo para estadísticas locales de valor.",
+        "pricingDesc": "USD / 1M tokens, solo para estadísticas locales.",
         "pricingModel": "Modelo",
         "pricingInput": "Entrada",
         "pricingCache": "Entrada caché",
         "pricingOutput": "Salida",
         "pricingSource": "Origen",
         "pricingActions": "Acción",
-        "pricingCachePlaceholder": "Igual que entrada",
+        "pricingCachePlaceholder": "-",
         "pricingCustom": "Personalizado",
         "pricingPreset": "Predef.",
         "pricingUnset": "Sin ajustar",
         "pricingReset": "Restablecer",
         "pricingSaved": "Precios guardados",
-        "pricingInvalid": "Los precios deben ser números mayores o iguales que 0",
+        "pricingInvalid": "Los precios deben ser números ≥ 0 y el umbral de tokens un entero positivo",
         "pricingReprice": "Recalcular historial",
-        "pricingRepriced": "El historial se recalculó con los precios actuales"
+        "pricingRepriced": "El historial se recalculó con los precios actuales",
+        "pricingLongThreshold": "Umbral de contexto largo (tokens)",
+        "pricingStandard": "Estándar",
+        "pricingStandardLong": "Estándar (largo)",
+        "pricingPriority": "Prioridad",
+        "pricingOfficialMissing": "-",
+        "pricingStandardLongInput": "Entrada estándar (largo)",
+        "pricingStandardLongCache": "Entrada en caché estándar (largo)",
+        "pricingStandardLongOutput": "Salida estándar (largo)",
+        "pricingPriorityInput": "Entrada prioritaria",
+        "pricingPriorityCache": "Entrada en caché prioritaria",
+        "pricingPriorityOutput": "Salida prioritaria",
+        "pricingRepriceDone": "Estimaciones históricas actualizadas; {{updated}} filas cambiadas",
+        "pricingRepriceFailedWithMessage": "Error al actualizar estimaciones: {{message}}",
+        "pricingRepriceFailed": "Error al actualizar estimaciones",
+        "pricingRepriceSuperseded": "Nuevos precios recibidos; cambiando al recálculo más reciente",
+        "pricingRepriceRunning": "Actualizando estimaciones {{processed}} / {{total}}; {{updated}} actualizadas",
+        "pricingRepriceCompleted": "Estimaciones históricas actualizadas",
+        "pricingRepriceSaveBlocked": "Recálculo en curso; guarde al terminar"
       },
       "keys": {
         "policyTitle": "Política de modelos",
         "advancedPolicyTitle": "Avanzado: política de modelos",
+        "accountScope": "Ámbito de rotación de cuentas",
+        "accountScopeInherit": "Seguir automáticamente el grupo de cuentas del servicio",
+        "accountScopeFixed": "Esta clave está vinculada a una cuenta fija y no puede heredar el grupo del servicio",
+        "accountScopeSelected": "{{count}} cuentas seleccionadas",
+        "accountScopeInheritedCount": "Grupo de cuentas: {{count}} heredadas",
+        "accountScopeUnavailable": "Grupo de cuentas: ninguna disponible",
+        "accountScopeCount": "Grupo de cuentas: {{selected}}/{{total}}",
+        "accountScopeRequired": "Selecciona al menos una cuenta para el grupo personalizado",
+        "accountScopeModeInherit": "Heredar grupo del servicio",
+        "accountScopeModeCustom": "Grupo de cuentas personalizado",
+        "accountPrioritySet": "Fijar cuenta para ruta prioritaria",
+        "accountPriorityPromote": "Dar máxima prioridad",
+        "accountPriorityClear": "Quitar cuenta prioritaria",
+        "accountPrioritySaved": "Cuenta prioritaria fijada",
+        "accountPriorityCleared": "Cuenta prioritaria quitada",
+        "usageRange": "Período de uso de la clave API",
+        "unsaved": "Sin guardar",
+        "resetPolicy": "Descartar cambios",
         "modelPrefix": "Prefijo de modelo",
         "modelPrefixPlaceholder": "Ejemplo: codex",
         "allowedModels": "Modelos permitidos",
@@ -3181,10 +3369,13 @@
         "optionsTitle": "Opciones de ruta",
         "sessionAffinity": "Afinidad de sesión",
         "sessionAffinityTtl": "TTL de afinidad",
+        "responsesWebsockets": "Responses por WebSocket",
         "maxRetryCredentials": "Cuentas retry",
         "maxRetryInterval": "Espera retry",
         "disableCooling": "Desactivar cooldown",
         "saveOptions": "Guardar opciones",
+        "immediateSseResponse": "SSE 200 inmediato",
+        "maxConcurrentImageRequests": "Solicitudes de imagen por cuenta",
         "optionsSaved": "Opciones de ruta guardadas"
       },
       "validation": {
@@ -3276,14 +3467,35 @@
       "renameSuccess": "Renombrado",
       "renameFailed": "Error al renombrar"
     },
+    "importApiService": {
+      "toggle": "Añadir al servicio API",
+      "description": "Añade las cuentas importadas aptas al grupo de cuentas del servicio API.",
+      "syncFailed": "Las cuentas se importaron, pero no se pudieron añadir al servicio API: {{error}}",
+      "guideTitle": "Cuentas añadidas al servicio API",
+      "guideDescription": "Se añadieron {{count}} cuenta(s) al servicio API. Pulsa «Iniciar servicio API» para cambiar y usarlas.",
+      "later": "Más tarde",
+      "startAction": "Iniciar servicio API"
+    },
     "batchImport": {
       "title": "Importación por lotes de Codex",
       "resultSubtitle": "Resultado de importación",
       "previewSubtitle": "Selecciona cuentas para guardar",
       "scanSubtitle": "Analizando y revisando cuentas una por una",
       "parseSubtitle": "Analizando archivos de cuentas",
+      "importSubtitle": "Guardando las cuentas seleccionadas",
+      "finalizing": "Finalizando la importación",
+      "finalizingSubtitle": "Actualizando la lista de cuentas y los ajustes relacionados",
+      "cancelImport": "Cancelar importación",
+      "importCancelledSummary": "Importación cancelada tras procesar {{processed}}/{{total}} cuentas.",
+      "importChecked": "Importar cuentas verificadas",
+      "directImport": "Importar directamente sin verificar",
+      "importCheckedAndAddToApiService": "Importar cuentas verificadas y añadirlas al servicio API",
+      "directImportAndAddToApiService": "Importar directamente y añadir al servicio API",
+      "viewAllTasks": "Ver las {{count}} tareas",
+      "collapseTasks": "Contraer tareas",
       "cancelling": "Cancelando...",
       "scanDone": "Escaneo completo",
+      "scanCompleteReview": "Comprobación completa; revisa el resultado",
       "parseDone": "Análisis completo",
       "scanning": "Escaneando",
       "parsing": "Analizando",
@@ -3292,7 +3504,7 @@
       "failed": "Fallidas",
       "quotaOk": "Cuenta OK",
       "quotaFailed": "Anomalía",
-      "checkQuotaToggle": "Comprobar cuentas",
+      "checkQuotaToggle": "Comprobar antes de importar",
       "preparing": "Preparando importación...",
       "importSelected": "Importar cuentas seleccionadas",
       "noSelection": "Selecciona cuentas para importar",
@@ -3314,7 +3526,21 @@
       "hiddenTask": "Importación por lote de Codex",
       "taskRunning": "Procesando {{current}} / {{total}}",
       "taskPreview": "{{total}} vista(s) previa(s) listas",
-      "reopen": "Ver tarea"
+      "reopen": "Ver tarea",
+      "dismissTask": "Descartar",
+      "queueCount": "{{count}} tareas en cola",
+      "queued": "En cola",
+      "batchLabel": "Lote {{index}}",
+      "runInBackground": "Fondo",
+      "cancelQueued": "Cancelar cola",
+      "importing": "Importador",
+      "checkAccounts": "comprobar cuentas",
+      "importAndAddToApiService": "Importar + API",
+      "importAndAddToApiServiceSuccess": "Importado y agregado al servicio API",
+      "addToApiServiceFailed": "Importado, pero falló al agregarlo al servicio API: {{error}}",
+      "cancelAndDismiss": "Cancelar y descartar",
+      "bulkTagsLabel": "Etiquetas al importar",
+      "bulkTagsPlaceholder": "Opcional; separe con comas o espacios"
     },
     "autoRepairMode": {
       "label": "Lógica de autorreparación",
@@ -3350,7 +3576,88 @@
       "started": "Se inició la eliminación de {{count}} cuenta(s) Codex",
       "pollFailed": "No se pudo actualizar el progreso de eliminación: {{error}}",
       "actionFailed": "Falló la acción de eliminación por lote: {{error}}"
-    }
+    },
+    "filters": {
+      "allPlans": "Todos ({{count}})",
+      "visibleOfTotal": "{{visible}} / {{total}}",
+      "activeBanner": "Filtros: {{visible}}/{{total}} cuentas",
+      "clearAll": "Quitar filtros",
+      "chipGroup": "Grupo",
+      "chipTags": "Etiquetas",
+      "chipSearch": "Buscar",
+      "chipPlan": "Plan tarifario",
+      "chipFolder": "Carpeta",
+      "authError": "Auth fallida",
+      "zeroQuota": "Cuota 0%",
+      "expired": "Caducado"
+    },
+    "accessTokenImport": {
+      "nameRequired": "Introduce un nombre de cuenta",
+      "tokenRequired": "Introduce un access token de Codex",
+      "desc": "Guarda una cuenta por access token. Sin refresh/id se escribe personal_access_token.",
+      "nameLabel": "Nombre de cuenta",
+      "namePlaceholder": "Nombre en la lista",
+      "tokenLabel": "Access token de Codex",
+      "hideToken": "Ocultar",
+      "showToken": "Mostrar",
+      "submit": "Importar token",
+      "success": "Cuenta de access token importada: {{name}}"
+    },
+    "ssh": {
+      "tab": "Sync SSH",
+      "title": "Sync SSH de Codex",
+      "desc": "Guarda hosts, prueba la conexión y envía auth.json. Sincroniza al cambiar de cuenta si hay host seleccionado.",
+      "new": "Nuevo",
+      "empty": "Sin hosts SSH",
+      "test": "Probar",
+      "sync": "Sincronizar",
+      "saved": "Servidor SSH guardado",
+      "deleted": "Eliminado",
+      "name": "Nombre",
+      "host": "Host",
+      "user": "Usuario",
+      "port": "Puerto",
+      "remoteDir": "Directorio Codex remoto",
+      "syncSwitch": "SSH en el interruptor",
+      "syncSwitchDesc": "Actívelo para configurar un host SSH; Los interruptores Codex sincronizan la cuenta actual de forma remota.",
+      "configure": "Configuración",
+      "modalTitle": "Configuración de sincronización SSH",
+      "modalHint": "Agregue y seleccione un host SSH con sincronización automática habilitada para que los conmutadores de cuenta Codex actualicen la autenticación remota.",
+      "subtitle": "El host seleccionado recibe el paquete de autenticación actual del Codex después de cambiar de cuenta.",
+      "addServer": "Agregar servidor",
+      "editServer": "Editar servidor",
+      "username": "Nombre de usuario",
+      "codexHome": "Directorio remoto del Codex",
+      "authMethod": "método de autenticación",
+      "agentAuth": "Agente SSH",
+      "privateKeyAuth": "clave privada",
+      "privateKeyPath": "Ruta clave",
+      "syncOnSwitch": "Sincronización después del cambio",
+      "emptyTitle": "Sin servidores SSH",
+      "emptyBody": "Complete un host a la izquierda y guárdelo como destino de sincronización del interruptor.",
+      "selected": "Seleccionado",
+      "select": "Seleccionar",
+      "testConnection": "Prueba",
+      "syncNow": "Sincronizar ahora",
+      "connectionOk": "Conectado",
+      "syncVerified": "Sincronización SSH verificada",
+      "syncFailed": "Error de sincronización SSH",
+      "syncedAs": "Sincronizado {{email}} · {{time}}",
+      "neverSynced": "Aún no sincronizado",
+      "latestVerified": "Última sincronización SSH verificada",
+      "syncSwitchActive": "En · {{name}} ({{user}}@{{host}})",
+      "footerHint": "El interruptor se enciende después de guardar; Apáguelo en cualquier momento para detener la sincronización automática.",
+      "formLead": "Detalles del host remoto",
+      "namePlaceholder": "p.ej. InicioNAS",
+      "syncOnSwitchHint": "Después de guardar y seleccionar, los interruptores del Codex envían autenticación a este host",
+      "addAndSave": "Agregar y guardar",
+      "serverList": "Servidores",
+      "serverListLead": "Elige el objetivo de sincronización",
+      "serverCount": "{{count}} servidores",
+      "autoSyncBadge": "Automático"
+    },
+    "exportAuthFailed": "Exportar fallos",
+    "exportAuthFailedTitle": "Exportar todas las cuentas con fallo de auth"
   },
   "githubCopilot": {
     "title": "Gestión de cuentas de GitHub Copilot",
@@ -3566,8 +3873,8 @@
     "inputPercent": "Introduzca porcentaje",
     "inputCredits": "Introduzca créditos",
     "windsurf": {
-      "title": "Configuración de Windsurf",
-      "appPath": "Ruta de Windsurf"
+      "title": "Configuración de Devin",
+      "appPath": "Ruta de Devin"
     },
     "windsurfRefreshInterval": "Actualización automática de cuota",
     "kiro": {
@@ -3580,13 +3887,16 @@
       "appPath": "Ruta de Cursor"
     },
     "cursorRefreshInterval": "Actualización automática de cuota",
-    "gemini": {
-      "title": "Ajustes de Gemini Cli",
-      "appPath": "Ruta de Gemini Cli",
-      "syncWsl": "Sincronizar configuración de WSL",
-      "syncWslDesc": "Sobrescribir automáticamente la configuración de .gemini en WSL al cambiar de cuenta"
+    "grok": {
+      "title": "Ajustes de Grok CLI",
+      "appPath": "Ruta de Grok CLI",
+      "cliPath": "Ruta de CLI",
+      "cliDetected": "Detectado: {{version}} · {{path}}",
+      "cliMissing": "No se encontró Grok CLI. Indica una ruta.",
+      "syncOfficialAuthOnSwitch": "Sincronizar el inicio oficial",
+      "syncOfficialAuthOnSwitchDesc": "Al activarlo, cambiar la instancia predeterminada a una cuenta OAuth escribe el archivo oficial ~/.grok/auth.json. Al desactivarlo, se usa un GROK_HOME independiente. Las claves API y las instancias adicionales no sobrescriben el inicio oficial."
     },
-    "geminiRefreshInterval": "Actualización automática de cuota",
+    "grokRefreshInterval": "Actualización automática de cuota",
     "codebuddy": {
       "title": "Configuración de CodeBuddy",
       "appPath": "Ruta de CodeBuddy"
@@ -3668,21 +3978,21 @@
     }
   },
   "windsurf": {
-    "title": "Gestión de cuentas de Windsurf",
+    "title": "Gestión de cuentas de Devin",
     "instances": {
       "unsupported": {
-        "desc": "La multiinstancia de Windsurf está disponible solo en macOS."
+        "desc": "La multiinstancia de Devin está disponible solo en macOS."
       }
     },
     "empty": {
-      "description": "Haz clic en \"Agregar cuenta\" para empezar a gestionar tus cuentas de Windsurf"
+      "description": "Haz clic en \"Agregar cuenta\" para empezar a gestionar tus cuentas de Devin"
     },
     "addModal": {
-      "title": "Agregar cuenta de Windsurf",
+      "title": "Agregar cuenta de Devin",
       "password": "Acceso por correo"
     },
     "password": {
-      "desc": "Inicia sesión con el correo y la contraseña de tu cuenta Windsurf para obtener automáticamente la clave API y los datos de la cuenta.",
+      "desc": "Inicia sesión con el correo y la contraseña de tu cuenta Devin para obtener automáticamente la clave API y los datos de la cuenta.",
       "emailPlaceholder": "Correo electrónico",
       "passwordPlaceholder": "Contraseña",
       "empty": "Introduce el correo y la contraseña",
@@ -3729,14 +4039,14 @@
       "batchFailureMore": "{{count}} más fallaron"
     },
     "oauth": {
-      "desc": "Haz clic en el botón de abajo y completa la autorización de Windsurf en tu navegador."
+      "desc": "Haz clic en el botón de abajo y completa la autorización de Devin en tu navegador."
     },
     "token": {
-      "desc": "Pega tu token de acceso de Windsurf o los datos JSON exportados."
+      "desc": "Pega tu token de acceso de Devin o los datos JSON exportados."
     },
     "import": {
-      "localDesc": "Importa datos de cuentas de Windsurf desde un archivo JSON.",
-      "localClient": "Importar desde Windsurf local"
+      "localDesc": "Importa datos de cuentas de Devin desde un archivo JSON.",
+      "localClient": "Importar desde Devin local"
     },
     "credits": {
       "title": "Plan​",
@@ -3760,15 +4070,15 @@
       "autoRecharge": "Recarga automática",
       "remaining": "{{value}} restante"
     },
-    "injectToVSCode": "Cambiar a Windsurf",
-    "injectSuccess": "Cambio completado. Windsurf se está iniciando.",
-    "injectRequireClose": "Cierra Windsurf antes de cambiar.",
+    "injectToVSCode": "Cambiar a Devin",
+    "injectSuccess": "Cambio completado. Devin se está iniciando.",
+    "injectRequireClose": "Cierra Devin antes de cambiar.",
     "flowNotice": {
-      "title": "Guía de cuentas de Windsurf (clic para expandir/contraer)",
-      "desc": "Cambiar de cuenta requiere leer el almacenamiento local de autenticación de Windsurf y usar el servicio de credenciales del sistema para descifrar y reescribir; los datos se procesan solo en local.",
-      "inject": "Cambio con un clic: Esta herramienta lee el material de cifrado local de Windsurf (DPAPI/Keychain/Secret Service), descifra la sesión de autenticación en state.vscdb, reemplaza el token de Windsurf y vuelve a cifrarla; todo localmente en tu equipo.",
-      "reason": "Alcance de permisos: leer la base de autenticación de Windsurf (state.vscdb) y usar el cifrado del sistema (Windows DPAPI / macOS Keychain / Linux Secret Service) para descifrar y reescribir.",
-      "storage": "Alcance de lectura: solo se procesan datos relacionados con sesiones de inicio de Windsurf; todos los procesos se ejecutan localmente."
+      "title": "Guía de cuentas de Devin (clic para expandir/contraer)",
+      "desc": "Cambiar de cuenta requiere leer el almacenamiento local de autenticación de Devin y usar el servicio de credenciales del sistema para descifrar y reescribir; los datos se procesan solo en local.",
+      "inject": "Cambio con un clic: Esta herramienta lee el material de cifrado local de Devin (DPAPI/Keychain/Secret Service), descifra la sesión de autenticación en state.vscdb, reemplaza el token de Devin y vuelve a cifrarla; todo localmente en tu equipo.",
+      "reason": "Alcance de permisos: leer la base de autenticación de Devin (state.vscdb) y usar el cifrado del sistema (Windows DPAPI / macOS Keychain / Linux Secret Service) para descifrar y reescribir.",
+      "storage": "Alcance de lectura: solo se procesan datos relacionados con sesiones de inicio de Devin; todos los procesos se ejecutan localmente."
     }
   },
   "kiro": {
@@ -3817,10 +4127,21 @@
       "description": "Haga clic en \"Agregar cuenta\" para comenzar a administrar sus cuentas Kiro"
     },
     "addModal": {
-      "title": "Agregar cuenta Kiro"
+      "title": "Agregar cuenta Kiro",
+      "idc": "Inicio de sesión AWS"
     },
     "oauth": {
       "desc": "Haga clic en el botón a continuación y complete la autorización de Kiro en su navegador."
+    },
+    "idc": {
+      "builderId": "Cuenta AWS Builder ID",
+      "enterprise": "Cuenta empresarial",
+      "desc": "Completa la autorización de AWS IAM Identity Center en el navegador. La cuenta se guardará automáticamente.",
+      "region": "Región de AWS",
+      "startUrl": "URL de inicio de IAM Identity Center",
+      "start": "Iniciar sesión empresarial",
+      "regionRequired": "Introduce una región de AWS",
+      "startUrlRequired": "Introduce una URL de inicio de IAM Identity Center"
     },
     "token": {
       "desc": "Pegue su token de acceso Kiro o los datos JSON exportados."
@@ -3946,7 +4267,7 @@
       "goSettings": "Ir a ajustes",
       "goVerification": "Ir a verificación wakeup",
       "goWakeup": "Ir a tareas wakeup",
-      "goWindsurf": "Ir a Windsurf",
+      "goWindsurf": "Ir a Devin",
       "openLayout": "Abrir diseño de plataformas"
     },
     "antigravity": {
@@ -4063,11 +4384,11 @@
     "navTitle": "Manual de uso",
     "providers": {
       "cautions": {
-        "0": "Haz copia de seguridad antes de acciones riesgosas o masivas en Codex / GitHub Copilot / Windsurf / Kiro.",
-        "1": "Verifica filtros y objetivo antes de ejecutar en Codex / GitHub Copilot / Windsurf / Kiro."
+        "0": "Haz copia de seguridad antes de acciones riesgosas o masivas en Codex / GitHub Copilot / Devin / Kiro.",
+        "1": "Verifica filtros y objetivo antes de ejecutar en Codex / GitHub Copilot / Devin / Kiro."
       },
       "keywords": {
-        "0": "Plataformas Codex / GitHub Copilot / Windsurf / Kiro",
+        "0": "Plataformas Codex / GitHub Copilot / Devin / Kiro",
         "1": "guía",
         "2": "flujo",
         "3": "cuenta",
@@ -4075,17 +4396,17 @@
         "5": "diagnóstico"
       },
       "outcomes": {
-        "0": "Entiende qué puede resolver Codex / GitHub Copilot / Windsurf / Kiro.",
-        "1": "Usa el flujo recomendado en Codex / GitHub Copilot / Windsurf / Kiro para reducir errores.",
-        "2": "Valida una ejecución exitosa en Codex / GitHub Copilot / Windsurf / Kiro antes de escalar."
+        "0": "Entiende qué puede resolver Codex / GitHub Copilot / Devin / Kiro.",
+        "1": "Usa el flujo recomendado en Codex / GitHub Copilot / Devin / Kiro para reducir errores.",
+        "2": "Valida una ejecución exitosa en Codex / GitHub Copilot / Devin / Kiro antes de escalar."
       },
       "steps": {
-        "0": "Abre la página de Codex / GitHub Copilot / Windsurf / Kiro.",
-        "1": "Completa la configuración base y los enlaces requeridos en Codex / GitHub Copilot / Windsurf / Kiro.",
-        "2": "Ejecuta una operación manual en Codex / GitHub Copilot / Windsurf / Kiro para verificar el resultado."
+        "0": "Abre la página de Codex / GitHub Copilot / Devin / Kiro.",
+        "1": "Completa la configuración base y los enlaces requeridos en Codex / GitHub Copilot / Devin / Kiro.",
+        "2": "Ejecuta una operación manual en Codex / GitHub Copilot / Devin / Kiro para verificar el resultado."
       },
-      "summary": "Esta sección explica cómo usar Codex / GitHub Copilot / Windsurf / Kiro en el flujo diario.",
-      "title": "Plataformas Codex / GitHub Copilot / Windsurf / Kiro"
+      "summary": "Esta sección explica cómo usar Codex / GitHub Copilot / Devin / Kiro en el flujo diario.",
+      "title": "Plataformas Codex / GitHub Copilot / Devin / Kiro"
     },
     "quickStart": {
       "cautions": {
@@ -4166,99 +4487,6 @@
       },
       "summary": "Esta sección explica cómo usar Tareas wakeup y verificación en el flujo diario.",
       "title": "Tareas wakeup y verificación"
-    }
-  },
-  "gemini": {
-    "injectToGemini": "Cambiar a Gemini Cli",
-    "updated": {
-      "label": "Actualizado hace {{relative}}"
-    },
-    "quota": {
-      "pro": "PRO",
-      "flash": "FLASH",
-      "left": "{{value}}% restante",
-      "resetsIn": "Se restablece en {{relative}}",
-      "resetsSoon": "Se restablece pronto",
-      "resetsUnknown": "Hora de restablecimiento desconocida",
-      "onDemand": "Bajo demanda",
-      "gemini5h": "5h",
-      "geminiWeekly": "Weekly",
-      "claude5h": "5h",
-      "claudeWeekly": "Weekly"
-    },
-    "title": "Gestión de cuentas de Gemini Cli",
-    "instances": {
-      "unsupported": "La gestión de múltiples instancias de Gemini Cli aún no es compatible.",
-      "unsupportedDescPlatform": "La función de múltiples instancias de Gemini Cli solo es compatible con macOS, Windows y Linux.",
-      "launchDialogTitle": "Iniciar instancia",
-      "launchHint": "Copia el comando y ejecútalo manualmente, o ejecútalo directamente en la terminal.",
-      "runInTerminal": "Ejecutar en terminal",
-      "workingDir": "Directorio de trabajo",
-      "workingDirPlaceholder": "Predeterminado a la ruta actual",
-      "workingDirDesc": "Cambiará a este directorio primero al iniciar",
-      "pickWorkingDir": "Seleccionar directorio de trabajo"
-    },
-    "switch": {
-      "success": "Cuenta cambiada correctamente"
-    },
-    "empty": {
-      "description": "Haz clic en \"Añadir cuenta\" para comenzar a gestionar tus cuentas de Gemini Cli"
-    },
-    "addModal": {
-      "title": "Añadir cuenta de Gemini Cli"
-    },
-    "oauth": {
-      "desc": "Haz clic en el botón de abajo y completa la autorización de Gemini Cli en el navegador."
-    },
-    "token": {
-      "desc": "Pega tu token de acceso de Gemini Cli (JWT) o datos JSON exportados.",
-      "formatHint": "Campos obligatorios y ejemplos (clic para expandir)",
-      "formatRequired": "Token individual: pega el JWT directamente; importación masiva: usa formato de array JSON",
-      "singleExample": "Ejemplo individual (JWT)",
-      "batchExample": "Ejemplo masivo (JSON)"
-    },
-    "import": {
-      "localDesc": "Importar datos de cuenta desde el cliente local de Gemini Cli o un archivo JSON.",
-      "localClient": "Importar desde Gemini Cli local"
-    },
-    "flowNotice": {
-      "title": "Guía de cuenta de Gemini Cli (clic para expandir/contraer)",
-      "desc": "Gestiona cuentas de Gemini Cli importando desde la instalación local de Gemini Cli o pegando tokens JWT. Los datos se procesan solo localmente.",
-      "reason": "Alcance de permisos: leer y escribir oauth_creds.json, google_accounts.json y settings.json en ~/.gemini predeterminado o en la ruta de instancia (GEMINI_CLI_HOME/.gemini) para importar cuentas e inyectar credenciales locales (cambio de cuenta).",
-      "storage": "Alcance de red: OAuth y la actualización de cuota llaman a las API oficiales de Google/Gemini (como oauth2.googleapis.com y googleapis.com). Solo se envían campos necesarios de autenticación/cuota; los archivos locales no se suben a servidores de terceros."
-    },
-    "projectConfig": {
-      "button": "Configurar proyecto de GCP",
-      "title": "Configurar proyecto de GCP",
-      "selectLabel": "Seleccionar proyecto",
-      "loading": "Cargando lista de proyectos...",
-      "auto": "Selección automática (sin especificar manualmente)",
-      "empty": "No se encontraron proyectos disponibles. Asegúrate de que esta cuenta tenga acceso a proyectos de GCP.",
-      "hint": "Después de guardar, este proyecto tendrá prioridad para las solicitudes de cuota y se inyectará como GOOGLE_CLOUD_PROJECT al iniciar.",
-      "current": "Proyecto: {{projectId}}",
-      "saved": "Proyecto guardado: {{projectId}}",
-      "cleared": "Se volvió a la resolución automática del proyecto",
-      "savedWithRefreshError": "Proyecto guardado, pero falló la actualización de cuota: {{error}}"
-    },
-    "identity": {
-      "authMethod": "Método de autenticación",
-      "tier": "Plan",
-      "signedInWithGoogle": "Sesión iniciada con Google",
-      "signedInWithGoogleEmail": "Sesión iniciada con Google ({{email}})"
-    },
-    "quotaTable": {
-      "model": "Modelo",
-      "leftOfTotal": "Restante / Total",
-      "usage": "Usado",
-      "usageResets": "Reinicio de uso",
-      "usedPercent": "{{value}}%​",
-      "remainingOfTotal": "{{remaining}} / {{total}}​",
-      "resetAtWithRelative": "{{absolute}} ({{relative}})​"
-    },
-    "tierText": {
-      "pro": "Gemini Code Assist en Google One AI Pro",
-      "ultra": "Gemini Code Assist en Google AI Ultra",
-      "free": "Gemini Code Assist gratis"
     }
   },
   "codebuddy": {
@@ -4359,6 +4587,12 @@
     },
     "quota": {
       "usedOfTotal": "{{used}} / {{total}}​"
+    },
+    "sessions": {
+      "title": "Archivos de sesión locales",
+      "desc": "Archivos de sesión locales — Escaneo local y apertura de ubicación.",
+      "empty": "Sin archivos de sesión",
+      "open": "Abrir ubicación"
     }
   },
   "qoder": {
@@ -4440,7 +4674,18 @@
       "payAsYouGoConsuming": "Uso bajo demanda: consumiendose",
       "payAsYouGoEnabled": "Uso bajo demanda: activado",
       "payAsYouGoEmpty": "Uso bajo demanda: --",
-      "payAsYouGoLabel": "Uso bajo demanda"
+      "payAsYouGoLabel": "Uso bajo demanda",
+      "statusSynced": "Estado: sync",
+      "statusSyncedPending": "Estado: sync, resto pendiente",
+      "fastAvailable": "Rápido: {{times}}",
+      "fastTimes": "{{count}}",
+      "fastUnlimited": "Ilimitado",
+      "fastPerMonth": "Rápido/mes: {{count}}",
+      "fastChannelPerMonth": "Express: {{count}}/mes",
+      "fastChannelStatus": "Canal rápido: {{status}}",
+      "freeRemainingUnknown": "Free resto: --",
+      "timesRemainingUnknown": "Resto: --",
+      "soloParallel": "Pack: Solo ×{{count}}"
     },
     "flowNotice": {
       "title": "Guia de cuentas de Trae (haz clic para expandir o contraer)",
@@ -4452,6 +4697,10 @@
       "permissionWithPlatform": "Alcance de permisos: lee y escribe campos de inicio de sesión en storage.json local de {{platform}} para importar cuentas, inyectar cambios de cuenta y mostrar el plan. Todos los datos se procesan localmente.",
       "networkGlobal": "Alcance de red: el inicio OAuth, la actualización de tokens y las consultas de plan de {{platform}} llaman a APIs oficiales trae.ai / traeapi.us. No se suben archivos locales de cuenta ni contenido bruto a servicios de terceros.",
       "networkCn": "Alcance de red: el inicio OAuth, la actualización de tokens y las consultas de plan de {{platform}} llaman a APIs oficiales trae.cn / trae.com.cn. No se suben archivos locales de cuenta ni contenido bruto a servicios de terceros."
+    },
+    "token": {
+      "jsonOnlyDesc": "Pega el JSON completo de Trae CN. No se admiten tokens sin formato.",
+      "jsonOnlyPlaceholder": "JSON completo de Trae CN..."
     }
   },
   "codebuddyCn": {
@@ -4605,7 +4854,12 @@
       "streakDays": "{{days}} días",
       "streakRewardCountdown": "Faltan {{days}} días para la recompensa extra",
       "streakRewardToday": "¡Recompensa extra disponible hoy!",
-      "recentDates": "Reciente: "
+      "recentDates": "Reciente: ",
+      "claimed": "Reclamado",
+      "queryFailed": "Consulta fallida",
+      "retry": "Reintentar",
+      "inactive": "No disponible",
+      "inactiveHint": "El check-in no está activo en esta cuenta"
     }
   },
   "zcode": {
@@ -4644,7 +4898,7 @@
       "localDesc": "Importa credenciales locales cifradas de ZCode o un archivo JSON.",
       "localClient": "Importar desde ZCode local"
     },
-  "usageNormal": "Correcto",
+    "usageNormal": "Correcto",
     "usageAbnormal": "Error",
     "usageViewDetail": "Detalles",
     "usageDetailTitle": "Detalles de uso",
@@ -4768,6 +5022,7 @@
     "errors": {
       "refreshFailed": "Error al actualizar: {{error}}",
       "switchFailed": "Error al cambiar: {{error}}",
+      "stopInstanceBeforeSwitch": "Detén la instancia antes de cambiar de cuenta",
       "pinFailed": "No se pudo actualizar el estado de fijación: {{error}}",
       "closeFailed": "Error al cerrar: {{error}}"
     },
@@ -5031,6 +5286,87 @@
     "copyKey": "Copy Key​",
     "clearKey": "Clear input​"
   },
+  "grok": {
+    "search": "Buscar cuentas de Grok CLI...",
+    "flowNotice": {
+      "title": "Gestión de cuentas de Grok CLI",
+      "desc": "De forma predeterminada se usan GROK_HOME independientes. Con la sincronización activada, un cambio OAuth de la instancia predeterminada escribe en ~/.grok/auth.json; las instancias adicionales siguen aisladas.",
+      "permission": "Ámbito local: ~/.grok/auth.json puede leerse para importar y solo se escribe con la sincronización activada durante un cambio OAuth de la instancia predeterminada. Las claves API nunca sobrescriben el inicio oficial.",
+      "network": "Ámbito de red: autorización OAuth, renovación de credenciales y consulta de uso. Las credenciales no se suben a los servicios de Cockpit."
+    },
+    "empty": "Aún no hay cuentas de Grok CLI",
+    "addAccount": "Añadir cuenta de Grok CLI",
+    "oauth": {
+      "desc": "Abre la página de autorización de xAI e introduce el código del dispositivo. La cuenta se guardará automáticamente.",
+      "title": "OAuth de dispositivo de Grok",
+      "item1": "Usa el flujo de dispositivo oficial de Grok CLI sin ocupar un puerto de retorno local.",
+      "item2": "Guarda un GROK_HOME independiente tras autorizar y mantiene vigentes las credenciales.",
+      "item3": "Las cuentas permiten cambiar la CLI predeterminada o ejecutar instancias aisladas entre sí.",
+      "urlPlaceholder": "Dirección de autorización OAuth de Grok",
+      "waiting": "Esperando la autorización OAuth de Grok...",
+      "openWindow": "Abrir autorización",
+      "success": "Inicio de sesión OAuth de Grok completado"
+    },
+    "import": {
+      "pasteTab": "Pegar JSON",
+      "pasteDesc": "Pega el auth.json oficial de Grok CLI o un JSON completo exportado por esta app (reimportable). Las credenciales se tratan en local.",
+      "pastePlaceholder": "Pegar JSON de cuenta Grok",
+      "pasteAction": "Importar JSON",
+      "localDesc": "Importa desde ~/.grok/auth.json o elige un auth.json oficial / JSON de exportación completa de esta app.",
+      "localClient": "Importar desde Grok CLI local",
+      "apiKeyTab": "Clave API",
+      "apiKeyDesc": "Pega una API key de xAI (XAI_API_KEY / xai-… oficial). Se inyecta como variable de entorno al iniciar el CLI; no sobrescribe el inicio de sesión OAuth oficial.",
+      "apiKeyPlaceholder": "pegar xai-…",
+      "apiKeyAction": "Añadir API Key"
+    },
+    "instances": {
+      "unsupported": "Las instancias múltiples de Grok CLI solo están disponibles en macOS, Windows y Linux.",
+      "launchDialogTitle": "Iniciar instancia",
+      "launchHint": "Copia el comando para ejecutarlo manualmente o inícialo directamente en una terminal.",
+      "runInTerminal": "Ejecutar en terminal",
+      "cliReady": "Detectado",
+      "cliMissingShort": "No detectado",
+      "cliPathInvalid": "La ruta configurada de Grok CLI no es válida: {{path}}",
+      "saveAndRetry": "Guardar y reintentar",
+      "installCommand": "Comando oficial de instalación",
+      "installHint": "Ejecuta el siguiente comando oficial en la terminal y, cuando termine la instalación, pulsa Actualizar.",
+      "selectWorkingDir": "Seleccionar directorio de trabajo de Grok CLI",
+      "workingDirAccountHint": "El directorio de trabajo está vinculado a esta cuenta y se restaurará en el próximo inicio.",
+      "launchCommandPlaceholder": "Elige o confirma un directorio para generar el comando de inicio",
+      "reauthLaunchHint": "La autenticación de la cuenta expiró. Reautorizar; El siguiente comando de inicio todavía está disponible."
+    },
+    "switch": {
+      "success": "Cuenta cambiada"
+    },
+    "usageNormal": "Correcto",
+    "usageAbnormal": "Anómalo",
+    "usageViewDetail": "Ver detalles",
+    "usageDetailTitle": "Detalles de uso",
+    "usage": "Uso",
+    "quotaQuery": {
+      "failedRefreshCompact": "Error al consultar la cuota",
+      "empty": "No hay datos de cuota",
+      "sectionTitle": "Cuota"
+    },
+    "quota": {
+      "weekly": "Uso semanal",
+      "onDemand": "Uso bajo demanda",
+      "balance": "Saldo y créditos",
+      "included": "Uso incluido",
+      "promotional": "Cuota promocional",
+      "frequent": "Tareas frecuentes",
+      "occasional": "Tareas ocasionales",
+      "resetAt": "{{label}} se restablece: {{time}}",
+      "empty": "Sin cuota",
+      "apiKeyUnsupported": "Sin cuota de plan en cuentas API Key"
+    },
+    "quotaAlert": {
+      "hint": "Cuando cualquier elemento de cuota de la cuenta actual caiga por debajo del umbral, se enviará una notificación nativa y se mostrará un cambio rápido en la aplicación.",
+      "thresholdDesc": "Activar una alerta cuando cualquier elemento de cuota caiga por debajo de este porcentaje",
+      "items": "Elementos de cuota",
+      "unknownItem": "Elemento de cuota desconocido"
+    }
+  },
   "claude": {
     "import": {
       "localSuccess": "Se importaron {{count}} sesión(es) local(es) de Claude",
@@ -5280,5 +5616,23 @@
       "supports1mLabel": "Declarar 1M",
       "supports1mShort": "1M contexto"
     }
+  },
+  "openrouter": {
+    "title": "OpenRouter",
+    "desc": "Gestiona claves API de OpenRouter, uso y modelos.",
+    "tabKeys": "Claves y uso",
+    "tabModels": "Modelos",
+    "modelsLoaded": "{{count}} modelos cargados",
+    "noUsageYet": "Uso aún no actualizado",
+    "loadModels": "Cargar modelos",
+    "searchModels": "Buscar modelos",
+    "freeOnly": "Solo gratis",
+    "noModels": "Sin modelos — añade una clave y carga.",
+    "free": "Gratis",
+    "noCtx": "Sin longitud de contexto"
+  },
+  "opencode": {
+    "title": "OpenCode",
+    "desc": "Gestiona claves OpenCode Go/Zen y filtra por nivel."
   }
 }

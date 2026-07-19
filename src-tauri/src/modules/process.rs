@@ -592,6 +592,15 @@ fn score_windows_candidate(
     None
 }
 
+#[cfg(any(test, target_os = "windows"))]
+fn is_codex_embedded_backend_executable(path: &std::path::Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    normalized.contains("\\windowsapps\\") && normalized.ends_with("\\app\\resources\\codex.exe")
+}
+
 #[cfg(target_os = "windows")]
 fn parse_windows_exec_candidates(
     app_label: &str,
@@ -675,11 +684,7 @@ struct WindowsAppLaunchSignature {
 }
 
 #[cfg(target_os = "windows")]
-const WINDOWS_APP_SCAN_MAX_DEPTH: usize = 6;
-#[cfg(target_os = "windows")]
-const WINDOWS_APP_SCAN_DIR_LIMIT: usize = 5000;
-#[cfg(target_os = "windows")]
-const WINDOWS_APP_SCAN_CANDIDATE_LIMIT: usize = 80;
+const WINDOWS_RUNNING_APP_CANDIDATE_LIMIT: usize = 20;
 
 #[cfg(target_os = "windows")]
 fn windows_app_launch_signature(app: &str) -> Option<WindowsAppLaunchSignature> {
@@ -719,6 +724,15 @@ fn windows_app_launch_signature(app: &str) -> Option<WindowsAppLaunchSignature> 
             ],
             supports_multi_instance: true,
         }),
+        "claude" => Some(WindowsAppLaunchSignature {
+            label: "Claude Desktop",
+            exe_names: &["Claude.exe"],
+            command_names: &["claude"],
+            protocol_names: &["claude"],
+            display_keywords: &["claude", "anthropic claude"],
+            common_paths: &[r"Claude\Claude.exe", r"AnthropicClaude\Claude.exe"],
+            supports_multi_instance: true,
+        }),
         "vscode" => Some(WindowsAppLaunchSignature {
             label: "Visual Studio Code",
             exe_names: &["Code.exe", "Code - Insiders.exe"],
@@ -733,12 +747,18 @@ fn windows_app_launch_signature(app: &str) -> Option<WindowsAppLaunchSignature> 
             supports_multi_instance: true,
         }),
         "windsurf" => Some(WindowsAppLaunchSignature {
-            label: "Windsurf",
-            exe_names: &["Windsurf.exe", "Electron.exe"],
-            command_names: &["windsurf"],
-            protocol_names: &["windsurf"],
-            display_keywords: &["windsurf", "codeium"],
-            common_paths: &["Windsurf\\Windsurf.exe", "Windsurf\\Electron.exe"],
+            // Windsurf 已重命名为 Devin；保留旧路径关键字以兼容旧安装。
+            label: "Devin",
+            exe_names: &["Devin.exe", "Windsurf.exe", "Electron.exe"],
+            command_names: &["devin", "windsurf"],
+            protocol_names: &["devin", "windsurf"],
+            display_keywords: &["devin", "windsurf", "codeium", "exafunction"],
+            common_paths: &[
+                "Devin\\Devin.exe",
+                "Devin\\Electron.exe",
+                "Windsurf\\Windsurf.exe",
+                "Windsurf\\Electron.exe",
+            ],
             supports_multi_instance: true,
         }),
         "kiro" => Some(WindowsAppLaunchSignature {
@@ -885,7 +905,7 @@ fn push_app_launch_candidate(
     signature: WindowsAppLaunchSignature,
     source: &str,
 ) {
-    if candidates.len() >= WINDOWS_APP_SCAN_CANDIDATE_LIMIT || !path.is_file() {
+    if candidates.len() >= WINDOWS_RUNNING_APP_CANDIDATE_LIMIT || !path.is_file() {
         return;
     }
 
@@ -931,46 +951,28 @@ fn push_app_launch_candidate(
 }
 
 #[cfg(target_os = "windows")]
-fn windows_common_install_roots() -> Vec<std::path::PathBuf> {
+fn windows_fixed_drive_roots() -> Vec<std::path::PathBuf> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+
+    const DRIVE_FIXED: u32 = 3;
+
+    let drive_mask = unsafe { GetLogicalDrives() };
     let mut roots = Vec::new();
-    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-        roots.push(std::path::PathBuf::from(local_appdata).join("Programs"));
-    }
-    if let Ok(user_profile) = std::env::var("USERPROFILE") {
-        roots.push(
-            std::path::PathBuf::from(user_profile)
-                .join("AppData")
-                .join("Local")
-                .join("Programs"),
-        );
-    }
-    if let Ok(program_files) = std::env::var("PROGRAMFILES") {
-        roots.push(std::path::PathBuf::from(program_files));
-    }
-    if let Ok(program_files_x86) = std::env::var("PROGRAMFILES(X86)") {
-        roots.push(std::path::PathBuf::from(program_files_x86));
-    }
-
-    let mut seen = HashSet::new();
-    roots
-        .into_iter()
-        .filter(|root| root.is_dir())
-        .filter(|root| seen.insert(root.to_string_lossy().to_lowercase()))
-        .collect()
-}
-
-#[cfg(target_os = "windows")]
-fn collect_common_windows_app_launch_candidates(
-    candidates: &mut Vec<AppLaunchCandidate>,
-    seen: &mut HashSet<String>,
-    signature: WindowsAppLaunchSignature,
-) {
-    for root in windows_common_install_roots() {
-        for relative in signature.common_paths {
-            let candidate = root.join(relative);
-            push_app_launch_candidate(candidates, seen, &candidate, signature, "common_path");
+    for index in 0..26u32 {
+        if drive_mask & (1 << index) == 0 {
+            continue;
+        }
+        let drive = format!("{}:\\", (b'A' + index as u8) as char);
+        let wide = drive
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        if unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) } == DRIVE_FIXED {
+            roots.push(std::path::PathBuf::from(drive));
         }
     }
+    roots
 }
 
 #[cfg(target_os = "windows")]
@@ -988,11 +990,7 @@ fn normalize_windows_scan_root(raw: &str) -> Option<std::path::PathBuf> {
         value.push('\\');
     }
     let path = std::path::PathBuf::from(value);
-    if path.is_dir() {
-        Some(path)
-    } else {
-        None
-    }
+    path.is_dir().then_some(path)
 }
 
 #[cfg(target_os = "windows")]
@@ -1008,9 +1006,8 @@ fn parse_windows_scan_roots(scan_roots: Option<&str>) -> Vec<std::path::PathBuf>
         return roots;
     }
 
-    ('C'..='Z')
-        .map(|drive| std::path::PathBuf::from(format!("{}:\\", drive)))
-        .filter(|root| root.is_dir())
+    windows_fixed_drive_roots()
+        .into_iter()
         .filter(|root| seen.insert(root.to_string_lossy().to_lowercase()))
         .collect()
 }
@@ -1035,8 +1032,7 @@ fn expand_windows_scan_roots(roots: Vec<std::path::PathBuf>) -> Vec<std::path::P
             let users_dir = root.join("Users");
             if let Ok(entries) = std::fs::read_dir(users_dir) {
                 for entry in entries.flatten() {
-                    let user_programs = entry.path().join("AppData").join("Local").join("Programs");
-                    expanded.push(user_programs);
+                    expanded.push(entry.path().join("AppData").join("Local").join("Programs"));
                 }
             }
         } else {
@@ -1050,76 +1046,6 @@ fn expand_windows_scan_roots(roots: Vec<std::path::PathBuf>) -> Vec<std::path::P
         .filter(|root| root.is_dir())
         .filter(|root| seen.insert(root.to_string_lossy().to_lowercase()))
         .collect()
-}
-
-#[cfg(target_os = "windows")]
-fn should_skip_windows_scan_dir(path: &std::path::Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    matches!(
-        name.as_str(),
-        "$recycle.bin"
-            | ".git"
-            | "node_modules"
-            | "system volume information"
-            | "windows"
-            | "winsxs"
-    )
-}
-
-#[cfg(target_os = "windows")]
-fn scan_windows_app_launch_candidates_under_root(
-    root: &std::path::Path,
-    candidates: &mut Vec<AppLaunchCandidate>,
-    seen: &mut HashSet<String>,
-    signature: WindowsAppLaunchSignature,
-    trae_platform: Option<crate::modules::trae_account::TraePlatformKind>,
-) {
-    if candidates.len() >= WINDOWS_APP_SCAN_CANDIDATE_LIMIT || !root.is_dir() {
-        return;
-    }
-
-    let mut stack = vec![(root.to_path_buf(), 0usize)];
-    let mut visited_dirs = 0usize;
-    while let Some((dir, depth)) = stack.pop() {
-        if candidates.len() >= WINDOWS_APP_SCAN_CANDIDATE_LIMIT
-            || visited_dirs >= WINDOWS_APP_SCAN_DIR_LIMIT
-        {
-            break;
-        }
-        visited_dirs += 1;
-
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(value) => value,
-            Err(_) => continue,
-        };
-        for entry in entries.flatten() {
-            if candidates.len() >= WINDOWS_APP_SCAN_CANDIDATE_LIMIT {
-                break;
-            }
-            let file_type = match entry.file_type() {
-                Ok(value) => value,
-                Err(_) => continue,
-            };
-            let path = entry.path();
-            if file_type.is_file() {
-                if let Some(platform) = trae_platform {
-                    if !windows_trae_candidate_matches_platform(&path, platform) {
-                        continue;
-                    }
-                }
-                push_app_launch_candidate(candidates, seen, &path, signature, "scan_root");
-            } else if file_type.is_dir()
-                && depth < WINDOWS_APP_SCAN_MAX_DEPTH
-                && !should_skip_windows_scan_dir(&path)
-            {
-                stack.push((path, depth + 1));
-            }
-        }
-    }
 }
 
 #[cfg(target_os = "windows")]
@@ -1145,117 +1071,79 @@ fn windows_trae_candidate_matches_platform(
 }
 
 #[cfg(target_os = "windows")]
-fn collect_registered_windows_trae_launch_candidates(
-    candidates: &mut Vec<AppLaunchCandidate>,
-    seen: &mut HashSet<String>,
+fn running_app_candidate_matches(
+    app: &str,
+    path: &std::path::Path,
     signature: WindowsAppLaunchSignature,
-    platform: crate::modules::trae_account::TraePlatformKind,
-) {
-    for base_path in crate::modules::trae_account::windows_trae_install_base_paths(platform) {
-        if base_path.is_file() {
-            if windows_trae_candidate_matches_platform(&base_path, platform) {
-                push_app_launch_candidate(
-                    candidates,
-                    seen,
-                    &base_path,
-                    signature,
-                    "windows_trae_uninstall_registry",
-                );
-            }
-            continue;
-        }
-        if !base_path.is_dir() {
-            continue;
-        }
-        for exe_name in signature.exe_names {
-            let candidate = base_path.join(exe_name);
-            if windows_trae_candidate_matches_platform(&candidate, platform) {
-                push_app_launch_candidate(
-                    candidates,
-                    seen,
-                    &candidate,
-                    signature,
-                    "windows_trae_uninstall_registry",
-                );
-            }
+) -> bool {
+    if app == "codex" && is_codex_embedded_backend_executable(path) {
+        return false;
+    }
+
+    #[cfg(target_os = "windows")]
+    if let Some(platform) = windows_trae_platform_for_app(app) {
+        if !windows_trae_candidate_matches_platform(path, platform) {
+            return false;
         }
     }
+
+    let exe_names_lower = signature
+        .exe_names
+        .iter()
+        .map(|value| value.to_lowercase())
+        .collect();
+    let keywords_lower = signature
+        .display_keywords
+        .iter()
+        .map(|value| value.trim().to_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<String>>();
+    score_windows_candidate(path, &exe_names_lower, &keywords_lower).is_some()
 }
 
 #[cfg(target_os = "windows")]
 fn scan_windows_app_launch_targets(
     app: &str,
-    scan_roots: Option<&str>,
+    _scan_roots: Option<&str>,
 ) -> Result<Vec<AppLaunchCandidate>, String> {
+    let started_at = Instant::now();
     let Some(signature) = windows_app_launch_signature(app) else {
         return Err("未知应用类型".to_string());
     };
 
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
-    let trae_platform = windows_trae_platform_for_app(app);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        sysinfo::ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
 
-    if let Some(platform) = trae_platform {
-        collect_registered_windows_trae_launch_candidates(
+    for process in system.processes().values() {
+        let path = process
+            .exe()
+            .map(std::path::PathBuf::from)
+            .or_else(|| process.cmd().first().map(std::path::PathBuf::from));
+        let Some(path) = path else {
+            continue;
+        };
+        if !running_app_candidate_matches(app, &path, signature) {
+            continue;
+        }
+        push_app_launch_candidate(
             &mut candidates,
             &mut seen,
+            &path,
             signature,
-            platform,
-        );
-    } else {
-        if app == "codex" {
-            if let Some(path) = detect_codex_exec_path_by_windowsapps_scan() {
-                push_app_launch_candidate(
-                    &mut candidates,
-                    &mut seen,
-                    &path,
-                    signature,
-                    "windows_apps",
-                );
-            }
-            if let Some(path) = detect_codex_exec_path_by_appx_install_location() {
-                push_app_launch_candidate(
-                    &mut candidates,
-                    &mut seen,
-                    &path,
-                    signature,
-                    "windows_appx",
-                );
-            }
-        }
-
-        if let Some(path) = detect_windows_exec_path_by_signatures(
-            signature.label,
-            signature.exe_names,
-            signature.command_names,
-            signature.protocol_names,
-            signature.display_keywords,
-        ) {
-            push_app_launch_candidate(
-                &mut candidates,
-                &mut seen,
-                &path,
-                signature,
-                "windows_registry_shortcut_command",
-            );
-        }
-    }
-
-    collect_common_windows_app_launch_candidates(&mut candidates, &mut seen, signature);
-
-    let scan_roots = expand_windows_scan_roots(parse_windows_scan_roots(scan_roots));
-    for root in scan_roots {
-        scan_windows_app_launch_candidates_under_root(
-            &root,
-            &mut candidates,
-            &mut seen,
-            signature,
-            trae_platform,
+            "running_process",
         );
     }
 
-    if app == "codex" {
-        candidates.sort_by_key(|candidate| {
+    candidates.sort_by_key(|candidate| {
+        let codex_priority = if app == "codex" {
             let file_name = std::path::Path::new(&candidate.target)
                 .file_name()
                 .and_then(|value| value.to_str())
@@ -1265,8 +1153,17 @@ fn scan_windows_app_launch_targets(
             } else {
                 1
             }
-        });
-    }
+        } else {
+            0
+        };
+        (codex_priority, candidate.target.to_ascii_lowercase())
+    });
+    crate::modules::logger::log_info(&format!(
+        "[Path Detect] running app probe: app={}, candidates={}, elapsed={}ms",
+        app,
+        candidates.len(),
+        started_at.elapsed().as_millis()
+    ));
 
     Ok(candidates)
 }
@@ -1581,16 +1478,18 @@ exit 0
 "#
     );
 
-    let output = match powershell_output(&["-Command", &script]) {
-        Ok(value) => value,
-        Err(err) => {
-            crate::modules::logger::log_warn(&format!(
-                "[Path Detect] {} PowerShell detect failed: {}",
-                app_label, err
-            ));
-            return None;
-        }
-    };
+    let output =
+        match powershell_output_with_timeout(&["-Command", &script], WINDOWS_PROCESS_PROBE_TIMEOUT)
+        {
+            Ok(value) => value,
+            Err(err) => {
+                crate::modules::logger::log_warn(&format!(
+                    "[Path Detect] {} PowerShell detect failed: {}",
+                    app_label, err
+                ));
+                return None;
+            }
+        };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1756,12 +1655,39 @@ fn spawn_detached_unix(cmd: &mut Command) -> Result<Child, String> {
     spawn_command_with_trace(cmd).map_err(|e| format!("启动失败: {}", e))
 }
 
-fn normalize_custom_path(value: Option<&str>) -> Option<String> {
-    let trimmed = value.unwrap_or("").trim();
+/// Strip Windows extended-length path prefixes (`\\?\` / `\\?\UNC\`) for user-facing paths.
+///
+/// These prefixes are a Win32 technical form (long path / verbatim path). They should not be
+/// shown in settings UI or stored as the primary user-facing app path.
+pub fn normalize_windows_user_facing_path(raw: &str) -> String {
+    let trimmed = raw.trim().trim_matches('"');
     if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with(r"\\?\unc\") {
+        let rest: String = trimmed
+            .chars()
+            .skip(r"\\?\UNC\".chars().count())
+            .collect();
+        format!(r"\\{rest}")
+    } else if lower.starts_with(r"\\?\") {
+        trimmed
+            .chars()
+            .skip(r"\\?\".chars().count())
+            .collect()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_custom_path(value: Option<&str>) -> Option<String> {
+    let normalized = normalize_windows_user_facing_path(value.unwrap_or(""));
+    if normalized.is_empty() {
         None
     } else {
-        Some(trimmed.to_string())
+        Some(normalized)
     }
 }
 
@@ -1808,120 +1734,82 @@ fn resolve_macos_exec_path(path_str: &str, _binary_name: &str) -> Option<std::pa
     }
 }
 
-fn update_app_path_in_config(app: &str, path: &Path) {
-    let mut current = config::get_user_config();
+fn app_path_matches_snapshot(current: &str, expected: &str) -> bool {
+    current.trim() == expected.trim()
+}
+
+fn update_app_path_in_config(app: &str, path: &Path, expected_current: &str) {
     let normalized = {
         #[cfg(target_os = "macos")]
         {
-            normalize_macos_app_root(path).unwrap_or_else(|| path.to_string_lossy().to_string())
+            normalize_macos_app_root(path).unwrap_or_else(|| {
+                normalize_windows_user_facing_path(&path.to_string_lossy())
+            })
         }
         #[cfg(not(target_os = "macos"))]
         {
-            path.to_string_lossy().to_string()
+            normalize_windows_user_facing_path(&path.to_string_lossy())
         }
     };
-    match app {
-        "antigravity" => {
-            if current.antigravity_app_path != normalized {
-                current.antigravity_app_path = normalized;
-            } else {
-                return;
-            }
+    let _ = config::patch_user_config(|current| {
+        let configured_path = match app {
+            "antigravity" => &mut current.antigravity_app_path,
+            "codex" => &mut current.codex_app_path,
+            "zed" => &mut current.zed_app_path,
+            "vscode" => &mut current.vscode_app_path,
+            "opencode" => &mut current.opencode_app_path,
+            "codebuddy" => &mut current.codebuddy_app_path,
+            "codebuddy_cn" => &mut current.codebuddy_cn_app_path,
+            "qoder" => &mut current.qoder_app_path,
+            "zcode" => &mut current.zcode_app_path,
+            "trae" => &mut current.trae_app_path,
+            "trae_solo" => &mut current.trae_solo_app_path,
+            "trae_cn" => &mut current.trae_cn_app_path,
+            "trae_solo_cn" => &mut current.trae_solo_cn_app_path,
+            "workbuddy" => &mut current.workbuddy_app_path,
+            _ => return Ok(()),
+        };
+        if app_path_matches_snapshot(configured_path, expected_current)
+            && *configured_path != normalized
+        {
+            *configured_path = normalized;
         }
-        "codex" => {
-            if current.codex_app_path != normalized {
-                current.codex_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "zed" => {
-            if current.zed_app_path != normalized {
-                current.zed_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "vscode" => {
-            if current.vscode_app_path != normalized {
-                current.vscode_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "opencode" => {
-            if current.opencode_app_path != normalized {
-                current.opencode_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "codebuddy" => {
-            if current.codebuddy_app_path != normalized {
-                current.codebuddy_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "codebuddy_cn" => {
-            if current.codebuddy_cn_app_path != normalized {
-                current.codebuddy_cn_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "qoder" => {
-            if current.qoder_app_path != normalized {
-                current.qoder_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "zcode" => {
-            if current.zcode_app_path != normalized {
-                current.zcode_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "trae" => {
-            if current.trae_app_path != normalized {
-                current.trae_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "trae_solo" => {
-            if current.trae_solo_app_path != normalized {
-                current.trae_solo_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "trae_cn" => {
-            if current.trae_cn_app_path != normalized {
-                current.trae_cn_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "trae_solo_cn" => {
-            if current.trae_solo_cn_app_path != normalized {
-                current.trae_solo_cn_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        "workbuddy" => {
-            if current.workbuddy_app_path != normalized {
-                current.workbuddy_app_path = normalized;
-            } else {
-                return;
-            }
-        }
-        _ => return,
+        Ok(())
+    });
+}
+
+#[cfg(test)]
+mod app_path_config_guard_tests {
+    use super::{app_path_matches_snapshot, normalize_windows_user_facing_path};
+
+    #[test]
+    fn detected_path_only_replaces_the_snapshot_it_was_detected_for() {
+        assert!(app_path_matches_snapshot("", ""));
+        assert!(app_path_matches_snapshot(" /old/path ", "/old/path"));
+        assert!(!app_path_matches_snapshot("/manual/path", ""));
+        assert!(!app_path_matches_snapshot("/new/path", "/old/path"));
     }
-    let _ = config::save_user_config(&current);
+
+    #[test]
+    fn strips_windows_extended_path_prefix_for_user_facing_paths() {
+        assert_eq!(
+            normalize_windows_user_facing_path(r"\\?\C:\Program Files\WindowsApps\ChatGPT.exe"),
+            r"C:\Program Files\WindowsApps\ChatGPT.exe"
+        );
+        assert_eq!(
+            normalize_windows_user_facing_path(r"\\?\UNC\server\share\app.exe"),
+            r"\\server\share\app.exe"
+        );
+        assert_eq!(
+            normalize_windows_user_facing_path(r"C:\Apps\Codex\ChatGPT.exe"),
+            r"C:\Apps\Codex\ChatGPT.exe"
+        );
+        assert_eq!(
+            normalize_windows_user_facing_path(r#"  "\\?\D:\Codex\ChatGPT.exe"  "#),
+            r"D:\Codex\ChatGPT.exe"
+        );
+        assert_eq!(normalize_windows_user_facing_path("   "), "");
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1974,9 +1862,22 @@ fn spawn_open_app_with_options(
     args: &[String],
     force_new_instance: bool,
 ) -> Result<u32, String> {
+    spawn_open_app_with_options_and_env(app_root, args, force_new_instance, &[])
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_open_app_with_options_and_env(
+    app_root: &str,
+    args: &[String],
+    force_new_instance: bool,
+    env_pairs: &[(&str, &str)],
+) -> Result<u32, String> {
     let mut cmd = Command::new("open");
     sanitize_macos_gui_launch_env(&mut cmd);
     append_managed_proxy_env_to_open_args(&mut cmd);
+    for (key, value) in env_pairs {
+        cmd.arg("--env").arg(format!("{}={}", key, value));
+    }
     if force_new_instance {
         cmd.arg("-n");
     }
@@ -3370,14 +3271,14 @@ fn find_codex_windows_app_main_exe(app_dir: &std::path::Path) -> Option<std::pat
 fn detect_codex_exec_path_by_windowsapps_scan() -> Option<std::path::PathBuf> {
     let mut best: Option<(u8, Vec<u32>, std::path::PathBuf)> = None;
 
-    for drive in b'A'..=b'Z' {
-        let drive_letter = drive as char;
+    for drive_root in windows_fixed_drive_roots() {
+        let drive_letter = drive_root.to_string_lossy().chars().next().unwrap_or('C');
         let windows_apps_root = if drive_letter == 'C' {
-            format!(r"{}:\Program Files\WindowsApps", drive_letter)
+            drive_root.join("Program Files").join("WindowsApps")
         } else {
-            format!(r"{}:\WindowsApps", drive_letter)
+            drive_root.join("WindowsApps")
         };
-        let root_path = std::path::PathBuf::from(&windows_apps_root);
+        let root_path = windows_apps_root;
         if !root_path.exists() {
             continue;
         }
@@ -3454,7 +3355,9 @@ if ($pkg -and -not [string]::IsNullOrWhiteSpace($pkg.InstallLocation)) {
   Write-Output ([string]$pkg.InstallLocation.Trim())
 }"#;
 
-    let output = powershell_output(&["-Command", script]).ok()?;
+    let output =
+        powershell_output_with_timeout(&["-Command", script], WINDOWS_PROCESS_PROBE_TIMEOUT)
+            .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -3700,6 +3603,15 @@ Start-Process -FilePath $exe{argument_list} -ErrorAction Stop | Out-Null"#,
     Ok(())
 }
 
+const CODEX_MANAGED_STORE_LAUNCH_UNSAFE_PREFIX: &str = "CODEX_MANAGED_STORE_LAUNCH_UNSAFE:";
+
+fn codex_managed_store_launch_unsafe_error(direct_error: &str, powershell_error: &str) -> String {
+    format!(
+        "{}direct_error={}; powershell_error={}",
+        CODEX_MANAGED_STORE_LAUNCH_UNSAFE_PREFIX, direct_error, powershell_error
+    )
+}
+
 pub(crate) fn detect_codex_exec_path() -> Option<std::path::PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -3730,8 +3642,9 @@ pub(crate) fn detect_codex_exec_path() -> Option<std::path::PathBuf> {
 }
 
 fn detect_and_save_codex_launch_path() -> Option<std::path::PathBuf> {
+    let expected_current = config::get_user_config().codex_app_path;
     let detected = detect_codex_exec_path()?;
-    update_app_path_in_config("codex", &detected);
+    update_app_path_in_config("codex", &detected, &expected_current);
     Some(detected)
 }
 
@@ -3749,16 +3662,54 @@ fn is_legacy_codex_store_launch_path(path: &Path) -> bool {
 }
 
 #[cfg(any(test, target_os = "windows"))]
-fn is_chatgpt_launch_path(path: &Path) -> bool {
+fn is_chatgpt_windows_launch_path(path: &Path) -> bool {
     normalized_windows_path_text(path).ends_with("\\chatgpt.exe")
 }
 
-#[cfg(any(test, target_os = "windows"))]
-fn should_migrate_legacy_codex_launch_path(current: &Path, detected: &Path) -> bool {
-    is_legacy_codex_store_launch_path(current) && is_chatgpt_launch_path(detected)
+#[cfg(any(test, target_os = "macos"))]
+fn normalized_macos_codex_path_text(path: &Path) -> String {
+    path.to_string_lossy()
+        .trim()
+        .trim_end_matches('/')
+        .to_ascii_lowercase()
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "macos"))]
+fn is_official_legacy_codex_macos_path(path: &Path) -> bool {
+    matches!(
+        normalized_macos_codex_path_text(path).as_str(),
+        "/applications/codex.app" | "/applications/codex.app/contents/macos/codex"
+    )
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn is_official_chatgpt_macos_path(path: &Path) -> bool {
+    matches!(
+        normalized_macos_codex_path_text(path).as_str(),
+        "/applications/chatgpt.app" | "/applications/chatgpt.app/contents/macos/chatgpt"
+    )
+}
+
+#[cfg(any(test, target_os = "macos", target_os = "windows"))]
+fn should_migrate_legacy_codex_launch_path(current: &Path, detected: &Path) -> bool {
+    let mut should_migrate = false;
+
+    #[cfg(any(test, target_os = "windows"))]
+    {
+        should_migrate |=
+            is_legacy_codex_store_launch_path(current) && is_chatgpt_windows_launch_path(detected);
+    }
+
+    #[cfg(any(test, target_os = "macos"))]
+    {
+        should_migrate |= is_official_legacy_codex_macos_path(current)
+            && is_official_chatgpt_macos_path(detected);
+    }
+
+    should_migrate
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn migrate_legacy_codex_launch_path(custom_path: &str) -> Option<std::path::PathBuf> {
     let current_path = std::path::PathBuf::from(custom_path);
     let detected = detect_codex_exec_path()?;
@@ -3766,7 +3717,7 @@ fn migrate_legacy_codex_launch_path(custom_path: &str) -> Option<std::path::Path
         return None;
     }
 
-    update_app_path_in_config("codex", &detected);
+    update_app_path_in_config("codex", &detected, custom_path);
     crate::modules::logger::log_info(&format!(
         "[Path Detect] migrated legacy Codex launch path to ChatGPT: old={} new={}",
         current_path.to_string_lossy(),
@@ -3833,13 +3784,12 @@ fn detect_opencode_exec_path() -> Option<std::path::PathBuf> {
 }
 
 fn resolve_antigravity_launch_path() -> Result<std::path::PathBuf, String> {
-    if let Some(custom) =
-        normalize_custom_path(Some(&config::get_user_config().antigravity_app_path))
-    {
+    let configured_path = config::get_user_config().antigravity_app_path;
+    if let Some(custom) = normalize_custom_path(Some(&configured_path)) {
         #[cfg(target_os = "macos")]
         if is_legacy_antigravity_macos_path(&custom) {
             if let Some(detected) = detect_antigravity_exec_path() {
-                update_app_path_in_config("antigravity", &detected);
+                update_app_path_in_config("antigravity", &detected, &configured_path);
                 return Ok(detected);
             }
         }
@@ -3859,14 +3809,14 @@ fn resolve_antigravity_launch_path() -> Result<std::path::PathBuf, String> {
         }
 
         if let Some(detected) = detect_antigravity_exec_path() {
-            update_app_path_in_config("antigravity", &detected);
+            update_app_path_in_config("antigravity", &detected, &configured_path);
             return Ok(detected);
         }
         return Err(app_path_missing_error("antigravity"));
     }
 
     if let Some(detected) = detect_antigravity_exec_path() {
-        update_app_path_in_config("antigravity", &detected);
+        update_app_path_in_config("antigravity", &detected, &configured_path);
         return Ok(detected);
     }
 
@@ -4077,7 +4027,7 @@ pub fn resolve_zcode_launch_path() -> Result<std::path::PathBuf, String> {
     }
 
     if let Some(detected) = detect_zcode_exec_path() {
-        update_app_path_in_config("zcode", &detected);
+        update_app_path_in_config("zcode", &detected, "");
         let detected = detected.to_string_lossy();
         if let Some(exec) = resolve_macos_exec_path(&detected, "ZCode") {
             return Ok(exec);
@@ -4218,6 +4168,9 @@ fn resolve_workbuddy_launch_path() -> Result<std::path::PathBuf, String> {
 #[cfg(target_os = "macos")]
 fn resolve_codex_launch_path() -> Result<std::path::PathBuf, String> {
     if let Some(custom) = normalize_custom_path(Some(&config::get_user_config().codex_app_path)) {
+        if let Some(migrated) = migrate_legacy_codex_launch_path(&custom) {
+            return Ok(migrated);
+        }
         if let Some(exec) = resolve_codex_macos_exec_path(&custom) {
             return Ok(exec);
         }
@@ -4261,6 +4214,10 @@ fn resolve_codex_launch_path() -> Result<std::path::PathBuf, String> {
 }
 
 pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
+    detect_and_save_app_path_raw(app, force).map(|path| normalize_windows_user_facing_path(&path))
+}
+
+fn detect_and_save_app_path_raw(app: &str, force: bool) -> Option<String> {
     let current = config::get_user_config();
     match app {
         "antigravity" | "antigravity_ide" => {
@@ -4268,7 +4225,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.antigravity_app_path);
             }
             if let Some(detected) = detect_antigravity_exec_path() {
-                update_app_path_in_config("antigravity", &detected);
+                update_app_path_in_config("antigravity", &detected, &current.antigravity_app_path);
                 return Some(config::get_user_config().antigravity_app_path);
             }
         }
@@ -4277,16 +4234,20 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.antigravity_app_path);
             }
             if let Some(detected) = detect_antigravity_legacy_exec_path() {
-                update_app_path_in_config("antigravity", &detected);
+                update_app_path_in_config("antigravity", &detected, &current.antigravity_app_path);
                 return Some(config::get_user_config().antigravity_app_path);
             }
         }
         "codex" => {
             if !force && !current.codex_app_path.trim().is_empty() {
+                #[cfg(any(target_os = "macos", target_os = "windows"))]
+                if migrate_legacy_codex_launch_path(&current.codex_app_path).is_some() {
+                    return Some(config::get_user_config().codex_app_path);
+                }
                 return Some(current.codex_app_path);
             }
             if let Some(detected) = detect_codex_exec_path() {
-                update_app_path_in_config("codex", &detected);
+                update_app_path_in_config("codex", &detected, &current.codex_app_path);
                 return Some(config::get_user_config().codex_app_path);
             }
         }
@@ -4295,7 +4256,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.zed_app_path);
             }
             if let Some(detected) = detect_zed_exec_path() {
-                update_app_path_in_config("zed", &detected);
+                update_app_path_in_config("zed", &detected, &current.zed_app_path);
                 return Some(config::get_user_config().zed_app_path);
             }
         }
@@ -4304,7 +4265,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.vscode_app_path);
             }
             if let Some(detected) = detect_vscode_exec_path() {
-                update_app_path_in_config("vscode", &detected);
+                update_app_path_in_config("vscode", &detected, &current.vscode_app_path);
                 return Some(config::get_user_config().vscode_app_path);
             }
         }
@@ -4313,7 +4274,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.codebuddy_app_path);
             }
             if let Some(detected) = detect_codebuddy_exec_path() {
-                update_app_path_in_config("codebuddy", &detected);
+                update_app_path_in_config("codebuddy", &detected, &current.codebuddy_app_path);
                 return Some(config::get_user_config().codebuddy_app_path);
             }
         }
@@ -4322,7 +4283,11 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.codebuddy_cn_app_path);
             }
             if let Some(detected) = detect_codebuddy_cn_exec_path() {
-                update_app_path_in_config("codebuddy_cn", &detected);
+                update_app_path_in_config(
+                    "codebuddy_cn",
+                    &detected,
+                    &current.codebuddy_cn_app_path,
+                );
                 return Some(config::get_user_config().codebuddy_cn_app_path);
             }
         }
@@ -4331,7 +4296,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.qoder_app_path);
             }
             if let Some(detected) = detect_qoder_exec_path() {
-                update_app_path_in_config("qoder", &detected);
+                update_app_path_in_config("qoder", &detected, &current.qoder_app_path);
                 return Some(config::get_user_config().qoder_app_path);
             }
         }
@@ -4340,7 +4305,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.zcode_app_path);
             }
             if let Some(detected) = detect_zcode_exec_path() {
-                update_app_path_in_config("zcode", &detected);
+                update_app_path_in_config("zcode", &detected, &current.zcode_app_path);
                 return Some(config::get_user_config().zcode_app_path);
             }
         }
@@ -4353,7 +4318,11 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                     }
                 }
                 if let Some(detected) = detect_trae_exec_path_for_platform(platform) {
-                    update_app_path_in_config(app, &detected);
+                    update_app_path_in_config(
+                        app,
+                        &detected,
+                        trae_configured_app_path(&current, platform),
+                    );
                     let refreshed = config::get_user_config();
                     return Some(trae_configured_app_path(&refreshed, platform).to_string());
                 }
@@ -4364,7 +4333,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.opencode_app_path);
             }
             if let Some(detected) = detect_opencode_exec_path() {
-                update_app_path_in_config("opencode", &detected);
+                update_app_path_in_config("opencode", &detected, &current.opencode_app_path);
                 return Some(config::get_user_config().opencode_app_path);
             }
         }
@@ -4373,7 +4342,7 @@ pub fn detect_and_save_app_path(app: &str, force: bool) -> Option<String> {
                 return Some(current.workbuddy_app_path);
             }
             if let Some(detected) = detect_workbuddy_exec_path() {
-                update_app_path_in_config("workbuddy", &detected);
+                update_app_path_in_config("workbuddy", &detected, &current.workbuddy_app_path);
                 return Some(config::get_user_config().workbuddy_app_path);
             }
         }
@@ -4627,26 +4596,7 @@ fn normalize_path_for_compare(raw: &str) -> String {
     }
 
     #[cfg(target_os = "windows")]
-    fn normalize_windows_extended_path(raw: &str) -> String {
-        let mut value = raw.trim().trim_matches('"').replace('/', "\\");
-        let lower = value.to_ascii_lowercase();
-        if lower.starts_with("\\\\?\\unc\\") {
-            let rest = value
-                .chars()
-                .skip("\\\\?\\UNC\\".chars().count())
-                .collect::<String>();
-            value = format!("\\\\{}", rest);
-        } else if lower.starts_with("\\\\?\\") {
-            value = value
-                .chars()
-                .skip("\\\\?\\".chars().count())
-                .collect::<String>();
-        }
-        value
-    }
-
-    #[cfg(target_os = "windows")]
-    let normalized_input = normalize_windows_extended_path(trimmed);
+    let normalized_input = normalize_windows_user_facing_path(trimmed).replace('/', "\\");
     #[cfg(not(target_os = "windows"))]
     let normalized_input = trimmed.to_string();
 
@@ -4655,7 +4605,7 @@ fn normalize_path_for_compare(raw: &str) -> String {
         .unwrap_or(normalized_input);
 
     #[cfg(target_os = "windows")]
-    let resolved = normalize_windows_extended_path(&resolved);
+    let resolved = normalize_windows_user_facing_path(&resolved);
 
     #[cfg(target_os = "windows")]
     {
@@ -5736,8 +5686,20 @@ fn resolve_trae_target_and_fallback_for_platform(
 }
 
 fn resolve_workbuddy_target_and_fallback(user_data_dir: Option<&str>) -> Option<(String, bool)> {
+    // Prefer matching Electron userData (`.../app`) which is what the official
+    // process command line contains (`--user-data-dir=~/.workbuddy/app`).
+    let normalized_request = user_data_dir.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        crate::modules::workbuddy_instance::resolve_workbuddy_runtime_dirs(trimmed)
+            .ok()
+            .map(|(_, electron_dir)| electron_dir.to_string_lossy().to_string())
+            .or_else(|| Some(trimmed.to_string()))
+    });
     build_user_data_dir_match_target(
-        user_data_dir,
+        normalized_request.as_deref(),
         get_default_workbuddy_user_data_dir_for_os(),
         !strict_process_detect_enabled(),
     )
@@ -6137,6 +6099,40 @@ pub fn focus_current_process_main_window() -> Result<(), String> {
     focus_window_by_pid(std::process::id())
 }
 
+/// Focus a specific HWND (e.g. Tauri `main` window), not the process MainWindowHandle.
+/// After tray destroy, MainWindowHandle often points at the floating card.
+#[cfg(target_os = "windows")]
+pub fn focus_window_by_hwnd(hwnd: isize) -> Result<(), String> {
+    if hwnd == 0 {
+        return Err("HWND_EMPTY".to_string());
+    }
+    let command = format!(
+        r#"Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public class Win32FocusHwnd {{
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+}}
+'@; $h = [IntPtr]{hwnd}; [Win32FocusHwnd]::ShowWindowAsync($h, 9) | Out-Null; [Win32FocusHwnd]::SetForegroundWindow($h) | Out-Null;"#
+    );
+    crate::modules::logger::log_info(&format!(
+        "[Focus] Windows PowerShell focus hwnd={}",
+        hwnd
+    ));
+    let output = powershell_output(&["-NoProfile", "-Command", &command])
+        .map_err(|e| format!("调用 PowerShell 失败: {}", e))?;
+    if output.status.success() {
+        crate::modules::logger::log_info(&format!(
+            "[Focus] Windows PowerShell hwnd success hwnd={}",
+            hwnd
+        ));
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(format!("窗口聚焦失败: {}", stderr.trim()))
+}
+
 #[cfg(target_os = "linux")]
 fn focus_window_by_pid(pid: u32) -> Result<(), String> {
     if let Ok(output) = Command::new("wmctrl").arg("-lp").output() {
@@ -6256,6 +6252,10 @@ pub fn resolve_codex_pid_from_entries(
             _ => {}
         }
     }
+
+    // `ps`/`pgrep` may briefly retain zombie entries after a GUI child exits. Never
+    // resolve those stale PIDs back into an instance's running state.
+    matches.retain(|pid| is_pid_running(*pid));
 
     if let Some(pid) = last_pid {
         if is_pid_running(pid) && matches.contains(&pid) {
@@ -8287,11 +8287,25 @@ pub fn close_workbuddy_instances(
     let default_dir = get_default_workbuddy_user_data_dir_for_os()
         .map(|value| normalize_path_for_compare(&value))
         .filter(|value| !value.is_empty());
+    // Official processes expose Electron userData (`.../app`) in cmdline.
+    let normalized: Vec<String> = user_data_dirs
+        .iter()
+        .filter_map(|dir| {
+            let trimmed = dir.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            crate::modules::workbuddy_instance::resolve_workbuddy_runtime_dirs(trimmed)
+                .ok()
+                .map(|(_, electron)| electron.to_string_lossy().to_string())
+                .or_else(|| Some(trimmed.to_string()))
+        })
+        .collect();
     close_user_data_dir_scoped_instances(
         "WorkBuddy Close",
         "WorkBuddy",
         "Unable to close managed WorkBuddy instances; please close them manually and retry",
-        user_data_dirs,
+        &normalized,
         timeout_secs,
         default_dir,
         collect_workbuddy_process_entries,
@@ -9291,6 +9305,9 @@ pub fn collect_codex_process_entries() -> Vec<(u32, Option<String>)> {
         result.push((pid, codex_home));
     }
     filter_entries_by_expected_launch_path("Codex", result, expected_launch)
+        .into_iter()
+        .filter(|(pid, _)| is_pid_running(*pid))
+        .collect()
 }
 
 #[cfg(target_os = "windows")]
@@ -9646,21 +9663,21 @@ pub fn is_codex_running() -> bool {
 pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<u32, String> {
     #[cfg(target_os = "macos")]
     {
-        let app_root = resolve_macos_app_root_from_config("codex").or_else(|| {
-            resolve_codex_launch_path()
-                .ok()
-                .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
-        });
+        let app_root = resolve_codex_launch_path()
+            .ok()
+            .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
+            .or_else(|| resolve_macos_app_root_from_config("codex"));
         let app_root = app_root.ok_or_else(|| app_path_missing_error("codex"))?;
 
         let codex_home_trimmed = codex_home.trim();
         let args = build_codex_app_launch_args(extra_args);
 
-        // 使用 open -a 启动，避免 macOS Responsible Process 归因
-        // 注意：CODEX_HOME 环境变量无法通过 open -a 传递，
-        // 如果指定了 codex_home 则需要回退到直接执行
+        // 通过 LaunchServices 启动 GUI 应用，避免直接执行 ChatGPT 主程序时
+        // 被 macOS 以 Cockpit Tools 为 responsible process，导致偶发长时间停在
+        // dyld/AppKit 初始化阶段。当前 macOS 的 `open` 支持 --env，因此
+        // CODEX_HOME 与独立 Electron user-data-dir 都可以随启动请求传入。
         if !codex_home_trimmed.is_empty() {
-            if let Ok(launch_path) = resolve_codex_launch_path() {
+            if resolve_codex_launch_path().is_ok() {
                 let app_user_data_dir =
                     crate::modules::codex_instance::get_macos_app_user_data_dir(Path::new(
                         codex_home_trimmed,
@@ -9673,25 +9690,25 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
                     )
                 })?;
 
-                let mut cmd = Command::new(&launch_path);
-                apply_managed_proxy_env_to_command(&mut cmd);
-                sanitize_macos_gui_launch_env(&mut cmd);
-                cmd.env("CODEX_HOME", codex_home_trimmed);
-                cmd.env("CODEX_ELECTRON_USER_DATA_PATH", &app_user_data_dir);
-                for arg in &args {
-                    cmd.arg(arg);
-                }
-                cmd.arg(format!(
-                    "--user-data-dir={}",
-                    app_user_data_dir.to_string_lossy()
-                ));
-                let child =
-                    spawn_detached_unix(&mut cmd).map_err(|e| format!("启动 Codex 失败: {}", e))?;
+                let app_user_data_dir_string = app_user_data_dir.to_string_lossy().to_string();
+                let mut launch_args = args.clone();
+                launch_args.push(format!("--user-data-dir={}", app_user_data_dir_string));
+                let open_pid = spawn_open_app_with_options_and_env(
+                    &app_root,
+                    &launch_args,
+                    true,
+                    &[
+                        ("CODEX_HOME", codex_home_trimmed),
+                        ("CODEX_ELECTRON_USER_DATA_PATH", &app_user_data_dir_string),
+                    ],
+                )
+                .map_err(|e| format!("启动 Codex 失败: {}", e))?;
                 crate::modules::logger::log_info(&format!(
-                    "[Codex Start] macOS managed instance using --user-data-dir and CODEX_ELECTRON_USER_DATA_PATH; codex_home={} electron_user_data={} launch_path={}",
+                    "[Codex Start] macOS managed instance using open -n -a with --env and --user-data-dir; launcher_pid={} codex_home={} electron_user_data={} app_root={}",
+                    open_pid,
                     summarize_text_for_process_log(codex_home_trimmed, 96),
-                    app_user_data_dir.to_string_lossy(),
-                    launch_path.to_string_lossy()
+                    app_user_data_dir_string,
+                    app_root
                 ));
                 // 轮询获取真实 PID
                 let probe_started = Instant::now();
@@ -9702,7 +9719,10 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
                     }
                     thread::sleep(Duration::from_millis(200));
                 }
-                return Ok(child.id());
+                return Err(format!(
+                    "Codex 实例启动超时，未找到真实主进程（open launcher pid={}）",
+                    open_pid
+                ));
             }
             return Err(app_path_missing_error("codex"));
         }
@@ -9773,8 +9793,8 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
                 if err.kind() == std::io::ErrorKind::PermissionDenied
                     && launch_path_text.contains("\\windowsapps\\")
                 {
-                    let mut store_args = build_codex_app_launch_args(extra_args);
-                    store_args.push(format!(
+                    let mut fallback_args = build_codex_app_launch_args(extra_args);
+                    fallback_args.push(format!(
                         "--user-data-dir={}",
                         app_user_data_dir.to_string_lossy()
                     ));
@@ -9782,7 +9802,7 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
                         &launch_path,
                         codex_home_trimmed,
                         &app_user_data_dir,
-                        &store_args,
+                        &fallback_args,
                     ) {
                         Ok(()) => {
                             crate::modules::logger::log_warn(&format!(
@@ -9792,26 +9812,16 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
                             ));
                         }
                         Err(ps_err) => {
-                            let app_user_model_id =
-                                detect_codex_store_app_user_model_id().ok_or_else(|| {
-                                    format!(
-                                        "启动 Codex 失败: {}; PowerShell fallback 失败: {}; 且未检测到 Codex Store AppUserModelID",
-                                        err, ps_err
-                                    )
-                                })?;
                             crate::modules::logger::log_warn(&format!(
-                                "[Codex Start] WindowsApps direct launch denied, PowerShell exec fallback failed, fallback to Store AppUserModelID: app_id={} launch_path={} error={} powershell_error={}",
-                                app_user_model_id,
+                                "[Codex Start] WindowsApps direct launch denied and PowerShell exec fallback failed; managed Store activation blocked to avoid losing CODEX_HOME: launch_path={} error={} powershell_error={}",
                                 launch_path.to_string_lossy(),
                                 err,
                                 ps_err
                             ));
-                            launch_codex_via_store_app_user_model_id(
-                                &app_user_model_id,
-                                Some(codex_home_trimmed),
-                                Some(app_user_data_dir.to_string_lossy().as_ref()),
-                                &store_args,
-                            )?;
+                            return Err(codex_managed_store_launch_unsafe_error(
+                                &err.to_string(),
+                                &ps_err,
+                            ));
                         }
                     }
                     None
@@ -9825,7 +9835,7 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
             launch_path.to_string_lossy(),
             summarize_text_for_process_log(codex_home_trimmed, 96),
             app_user_data_dir.to_string_lossy(),
-            child.as_ref().map(|item| item.id().to_string()).unwrap_or_else(|| "store-app".to_string())
+            child.as_ref().map(|item| item.id().to_string()).unwrap_or_else(|| "powershell-exec".to_string())
         ));
 
         let probe_started = Instant::now();
@@ -9842,14 +9852,16 @@ pub fn start_codex_with_args(codex_home: &str, extra_args: &[String]) -> Result<
                 child.id()
             ));
             Ok(child.id())
-        } else if let Some(pid) = resolve_codex_pid(None, None) {
-            crate::modules::logger::log_warn(&format!(
-                "[Codex Start] Windows Store fallback 启动后未匹配到 CODEX_HOME，回退 Codex pid={}",
-                pid
-            ));
-            Ok(pid)
         } else {
-            Err("启动 Codex 失败: Store fallback 已调用但 15s 内未检测到 Codex 进程".to_string())
+            let error = codex_managed_store_launch_unsafe_error(
+                "WindowsApps direct launch denied",
+                "PowerShell exec returned success but no managed instance matched within 15s",
+            );
+            crate::modules::logger::log_warn(&format!(
+                "[Codex Start] PowerShell exec did not produce a matching managed instance; default PID fallback blocked: codex_home={}",
+                summarize_text_for_process_log(codex_home_trimmed, 96)
+            ));
+            Err(error)
         }
     }
 
@@ -9891,11 +9903,10 @@ fn start_codex_default_internal(
 
     #[cfg(target_os = "macos")]
     {
-        let app_root = resolve_macos_app_root_from_config("codex").or_else(|| {
-            resolve_codex_launch_path()
-                .ok()
-                .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
-        });
+        let app_root = resolve_codex_launch_path()
+            .ok()
+            .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
+            .or_else(|| resolve_macos_app_root_from_config("codex"));
         let app_root = app_root.ok_or_else(|| app_path_missing_error("codex"))?;
 
         let args = build_codex_default_launch_args(extra_args);
@@ -9913,10 +9924,13 @@ fn start_codex_default_internal(
             thread::sleep(Duration::from_millis(200));
         }
         crate::modules::logger::log_warn(&format!(
-            "[Codex Start] 启动后 6s 内未匹配到默认实例 PID，回退 open pid={}",
+            "[Codex Start] 启动后 6s 内未匹配到默认实例真实 PID，open launcher pid={} 不会写入实例状态",
             open_pid
         ));
-        return Ok(open_pid);
+        return Err(format!(
+            "Codex 默认实例启动超时，未找到真实主进程（open launcher pid={}）",
+            open_pid
+        ));
     }
 
     #[cfg(target_os = "windows")]
@@ -11785,112 +11799,53 @@ pub fn start_codebuddy_cn_default_with_args_with_new_window(
     }
 }
 
+fn apply_workbuddy_instance_env(
+    cmd: &mut Command,
+    config_dir: &std::path::Path,
+    electron_user_data_dir: &std::path::Path,
+) {
+    // Official WorkBuddy main process:
+    //   WORKBUDDY_CONFIG_DIR / CODEBUDDY_CONFIG_DIR → ~/.workbuddy
+    //   WORKBUDDY_USER_DATA_DIR → {config}/app  (also app.setPath("userData", ...))
+    // `--user-data-dir` alone is NOT enough: configureElectronApp() overrides userData.
+    // `open -a` cannot pass these envs, so managed instances must exec Electron directly.
+    cmd.env("WORKBUDDY_CONFIG_DIR", config_dir);
+    cmd.env("CODEBUDDY_CONFIG_DIR", config_dir);
+    cmd.env("WORKBUDDY_USER_DATA_DIR", electron_user_data_dir);
+}
+
 pub fn start_workbuddy_with_args_with_new_window(
     user_data_dir: &str,
     extra_args: &[String],
     use_new_window: bool,
 ) -> Result<u32, String> {
+    let (config_dir, electron_user_data_dir) =
+        crate::modules::workbuddy_instance::resolve_workbuddy_runtime_dirs(user_data_dir)?;
+    std::fs::create_dir_all(&config_dir).map_err(|e| {
+        format!(
+            "创建 WorkBuddy 配置目录失败 ({}): {}",
+            config_dir.to_string_lossy(),
+            e
+        )
+    })?;
+    std::fs::create_dir_all(&electron_user_data_dir).map_err(|e| {
+        format!(
+            "创建 WorkBuddy Electron 数据目录失败 ({}): {}",
+            electron_user_data_dir.to_string_lossy(),
+            e
+        )
+    })?;
+    let electron_dir_str = electron_user_data_dir.to_string_lossy().to_string();
+
     #[cfg(target_os = "macos")]
     {
-        let target = user_data_dir.trim();
-        if target.is_empty() {
-            return Err("实例目录为空，无法启动".to_string());
-        }
-        let app_root = resolve_macos_app_root_from_config("workbuddy").or_else(|| {
-            resolve_workbuddy_launch_path()
-                .ok()
-                .and_then(|p| resolve_macos_app_root_from_launch_path(&p))
-        });
-        let app_root = app_root.ok_or_else(|| app_path_missing_error("workbuddy"))?;
-
-        let mut args: Vec<String> = Vec::new();
-        args.push("--user-data-dir".to_string());
-        args.push(target.to_string());
-        if use_new_window {
-            args.push("--new-window".to_string());
-        } else {
-            args.push("--reuse-window".to_string());
-        }
-        for arg in extra_args {
-            let trimmed = arg.trim();
-            if !trimmed.is_empty() {
-                args.push(trimmed.to_string());
-            }
-        }
-
-        let open_pid = spawn_open_app_with_options(&app_root, &args, true)
-            .map_err(|e| format!("启动 WorkBuddy 失败：{}", e))?;
-        crate::modules::logger::log_info("WorkBuddy 启动命令已发送（open -n -a）");
-        let probe_started = Instant::now();
-        let timeout = Duration::from_secs(6);
-        while probe_started.elapsed() < timeout {
-            if let Some(resolved_pid) = resolve_workbuddy_pid(None, Some(target)) {
-                return Ok(resolved_pid);
-            }
-            thread::sleep(Duration::from_millis(200));
-        }
-        crate::modules::logger::log_warn(&format!(
-            "[WorkBuddy Start] 启动后 6s 内未匹配到实例 PID，回退 open pid={}",
-            open_pid
-        ));
-        return Ok(open_pid);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-
-        let target = user_data_dir.trim();
-        if target.is_empty() {
-            return Err("实例目录为空，无法启动".to_string());
-        }
+        // Managed multi-instance: exec Electron binary with env (open -a cannot pass env).
         let launch_path = resolve_workbuddy_launch_path()?;
-
         let mut cmd = Command::new(&launch_path);
         apply_managed_proxy_env_to_command(&mut cmd);
-        if should_detach_child() {
-            cmd.creation_flags(0x08000000 | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-        } else {
-            cmd.creation_flags(0x08000000);
-        }
-        cmd.arg("--user-data-dir").arg(target);
-        if use_new_window {
-            cmd.arg("--new-window");
-        } else {
-            cmd.arg("--reuse-window");
-        }
-        for arg in extra_args {
-            let trimmed = arg.trim();
-            if !trimmed.is_empty() {
-                cmd.arg(trimmed);
-            }
-        }
-
-        let child = spawn_command_with_trace(&mut cmd)
-            .map_err(|e| format!("启动 WorkBuddy 失败：{}", e))?;
-        crate::modules::logger::log_info("WorkBuddy 启动命令已发送");
-        return Ok(child.id());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let target = user_data_dir.trim();
-        if target.is_empty() {
-            return Err("实例目录为空，无法启动".to_string());
-        }
-        let launch_path = resolve_workbuddy_launch_path()?;
-
-        let mut cmd = Command::new(&launch_path);
-        apply_managed_proxy_env_to_command(&mut cmd);
-        if should_detach_child() {
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-        }
-        cmd.arg("--user-data-dir").arg(target);
+        sanitize_macos_gui_launch_env(&mut cmd);
+        apply_workbuddy_instance_env(&mut cmd, &config_dir, &electron_user_data_dir);
+        cmd.arg(format!("--user-data-dir={}", electron_dir_str));
         if use_new_window {
             cmd.arg("--new-window");
         } else {
@@ -11905,7 +11860,101 @@ pub fn start_workbuddy_with_args_with_new_window(
 
         let child =
             spawn_detached_unix(&mut cmd).map_err(|e| format!("启动 WorkBuddy 失败：{}", e))?;
-        crate::modules::logger::log_info("WorkBuddy 启动命令已发送");
+        crate::modules::logger::log_info(&format!(
+            "[WorkBuddy Start] managed instance via Electron binary; config_dir={} user_data_dir={} launch_path={}",
+            config_dir.to_string_lossy(),
+            electron_dir_str,
+            launch_path.to_string_lossy()
+        ));
+        let probe_started = Instant::now();
+        let timeout = Duration::from_secs(6);
+        while probe_started.elapsed() < timeout {
+            if let Some(resolved_pid) = resolve_workbuddy_pid(None, Some(&electron_dir_str)) {
+                return Ok(resolved_pid);
+            }
+            // Also match config root if instance store still points there.
+            if let Some(resolved_pid) = resolve_workbuddy_pid(None, Some(user_data_dir.trim())) {
+                return Ok(resolved_pid);
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        crate::modules::logger::log_warn(&format!(
+            "[WorkBuddy Start] 启动后 6s 内未匹配到实例 PID，回退 child pid={}",
+            child.id()
+        ));
+        return Ok(child.id());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+
+        let launch_path = resolve_workbuddy_launch_path()?;
+        let mut cmd = Command::new(&launch_path);
+        apply_managed_proxy_env_to_command(&mut cmd);
+        apply_workbuddy_instance_env(&mut cmd, &config_dir, &electron_user_data_dir);
+        if should_detach_child() {
+            cmd.creation_flags(0x08000000 | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+        } else {
+            cmd.creation_flags(0x08000000);
+        }
+        cmd.arg("--user-data-dir").arg(&electron_dir_str);
+        if use_new_window {
+            cmd.arg("--new-window");
+        } else {
+            cmd.arg("--reuse-window");
+        }
+        for arg in extra_args {
+            let trimmed = arg.trim();
+            if !trimmed.is_empty() {
+                cmd.arg(trimmed);
+            }
+        }
+
+        let child = spawn_command_with_trace(&mut cmd)
+            .map_err(|e| format!("启动 WorkBuddy 失败：{}", e))?;
+        crate::modules::logger::log_info(&format!(
+            "[WorkBuddy Start] managed instance; config_dir={} user_data_dir={}",
+            config_dir.to_string_lossy(),
+            electron_dir_str
+        ));
+        return Ok(child.id());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let launch_path = resolve_workbuddy_launch_path()?;
+        let mut cmd = Command::new(&launch_path);
+        apply_managed_proxy_env_to_command(&mut cmd);
+        apply_workbuddy_instance_env(&mut cmd, &config_dir, &electron_user_data_dir);
+        if should_detach_child() {
+            cmd.stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+        }
+        cmd.arg("--user-data-dir").arg(&electron_dir_str);
+        if use_new_window {
+            cmd.arg("--new-window");
+        } else {
+            cmd.arg("--reuse-window");
+        }
+        for arg in extra_args {
+            let trimmed = arg.trim();
+            if !trimmed.is_empty() {
+                cmd.arg(trimmed);
+            }
+        }
+
+        let child =
+            spawn_detached_unix(&mut cmd).map_err(|e| format!("启动 WorkBuddy 失败：{}", e))?;
+        crate::modules::logger::log_info(&format!(
+            "[WorkBuddy Start] managed instance; config_dir={} user_data_dir={}",
+            config_dir.to_string_lossy(),
+            electron_dir_str
+        ));
         return Ok(child.id());
     }
 
@@ -13024,7 +13073,10 @@ mod codex_macos_launch_tests {
 
 #[cfg(test)]
 mod codex_launch_args_tests {
-    use super::build_codex_app_launch_args;
+    use super::{
+        build_codex_app_launch_args, codex_managed_store_launch_unsafe_error,
+        CODEX_MANAGED_STORE_LAUNCH_UNSAFE_PREFIX,
+    };
 
     #[test]
     fn keeps_user_launch_args_without_adding_remote_debugging() {
@@ -13041,11 +13093,22 @@ mod codex_launch_args_tests {
             ]
         );
     }
+
+    #[test]
+    fn managed_store_launch_error_is_machine_readable_and_keeps_causes() {
+        let error = codex_managed_store_launch_unsafe_error("denied", "fallback failed");
+        assert!(error.starts_with(CODEX_MANAGED_STORE_LAUNCH_UNSAFE_PREFIX));
+        assert!(error.contains("direct_error=denied"));
+        assert!(error.contains("powershell_error=fallback failed"));
+    }
 }
 
 #[cfg(test)]
-mod codex_windows_path_migration_tests {
-    use super::{score_windows_candidate, should_migrate_legacy_codex_launch_path};
+mod codex_path_migration_tests {
+    use super::{
+        is_codex_embedded_backend_executable, score_windows_candidate,
+        should_migrate_legacy_codex_launch_path,
+    };
     use std::collections::HashSet;
     use std::path::Path;
 
@@ -13084,6 +13147,34 @@ mod codex_windows_path_migration_tests {
     }
 
     #[test]
+    fn migrates_official_macos_codex_path_when_chatgpt_exists() {
+        assert!(should_migrate_legacy_codex_launch_path(
+            Path::new("/Applications/Codex.app"),
+            Path::new("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"),
+        ));
+        assert!(should_migrate_legacy_codex_launch_path(
+            Path::new("/Applications/Codex.app/Contents/MacOS/Codex"),
+            Path::new("/Applications/ChatGPT.app"),
+        ));
+    }
+
+    #[test]
+    fn keeps_macos_legacy_path_when_chatgpt_is_not_detected() {
+        assert!(!should_migrate_legacy_codex_launch_path(
+            Path::new("/Applications/Codex.app"),
+            Path::new("/Applications/Codex.app/Contents/MacOS/Codex"),
+        ));
+    }
+
+    #[test]
+    fn does_not_replace_custom_macos_codex_path() {
+        assert!(!should_migrate_legacy_codex_launch_path(
+            Path::new("/Users/test/Applications/Codex.app"),
+            Path::new("/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"),
+        ));
+    }
+
+    #[test]
     fn scan_rejects_codex_keyword_helper_executables() {
         let exe_names = HashSet::from(["chatgpt.exe".to_string(), "codex.exe".to_string()]);
         let keywords = vec!["chatgpt".to_string(), "codex".to_string()];
@@ -13099,11 +13190,27 @@ mod codex_windows_path_migration_tests {
                 .is_some()
         );
     }
+
+    #[test]
+    fn scan_excludes_embedded_resources_backend() {
+        assert!(is_codex_embedded_backend_executable(Path::new(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.707.9564.0_x64__2p2nqsd0c76g0\app\resources\codex.exe"
+        )));
+        assert!(!is_codex_embedded_backend_executable(Path::new(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.707.9564.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe"
+        )));
+        assert!(!is_codex_embedded_backend_executable(Path::new(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_1.0.0.0_x64__2p2nqsd0c76g0\app\Codex.exe"
+        )));
+    }
 }
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::{windows_app_launch_signature, windows_trae_candidate_matches_platform};
+    use super::{
+        running_app_candidate_matches, windows_app_launch_signature,
+        windows_trae_candidate_matches_platform,
+    };
     use crate::modules::trae_account::TraePlatformKind;
     use std::path::Path;
 
@@ -13124,6 +13231,7 @@ mod tests {
             "windsurf",
             "kiro",
             "codex",
+            "claude",
             "vscode",
         ] {
             let signature =
@@ -13168,6 +13276,41 @@ mod tests {
             .exe_names
             .iter()
             .any(|name| name.eq_ignore_ascii_case("Codex.exe")));
+    }
+
+    #[test]
+    fn running_codex_match_accepts_main_executable_and_rejects_embedded_backend() {
+        let signature = windows_app_launch_signature("codex").expect("codex signature must exist");
+        assert!(running_app_candidate_matches(
+            "codex",
+            Path::new(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.707.9564.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe"
+            ),
+            signature,
+        ));
+        assert!(!running_app_candidate_matches(
+            "codex",
+            Path::new(
+                r"C:\Program Files\WindowsApps\OpenAI.Codex_26.707.9564.0_x64__2p2nqsd0c76g0\app\resources\codex.exe"
+            ),
+            signature,
+        ));
+    }
+
+    #[test]
+    fn running_claude_match_requires_claude_executable() {
+        let signature =
+            windows_app_launch_signature("claude").expect("claude signature must exist");
+        assert!(running_app_candidate_matches(
+            "claude",
+            Path::new(r"C:\Program Files\WindowsApps\Claude_1.0.0\app\Claude.exe"),
+            signature,
+        ));
+        assert!(!running_app_candidate_matches(
+            "claude",
+            Path::new(r"C:\Tools\Electron.exe"),
+            signature,
+        ));
     }
 
     #[test]

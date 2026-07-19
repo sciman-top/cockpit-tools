@@ -60,7 +60,7 @@ interface SideNavEntry {
 const PAGE_PLATFORM_MAP: Partial<Record<Page, PlatformId>> = {
   overview: 'antigravity',
   codex: 'codex',
-  'codex-api-service': 'codex',
+  'codex-api-service': 'codex_api_service',
   claude: 'claude_manager',
   'claude-cli': 'claude_manager',
   zed: 'zed',
@@ -68,7 +68,7 @@ const PAGE_PLATFORM_MAP: Partial<Record<Page, PlatformId>> = {
   windsurf: 'windsurf',
   kiro: 'kiro',
   cursor: 'cursor',
-  gemini: 'gemini',
+  grok: 'grok',
   codebuddy: 'codebuddy',
   'codebuddy-cn': 'codebuddy_cn',
   qoder: 'qoder',

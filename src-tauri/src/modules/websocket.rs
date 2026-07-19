@@ -1,7 +1,9 @@
 //! WebSocket 服务模块
 //! 提供本地 WebSocket 服务供 VS Code 扩展实时通信
 
+use base64::{engine::general_purpose, Engine as _};
 use futures_util::{SinkExt, StreamExt};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(target_os = "windows")]
@@ -13,6 +15,8 @@ use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
 use tokio_tungstenite::tungstenite::Message;
 
 use super::config::{get_preferred_port, init_server_status, PORT_RANGE};
+
+const WS_AUTH_TOKEN_BYTES: usize = 32;
 
 /// 消息类型
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,7 +65,11 @@ pub enum WsMessage {
 
     /// 请求获取账号列表（包含 Token）
     #[serde(rename = "request.get_accounts_with_tokens")]
-    GetAccountsWithTokens { request_id: String },
+    GetAccountsWithTokens {
+        request_id: String,
+        #[serde(default)]
+        auth_token: Option<String>,
+    },
 
     /// 请求获取当前账号
     #[serde(rename = "request.get_current_account")]
@@ -87,6 +95,8 @@ pub enum WsMessage {
     #[serde(rename = "request.add_account")]
     AddAccount {
         request_id: String,
+        #[serde(default)]
+        auth_token: Option<String>,
         email: String,
         refresh_token: String,
         access_token: Option<String>,
@@ -95,7 +105,12 @@ pub enum WsMessage {
 
     /// 请求删除账号（扩展端删除后同步）
     #[serde(rename = "request.delete_account")]
-    DeleteAccountByEmail { request_id: String, email: String },
+    DeleteAccountByEmail {
+        request_id: String,
+        #[serde(default)]
+        auth_token: Option<String>,
+        email: String,
+    },
 
     /// 通知数据已变更
     #[serde(rename = "request.data_changed")]
@@ -236,12 +251,36 @@ impl WsServer {
 
 /// 全局 WebSocket 服务实例
 static WS_SERVER: std::sync::OnceLock<Arc<WsServer>> = std::sync::OnceLock::new();
+static WS_AUTH_TOKEN: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(generate_ws_auth_token);
 static PLUGIN_SWITCH_PENDING: std::sync::LazyLock<
     Mutex<HashMap<String, oneshot::Sender<PluginSwitchAccountResponsePayload>>>,
 > = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 #[cfg(target_os = "windows")]
 static WSL_PREFIXES16: std::sync::LazyLock<Vec<(u8, u8)>> =
     std::sync::LazyLock::new(resolve_wsl_network_prefixes16);
+
+fn generate_ws_auth_token() -> String {
+    let mut bytes = [0u8; WS_AUTH_TOKEN_BYTES];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn ws_auth_token() -> &'static str {
+    WS_AUTH_TOKEN.as_str()
+}
+
+fn require_ws_auth(auth_token: Option<&str>, operation: &str) -> Result<(), String> {
+    let Some(token) = auth_token.map(str::trim).filter(|value| !value.is_empty()) else {
+        crate::modules::logger::log_warn(&format!("[WS] 拒绝未鉴权高危请求: {}", operation));
+        return Err("WebSocket 高危账号操作需要会话鉴权 token".to_string());
+    };
+    if token != ws_auth_token() {
+        crate::modules::logger::log_warn(&format!("[WS] 拒绝鉴权失败高危请求: {}", operation));
+        return Err("WebSocket 会话鉴权失败".to_string());
+    }
+    Ok(())
+}
 
 #[cfg(target_os = "windows")]
 fn push_prefix16(prefixes: &mut Vec<(u8, u8)>, ip_str: &str) {
@@ -496,8 +535,8 @@ pub async fn start_server() {
         None => return,
     };
 
-    // 保存服务状态到共享文件（供 VS Code 扩展读取）
-    if let Err(e) = init_server_status(port) {
+    // 保存服务状态到共享文件（供 VS Code 扩展读取，含本进程会话鉴权 token）
+    if let Err(e) = init_server_status(port, ws_auth_token().to_string()) {
         crate::modules::logger::log_error(&format!("[WS] 保存服务状态失败: {}", e));
     }
 
@@ -634,10 +673,15 @@ async fn handle_client_message(
             }
         }
 
-        WsMessage::GetAccountsWithTokens { request_id } => {
+        WsMessage::GetAccountsWithTokens {
+            request_id,
+            auth_token,
+        } => {
             crate::modules::logger::log_info("[WS] 收到获取账号列表(含Token)请求");
 
-            let response = match get_accounts_with_tokens_info() {
+            let response = match require_ws_auth(auth_token.as_deref(), "get_accounts_with_tokens")
+                .and_then(|_| get_accounts_with_tokens_info())
+            {
                 Ok((accounts, current_id)) => WsMessage::AccountsWithTokensResponse {
                     request_id,
                     accounts,
@@ -777,6 +821,7 @@ async fn handle_client_message(
 
         WsMessage::AddAccount {
             request_id,
+            auth_token,
             email,
             refresh_token,
             access_token,
@@ -784,25 +829,23 @@ async fn handle_client_message(
         } => {
             crate::modules::logger::log_info("[WS] 收到添加账号请求");
 
-            let response = match handle_add_account(
-                &email,
-                &refresh_token,
-                access_token.as_deref(),
-                expires_at,
-            ) {
-                Ok(msg) => {
-                    // 广播数据变更（同时发送 Tauri 事件通知前端）
-                    broadcast_data_changed("extension_add_account");
-                    WsMessage::SuccessResponse {
-                        request_id,
-                        message: msg,
+            let response =
+                match require_ws_auth(auth_token.as_deref(), "add_account").and_then(|_| {
+                    handle_add_account(&email, &refresh_token, access_token.as_deref(), expires_at)
+                }) {
+                    Ok(msg) => {
+                        // 广播数据变更（同时发送 Tauri 事件通知前端）
+                        broadcast_data_changed("extension_add_account");
+                        WsMessage::SuccessResponse {
+                            request_id,
+                            message: msg,
+                        }
                     }
-                }
-                Err(e) => WsMessage::ErrorResponse {
-                    request_id,
-                    error: e,
-                },
-            };
+                    Err(e) => WsMessage::ErrorResponse {
+                        request_id,
+                        error: e,
+                    },
+                };
 
             if let Ok(json) = serde_json::to_string(&response) {
                 sender
@@ -812,10 +855,16 @@ async fn handle_client_message(
             }
         }
 
-        WsMessage::DeleteAccountByEmail { request_id, email } => {
+        WsMessage::DeleteAccountByEmail {
+            request_id,
+            auth_token,
+            email,
+        } => {
             crate::modules::logger::log_info("[WS] 收到删除账号请求");
 
-            let response = match handle_delete_account_by_email(&email) {
+            let response = match require_ws_auth(auth_token.as_deref(), "delete_account")
+                .and_then(|_| handle_delete_account_by_email(&email))
+            {
                 Ok(msg) => {
                     // 广播数据变更（同时发送 Tauri 事件通知前端）
                     broadcast_data_changed("extension_delete_account");
@@ -1037,7 +1086,7 @@ fn handle_delete_account_by_email(email: &str) -> Result<String, String> {
 
 /// 处理语言设置请求
 fn handle_set_language(language: &str, source: Option<&str>) -> Result<String, String> {
-    use crate::modules::config::{self, UserConfig};
+    use crate::modules::config;
 
     if language.trim().is_empty() {
         return Err("语言不能为空".to_string());
@@ -1046,17 +1095,18 @@ fn handle_set_language(language: &str, source: Option<&str>) -> Result<String, S
     // 标准化语言代码为小写，确保格式一致
     let normalized = language.to_lowercase();
 
-    let current = config::get_user_config();
-    if current.language == normalized {
+    let mut changed = false;
+    config::patch_user_config(|current| {
+        changed = current.language != normalized;
+        if changed {
+            current.language = normalized.clone();
+        }
+        Ok(())
+    })?;
+
+    if !changed {
         return Ok(format!("语言已是 {}", normalized));
     }
-
-    let new_config = UserConfig {
-        language: normalized.clone(),
-        ..current
-    };
-
-    config::save_user_config(&new_config)?;
 
     broadcast_language_changed(&normalized, source.unwrap_or("ws"));
 

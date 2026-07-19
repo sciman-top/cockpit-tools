@@ -1601,23 +1601,62 @@ pub async fn refresh_account_subscription_info(
     }
 }
 
-/// 刷新所有账号配额
-pub async fn refresh_all_quotas() -> Result<Vec<(String, Result<CodexQuota, String>)>, String> {
+const CODEX_QUOTA_REFRESH_MAX_CONCURRENT: usize = 5;
+
+/// 按账号 ID 列表限流并发刷新配额（分组/勾选批量共用）。
+///
+/// `respect_group_quota_refresh=true`：跳过分组策略为「不刷新」的账号。
+/// 显式「刷新分组」应传 `false`。
+pub async fn refresh_quotas_for_account_ids(
+    account_ids: &[String],
+) -> Result<Vec<(String, Result<CodexQuota, String>)>, String> {
+    refresh_quotas_for_account_ids_with_options(account_ids, true).await
+}
+
+pub async fn refresh_quotas_for_account_ids_with_options(
+    account_ids: &[String],
+    respect_group_quota_refresh: bool,
+) -> Result<Vec<(String, Result<CodexQuota, String>)>, String> {
     use futures::future::join_all;
+    use std::collections::HashSet;
     use std::sync::Arc;
     use tokio::sync::Semaphore;
 
-    const MAX_CONCURRENT: usize = 5;
-    let accounts: Vec<_> = codex_account::list_accounts()
+    if account_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let effective_ids: Vec<String> = if respect_group_quota_refresh {
+        codex_account::filter_account_ids_by_quota_refresh_policy(account_ids)
+    } else {
+        account_ids
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect()
+    };
+
+    // 去重并保持输入顺序，避免重复刷新同一账号
+    let mut seen = HashSet::new();
+    let unique_ids: Vec<String> = effective_ids
         .into_iter()
-        .filter(|account| !account.is_api_key_auth() || is_new_api_account(account))
+        .filter_map(|id| {
+            if seen.insert(id.clone()) {
+                Some(id)
+            } else {
+                None
+            }
+        })
         .collect();
 
-    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT));
-    let tasks: Vec<_> = accounts
+    if unique_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let semaphore = Arc::new(Semaphore::new(CODEX_QUOTA_REFRESH_MAX_CONCURRENT));
+    let tasks: Vec<_> = unique_ids
         .into_iter()
-        .map(|account| {
-            let account_id = account.id;
+        .map(|account_id| {
             let semaphore = semaphore.clone();
             async move {
                 let _permit = semaphore
@@ -1637,8 +1676,19 @@ pub async fn refresh_all_quotas() -> Result<Vec<(String, Result<CodexQuota, Stri
             Err(err) => return Err(err),
         }
     }
-
     Ok(results)
+}
+
+/// 刷新所有账号配额（自动跳过分组「不刷新」账号）
+pub async fn refresh_all_quotas() -> Result<Vec<(String, Result<CodexQuota, String>)>, String> {
+    let disabled = codex_account::load_quota_refresh_disabled_account_ids();
+    let account_ids: Vec<String> = codex_account::list_accounts()
+        .into_iter()
+        .filter(|account| !account.is_api_key_auth() || is_new_api_account(account))
+        .filter(|account| !disabled.contains(&account.id))
+        .map(|account| account.id)
+        .collect();
+    refresh_quotas_for_account_ids_with_options(&account_ids, false).await
 }
 
 #[cfg(test)]

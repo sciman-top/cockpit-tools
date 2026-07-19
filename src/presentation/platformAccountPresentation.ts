@@ -8,7 +8,7 @@ import type { ClaudeAccount } from "../types/claude";
 import type { GitHubCopilotAccount } from "../types/githubCopilot";
 import type { WindsurfAccount } from "../types/windsurf";
 import type { CursorAccount } from "../types/cursor";
-import type { GeminiAccount } from "../types/gemini";
+import type { GrokAccount } from "../types/grok";
 import type { KiroAccount, KiroAccountStatus } from "../types/kiro";
 import type { QoderAccount, QoderSubscriptionInfo } from "../types/qoder";
 import type { TraeAccount } from "../types/trae";
@@ -44,6 +44,7 @@ import {
   isCodexNewApiAccount,
   isCodexPendingOAuthAccount,
 } from "../types/codex";
+import { withCodexPlanBadgeStyle } from "../utils/codexPreferences";
 import {
   formatClaudeResetTime,
   getClaudeAccountDisplayEmail,
@@ -80,11 +81,12 @@ import {
   isCursorAccountBanned,
 } from "../types/cursor";
 import {
-  getGeminiAccountDisplayEmail,
-  getGeminiPlanDisplayName,
-  getGeminiPlanBadgeClass,
-  getGeminiTierQuotaSummary,
-} from "../types/gemini";
+  formatGrokQuotaUsedTotal,
+  getGrokAccountDisplayEmail,
+  getGrokPlanBadge,
+  getGrokQuotaClass,
+  getGrokQuotaSummaryItems,
+} from "../types/grok";
 import {
   formatKiroResetTime,
   getKiroAccountDisplayEmail,
@@ -774,7 +776,7 @@ export function buildCodexAccountPresentation(
     id: account.id,
     displayName,
     planLabel: planBadge.label,
-    planClass: planBadge.className,
+    planClass: withCodexPlanBadgeStyle(planBadge.className),
     quotaItems,
   };
 }
@@ -1559,10 +1561,6 @@ export interface CursorAccountPresentation extends UnifiedAccountPresentation {
   isBanned: boolean;
 }
 
-export interface GeminiAccountPresentation extends UnifiedAccountPresentation {
-  isBanned: boolean;
-}
-
 function normalizeCursorUsagePercent(
   raw: number | null | undefined,
 ): number | null {
@@ -1674,47 +1672,51 @@ export function buildCursorAccountPresentation(
   };
 }
 
-export function buildGeminiAccountPresentation(
-  account: GeminiAccount,
+
+export function buildGrokAccountPresentation(
+  account: GrokAccount,
   t: Translate,
-): GeminiAccountPresentation {
-  const tierSummary = getGeminiTierQuotaSummary(account);
-  const planLabel = getGeminiPlanDisplayName(account);
-  const quotaItems: UnifiedQuotaMetric[] = [];
+): UnifiedAccountPresentation {
+  const quotaItems: UnifiedQuotaMetric[] = getGrokQuotaSummaryItems(account, t).map(
+    (item) => {
+      const usedPercent = clampPercent(item.percentage);
+      const remaining = clampPercent(100 - usedPercent);
+      const amountText = formatGrokQuotaUsedTotal(item.used, item.total);
+      const left =
+        item.used != null && item.total != null
+          ? Math.max(0, item.total - item.used)
+          : null;
+      // 与 Gemini 一致：文案与进度条均为剩余%（额度越少条越短）；颜色按已用比例
+      const remainingText = t("common.shared.quota.leftPercent", "{{value}}% left", {
+        value: Math.round(remaining),
+      });
+      const valueText = amountText
+        ? `${amountText} · ${remainingText}`
+        : remainingText;
+      return {
+        key: item.key,
+        label: item.label,
+        percentage: remaining,
+        progressPercent: remaining,
+        quotaClass: getGrokQuotaClass(usedPercent),
+        valueText,
+        resetAt: item.resetAtMs,
+        resetText: formatMetricResetText(item.resetAtMs, t),
+        used: item.used ?? usedPercent,
+        total: item.total ?? 100,
+        left: left ?? remaining,
+        showProgress: true,
+      };
+    },
+  );
 
-  [
-    tierSummary.gemini5h,
-    tierSummary.geminiWeekly,
-    tierSummary.claude5h,
-    tierSummary.claudeWeekly,
-  ].forEach((tier) => {
-    const remaining =
-      tier.remainingPercent == null
-        ? null
-        : clampPercent(tier.remainingPercent);
-    const usedPercent = remaining == null ? 100 : 100 - remaining;
-    quotaItems.push({
-      key: tier.key,
-      label: t(`gemini.quota.${tier.key}`, tier.label),
-      percentage: remaining ?? 0,
-      progressPercent: remaining ?? 0,
-      quotaClass: getCursorUsageQuotaClass(usedPercent),
-      valueText:
-        remaining == null
-          ? "--"
-          : t("gemini.quota.left", "{{value}}% left", { value: remaining }),
-      resetText: formatMetricResetText(tier.resetAt, t),
-      resetAt: tier.resetAt,
-      showProgress: true,
-    });
-  });
-
+  const planBadge = getGrokPlanBadge(account);
   return {
     id: account.id,
-    displayName: getGeminiAccountDisplayEmail(account),
-    planLabel,
-    planClass: getGeminiPlanBadgeClass(undefined, account),
-    isBanned: false,
+    displayName: getGrokAccountDisplayEmail(account),
+    planLabel: planBadge || t("common.none", "暂无"),
+    // Missing tier (暂无) uses Free styling, not red unknown.
+    planClass: planBadge ? "plan-badge-default" : "free",
     quotaItems,
   };
 }

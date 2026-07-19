@@ -36,9 +36,15 @@ import {
   CodexAccount,
   getCodexEffectiveQuotaPercentages,
   getCodexAuthMetadata,
+  getCodexPlanFilterKey,
   isCodexApiKeyAccount,
   isCodexTeamLikePlan,
 } from '../../types/codex';
+import {
+  buildCodexPlanFilterOptions,
+  createCodexPlanFilterCounts,
+  incrementCodexPlanFilterCount,
+} from '../../utils/codexAccountOverview';
 import { buildCodexAccountPresentation } from '../../presentation/platformAccountPresentation';
 import {
   CodexWakeupBatchResult,
@@ -69,6 +75,7 @@ import {
   maskSensitiveValue,
   PRIVACY_MODE_CHANGED_EVENT,
 } from '../../utils/privacy';
+import { isReducedMotionEnabled } from '../../utils/reducedMotion';
 
 const WAKEUP_ACCOUNT_PAGE_SIZE_OPTIONS = [50, 100, 200] as const;
 
@@ -327,16 +334,6 @@ function normalizeWakeupTag(value: string) {
   return value.trim().toLowerCase();
 }
 
-function resolveWakeupPlanBucket(planClass?: string) {
-  const upper = (planClass || '').trim().toUpperCase();
-  if (!upper || upper === 'FREE') return 'FREE';
-  if (upper.includes('ENTERPRISE')) return 'ENTERPRISE';
-  if (upper.includes('TEAM') || upper.includes('BUSINESS') || upper.includes('EDU')) return 'TEAM';
-  if (upper.includes('PLUS')) return 'PLUS';
-  if (upper.includes('PRO')) return 'PRO';
-  return 'OTHER';
-}
-
 function resolveWakeupQuotaBadges(
   presentation: ReturnType<typeof buildCodexAccountPresentation>,
 ): WakeupQuotaBadge[] {
@@ -423,7 +420,32 @@ function resolveTaskPreset(task: CodexWakeupTask, presets: CodexWakeupModelPrese
   );
 }
 
-function buildTaskDraft(task: CodexWakeupTask, presets: CodexWakeupModelPreset[]): TaskDraft {
+function filterExistingWakeupAccountIds(
+  accountIds: string[] | undefined,
+  existingAccountIds: Set<string> | Iterable<string>,
+): string[] {
+  const existing =
+    existingAccountIds instanceof Set
+      ? existingAccountIds
+      : new Set(Array.from(existingAccountIds));
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const rawId of accountIds ?? []) {
+    const accountId = rawId.trim();
+    if (!accountId || !existing.has(accountId) || seen.has(accountId)) {
+      continue;
+    }
+    seen.add(accountId);
+    result.push(accountId);
+  }
+  return result;
+}
+
+function buildTaskDraft(
+  task: CodexWakeupTask,
+  presets: CodexWakeupModelPreset[],
+  existingAccountIds?: Set<string> | Iterable<string>,
+): TaskDraft {
   const matchedPreset = resolveTaskPreset(task, presets);
   const startupDelayMinutes = normalizeStartupDelayMinutes(task.schedule.startup_delay_minutes);
   return {
@@ -431,7 +453,9 @@ function buildTaskDraft(task: CodexWakeupTask, presets: CodexWakeupModelPreset[]
     createdAt: task.created_at,
     name: task.name,
     enabled: task.enabled,
-    accountIds: task.account_ids,
+    accountIds: existingAccountIds
+      ? filterExistingWakeupAccountIds(task.account_ids, existingAccountIds)
+      : [...task.account_ids],
     prompt: task.prompt ?? '',
     modelPresetId: matchedPreset?.id ?? '',
     model: task.model ?? matchedPreset?.model ?? '',
@@ -724,12 +748,19 @@ function WakeupSingleSelectDropdown({
       setOpen(false);
     };
     document.addEventListener('mousedown', handlePointerDown);
+    const handleScroll = () => {
+      if (isReducedMotionEnabled()) {
+        setOpen(false);
+        return;
+      }
+      updatePanelPosition();
+    };
     window.addEventListener('resize', updatePanelPosition);
-    window.addEventListener('scroll', updatePanelPosition, true);
+    window.addEventListener('scroll', handleScroll, true);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       window.removeEventListener('resize', updatePanelPosition);
-      window.removeEventListener('scroll', updatePanelPosition, true);
+      window.removeEventListener('scroll', handleScroll, true);
     };
   }, [disabled, open]);
 
@@ -935,6 +966,14 @@ export function CodexWakeupContent({
     () => accounts.filter((account) => !isCodexApiKeyAccount(account)),
     [accounts],
   );
+  const oauthAccountIdSet = useMemo(
+    () => new Set(oauthAccounts.map((account) => account.id)),
+    [oauthAccounts],
+  );
+  const resolveTaskAccountIds = useCallback(
+    (task: CodexWakeupTask) => filterExistingWakeupAccountIds(task.account_ids, oauthAccountIdSet),
+    [oauthAccountIdSet],
+  );
   const modelPresetMap = useMemo(
     () => new Map(state.model_presets.map((preset) => [preset.id, preset])),
     [state.model_presets],
@@ -963,7 +1002,7 @@ export function CodexWakeupContent({
         contextText: string;
         planLabel: string;
         planClass: string;
-        planBucket: string;
+        planKey: string;
         quotaBadges: WakeupQuotaBadge[];
       }
     >();
@@ -974,7 +1013,7 @@ export function CodexWakeupContent({
         contextText: resolveAccountContextText(account, t),
         planLabel: presentation.planLabel,
         planClass: presentation.planClass || 'unknown',
-        planBucket: resolveWakeupPlanBucket(presentation.planClass),
+        planKey: getCodexPlanFilterKey(account),
         quotaBadges: resolveWakeupQuotaBadges(presentation),
       });
     });
@@ -991,36 +1030,20 @@ export function CodexWakeupContent({
     return Array.from(uniqueTags).sort((left, right) => left.localeCompare(right));
   }, [oauthAccounts]);
   const wakeupTierCounts = useMemo(() => {
-    const counts = {
-      all: oauthAccounts.length,
-      FREE: 0,
-      PLUS: 0,
-      PRO: 0,
-      TEAM: 0,
-      ENTERPRISE: 0,
-      OTHER: 0,
-    };
+    const counts = createCodexPlanFilterCounts(oauthAccounts.length);
     oauthAccounts.forEach((account) => {
-      const bucket = wakeupAccountMetaMap.get(account.id)?.planBucket || 'FREE';
-      if (bucket in counts) {
-        counts[bucket as keyof typeof counts] += 1;
-      }
+      incrementCodexPlanFilterCount(counts, getCodexPlanFilterKey(account));
     });
     return counts;
-  }, [oauthAccounts, wakeupAccountMetaMap]);
-  const wakeupTierFilterOptions = useMemo<MultiSelectFilterOption[]>(() => {
-    const options: MultiSelectFilterOption[] = [
-      { value: 'FREE', label: `FREE (${wakeupTierCounts.FREE})` },
-      { value: 'PLUS', label: `PLUS (${wakeupTierCounts.PLUS})` },
-      { value: 'PRO', label: `PRO (${wakeupTierCounts.PRO})` },
-      { value: 'TEAM', label: `TEAM (${wakeupTierCounts.TEAM})` },
-      { value: 'ENTERPRISE', label: `ENTERPRISE (${wakeupTierCounts.ENTERPRISE})` },
-    ];
-    if (wakeupTierCounts.OTHER > 0) {
-      options.push({ value: 'OTHER', label: `OTHER (${wakeupTierCounts.OTHER})` });
-    }
-    return options;
-  }, [wakeupTierCounts]);
+  }, [oauthAccounts]);
+  const wakeupTierFilterOptions = useMemo<MultiSelectFilterOption[]>(
+    () =>
+      buildCodexPlanFilterOptions(wakeupTierCounts, {
+        includeError: false,
+        pendingLabel: t('codex.pendingAuth.badge', '待授权'),
+      }),
+    [t, wakeupTierCounts],
+  );
   const [modelSelectionMemory, setModelSelectionMemory] = useState<WakeupModelSelectionMemory | null>(() =>
     readWakeupModelSelectionMemory(),
   );
@@ -1404,44 +1427,47 @@ export function CodexWakeupContent({
   );
 
   const buildTaskPreviewSession = useCallback(
-    (task: CodexWakeupTask): ExecutionSessionState => ({
-      runId: `preview:${task.id}`,
-      taskId: task.id,
-      triggerType: 'scheduled',
-      title: task.name,
-      runtime: {
-        ...CODEX_WAKEUP_OFFICIAL_RUNTIME,
-        checked_at: Date.now(),
-      },
-      startedAt: 0,
-      durationMs: undefined,
-      total: task.account_ids.length,
-      completed: 0,
-      successCount: 0,
-      failureCount: 0,
-      taskName: task.name,
-      running: false,
-      preview: true,
-      errorText: undefined,
-      records: task.account_ids.map((accountId, index) => {
-        const account = accountMap.get(accountId);
-        const meta = wakeupAccountMetaMap.get(accountId);
-        return {
-          id: `preview:${task.id}:${accountId}:${index}`,
-          accountId,
-          accountEmail: meta?.email || (account?.email || accountId),
-          accountContextText:
-            meta?.contextText || (account ? resolveAccountContextText(account, t) : undefined),
-          triggerType: 'scheduled',
-          status: 'pending' as const,
-          prompt: task.prompt,
-          model: task.model,
-          modelDisplayName: task.model_display_name,
-          modelReasoningEffort: task.model_reasoning_effort,
-        };
-      }),
-    }),
-    [accountMap, t, wakeupAccountMetaMap],
+    (task: CodexWakeupTask): ExecutionSessionState => {
+      const accountIds = resolveTaskAccountIds(task);
+      return {
+        runId: `preview:${task.id}`,
+        taskId: task.id,
+        triggerType: 'scheduled',
+        title: task.name,
+        runtime: {
+          ...CODEX_WAKEUP_OFFICIAL_RUNTIME,
+          checked_at: Date.now(),
+        },
+        startedAt: 0,
+        durationMs: undefined,
+        total: accountIds.length,
+        completed: 0,
+        successCount: 0,
+        failureCount: 0,
+        taskName: task.name,
+        running: false,
+        preview: true,
+        errorText: undefined,
+        records: accountIds.map((accountId, index) => {
+          const account = accountMap.get(accountId);
+          const meta = wakeupAccountMetaMap.get(accountId);
+          return {
+            id: `preview:${task.id}:${accountId}:${index}`,
+            accountId,
+            accountEmail: meta?.email || (account?.email || accountId),
+            accountContextText:
+              meta?.contextText || (account ? resolveAccountContextText(account, t) : undefined),
+            triggerType: 'scheduled',
+            status: 'pending' as const,
+            prompt: task.prompt,
+            model: task.model,
+            modelDisplayName: task.model_display_name,
+            modelReasoningEffort: task.model_reasoning_effort,
+          };
+        }),
+      };
+    },
+    [accountMap, resolveTaskAccountIds, t, wakeupAccountMetaMap],
   );
 
   const openTaskExecutionDetails = useCallback(
@@ -1621,7 +1647,10 @@ export function CodexWakeupContent({
         if (query && !email.includes(query)) {
           return false;
         }
-        if (selectedPlanTypes.size > 0 && !selectedPlanTypes.has(meta?.planBucket || 'FREE')) {
+        if (
+          selectedPlanTypes.size > 0 &&
+          !selectedPlanTypes.has(meta?.planKey || getCodexPlanFilterKey(account))
+        ) {
           return false;
         }
         if (selectedTags.size > 0) {
@@ -1707,18 +1736,8 @@ export function CodexWakeupContent({
     if (config.codex_auto_refresh_minutes === QUOTA_RESET_MIN_REFRESH_MINUTES) {
       return false;
     }
-    await invoke('save_general_config', {
-      language: config.language,
-      theme: config.theme,
-      autoRefreshMinutes: config.auto_refresh_minutes,
+    await invoke('save_refresh_interval_config', {
       codexAutoRefreshMinutes: QUOTA_RESET_MIN_REFRESH_MINUTES,
-      closeBehavior: config.close_behavior || 'ask',
-      opencodeAppPath: config.opencode_app_path ?? '',
-      antigravityAppPath: config.antigravity_app_path ?? '',
-      codexAppPath: config.codex_app_path ?? '',
-      vscodeAppPath: config.vscode_app_path ?? '',
-      opencodeSyncOnSwitch: config.opencode_sync_on_switch ?? false,
-      codexLaunchOnSwitch: config.codex_launch_on_switch ?? true,
     });
     window.dispatchEvent(new Event('config-updated'));
     return true;
@@ -1763,7 +1782,7 @@ export function CodexWakeupContent({
         contextText: resolveAccountContextText(account, t),
         planLabel: presentation.planLabel,
         planClass: presentation.planClass || 'unknown',
-        planBucket: resolveWakeupPlanBucket(presentation.planClass),
+        planKey: getCodexPlanFilterKey(account),
         quotaBadges: resolveWakeupQuotaBadges(presentation),
       };
       const maskedEmail = maskAccountText(meta.email);
@@ -2124,11 +2143,11 @@ export function CodexWakeupContent({
   }, [createEmptyTaskDraftWithRememberedModel]);
 
   const openEditTaskModal = useCallback((task: CodexWakeupTask) => {
-    setTaskDraft(buildTaskDraft(task, state.model_presets));
+    setTaskDraft(buildTaskDraft(task, state.model_presets, oauthAccountIdSet));
     setTaskModalError(null);
     setTaskAccountFilters(createEmptyAccountPickerFilters());
     setShowTaskModal(true);
-  }, [state.model_presets]);
+  }, [oauthAccountIdSet, state.model_presets]);
 
   const openTestModal = useCallback(async () => {
     setTestModalError(null);
@@ -2150,9 +2169,9 @@ export function CodexWakeupContent({
 
     handledOpenTestRequestSignalRef.current = openTestRequest.signal;
     const nextVariant = openTestRequest.variant ?? 'standard';
-    const oauthAccountIdSet = new Set(oauthAccounts.map((account) => account.id));
-    const nextAccountIds = Array.from(new Set(openTestRequest.accountIds ?? [])).filter(
-      (accountId) => oauthAccountIdSet.has(accountId),
+    const nextAccountIds = filterExistingWakeupAccountIds(
+      openTestRequest.accountIds,
+      oauthAccountIdSet,
     );
 
     setTestModalError(null);
@@ -2173,7 +2192,7 @@ export function CodexWakeupContent({
     if (openTestRequest.notice) {
       setNotice({ tone: 'success', text: openTestRequest.notice });
     }
-  }, [oauthAccounts, openTestRequest, resolvedModelSelection, setTestModalError]);
+  }, [oauthAccountIdSet, openTestRequest, resolvedModelSelection, setTestModalError]);
 
   const closeTaskModal = useCallback(() => {
     if (saving) return;
@@ -2339,11 +2358,16 @@ export function CodexWakeupContent({
             )
           : 0
         : undefined;
+    const nextAccountIds = filterExistingWakeupAccountIds(taskDraft.accountIds, oauthAccountIdSet);
+    if (nextAccountIds.length === 0) {
+      setTaskModalError(t('codex.wakeup.taskAccountsRequired'));
+      return;
+    }
     const nextTask: CodexWakeupTask = {
       id: taskDraft.id ?? crypto.randomUUID(),
       name: trimmedName,
       enabled: taskDraft.enabled,
-      account_ids: taskDraft.accountIds,
+      account_ids: nextAccountIds,
       prompt: taskDraft.prompt.trim() || undefined,
       model: selectedTaskPreset.model,
       model_display_name: selectedTaskPreset.name,
@@ -2384,14 +2408,22 @@ export function CodexWakeupContent({
     } catch (error) {
       setTaskModalError(String(error));
     }
-  }, [persistTasks, selectedTaskPreset, state.tasks, t, taskDraft]);
+  }, [oauthAccountIdSet, persistTasks, selectedTaskPreset, state.tasks, t, taskDraft]);
 
   const handleRunTask = useCallback(
     async (task: CodexWakeupTask) => {
+      const accountIds = resolveTaskAccountIds(task);
+      if (accountIds.length === 0) {
+        setNotice({
+          tone: 'error',
+          text: t('codex.wakeup.taskAccountsRequired'),
+        });
+        return;
+      }
       const confirmed = await confirmDialog(
         t('codex.wakeup.manualRunConfirm', {
           name: task.name,
-          count: task.account_ids.length,
+          count: accountIds.length,
         }),
         {
           title: t('common.confirm', '确认'),
@@ -2410,7 +2442,7 @@ export function CodexWakeupContent({
         buildExecutionSession(
           runId,
           'manual_task',
-          task.account_ids,
+          accountIds,
           task.prompt,
           task.id,
           task.name,
@@ -2476,7 +2508,7 @@ export function CodexWakeupContent({
         );
       }
     },
-    [buildExecutionSession, onRefreshAccounts, runTask, t],
+    [buildExecutionSession, onRefreshAccounts, resolveTaskAccountIds, runTask, t],
   );
 
   const handleRunTest = useCallback(async () => {
@@ -2698,7 +2730,8 @@ export function CodexWakeupContent({
       ) : (
         <div className="wakeup-task-grid">
           {sortedTasks.map((task) => {
-            const accountLabels = task.account_ids.map((accountId) => {
+            const existingTaskAccountIds = resolveTaskAccountIds(task);
+            const accountLabels = existingTaskAccountIds.map((accountId) => {
               const meta = wakeupAccountMetaMap.get(accountId);
               const value = meta?.email || accountMap.get(accountId)?.email || accountId;
               return maskAccountText(value);

@@ -2,23 +2,16 @@ export type CodexLocalAccessAddressKind = "local" | "lan";
 export type CodexLocalAccessScope = "localhost" | "lan";
 export type CodexLocalAccessClientBaseUrlHost = "localhost" | "127.0.0.1";
 export type CodexLocalAccessImageGenerationMode =
-  | "enabled"
-  | "images_only"
-  | "disabled";
+  "enabled" | "images_only" | "disabled";
 export type CodexLocalAccessGatewayMode = "legacy" | "sidecar";
 export type CodexLocalAccessRequestKind =
-  | "text"
-  | "image_generation"
-  | "image_edit"
-  | "other";
+  "text" | "image_generation" | "image_edit" | "other";
 export type CodexLocalAccessImageGenerationStatus =
-  | "unknown"
-  | "available"
-  | "unavailable"
-  | "disabled";
+  "unknown" | "available" | "unavailable" | "disabled";
 
 export type CodexLocalAccessRoutingStrategy =
   | "auto"
+  | "random"
   | "single_account"
   | "quota_high_first"
   | "quota_low_first"
@@ -31,6 +24,7 @@ export interface CodexLocalAccessCustomRoutingRule {
   accountId: string;
   priority: number;
   weight: number;
+  isBackup: boolean;
 }
 
 export interface CodexLocalAccessOAuthQuotaReserve {
@@ -51,16 +45,29 @@ export interface CodexLocalAccessModelAlias {
 
 export interface CodexLocalAccessModelPricing {
   modelId: string;
+  longContextThresholdTokens?: number | null;
   inputUsdPerMillion: number;
   outputUsdPerMillion: number;
   cachedInputUsdPerMillion?: number | null;
+  standardLongInputUsdPerMillion?: number | null;
+  standardLongOutputUsdPerMillion?: number | null;
+  standardLongCachedInputUsdPerMillion?: number | null;
+  priorityInputUsdPerMillion?: number | null;
+  priorityOutputUsdPerMillion?: number | null;
+  priorityCachedInputUsdPerMillion?: number | null;
+  priorityLongInputUsdPerMillion?: number | null;
+  priorityLongOutputUsdPerMillion?: number | null;
+  priorityLongCachedInputUsdPerMillion?: number | null;
 }
 
 export interface CodexLocalAccessApiKey {
   id: string;
   label: string;
   key: string;
+  providerGateway?: unknown | null;
+  inheritAccountPool?: boolean;
   accountIds?: string[];
+  priorityAccountIds?: string[];
   modelPrefix?: string | null;
   allowedModels: string[];
   excludedModels: string[];
@@ -119,10 +126,13 @@ export interface CodexLocalAccessCollection {
   modelPricingVersion: number;
   modelPricings: CodexLocalAccessModelPricing[];
   debugLogs: boolean;
+  immediateSseResponse: boolean;
+  maxConcurrentImageRequests: number;
   excludedModels: string[];
   sessionAffinity: boolean;
   sessionAffinityTtlMs: number;
   sessionAffinityDefaultEnabledMigrated?: boolean;
+  responsesWebsocketsEnabled: boolean;
   maxRetryCredentials: number;
   maxRetryIntervalMs: number;
   timeouts: CodexLocalAccessTimeouts;
@@ -194,9 +204,12 @@ export interface CodexLocalAccessUsageEvent {
   email: string;
   apiKeyId: string;
   apiKeyLabel: string;
+  /** 多开实例目录 ID（x-cockpit-instance-id） */
+  clientInstanceId?: string;
   modelId: string;
   gatewayMode?: CodexLocalAccessGatewayMode | null;
   requestKind: CodexLocalAccessRequestKind;
+  serviceTier?: string | null;
   success: boolean;
   httpStatus?: number | null;
   errorCategory: string;
@@ -239,9 +252,12 @@ export interface CodexLocalAccessRequestLogQuery {
   page: number;
   pageSize: number;
   statsRange?: "daily" | "weekly" | "monthly" | null;
+  startAt?: number | null;
+  endAt?: number | null;
   modelQuery?: string | null;
   accountQuery?: string | null;
   apiKeyQuery?: string | null;
+  instanceQuery?: string | null;
   gatewayMode?: CodexLocalAccessGatewayMode | null;
   requestKind?: CodexLocalAccessRequestKind | null;
   success?: boolean | null;
@@ -267,6 +283,9 @@ export interface CodexLocalAccessAccountHealth {
   lastFailureMessage: string | null;
   imageGenerationStatus: CodexLocalAccessImageGenerationStatus;
   imageGenerationCheckedAt: number | null;
+  schedulerAvailable: boolean | null;
+  schedulerReason: string | null;
+  schedulerNextRetryAt: number | null;
   cooldowns: CodexLocalAccessAccountCooldown[];
 }
 
@@ -306,6 +325,22 @@ export interface CodexLocalAccessState {
   stats: CodexLocalAccessStats;
   accountHealth: CodexLocalAccessAccountHealth[];
   quotaReserveStatus: CodexLocalAccessQuotaReserveStatus | null;
+}
+
+export interface CodexLocalAccessAppendAccountSkipped {
+  accountId: string;
+  reason:
+    | "not_found"
+    | "chat_completions_api_key"
+    | "free_restricted"
+    | "pending_oauth";
+}
+
+export interface CodexLocalAccessAppendAccountsResult {
+  state: CodexLocalAccessState;
+  syncedAccountIds: string[];
+  addedAccountIds: string[];
+  skippedAccounts: CodexLocalAccessAppendAccountSkipped[];
 }
 
 export interface CodexLocalAccessTestResult {

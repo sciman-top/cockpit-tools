@@ -61,7 +61,7 @@ fn resolve_provider_and_page(value: &str) -> Option<(&'static str, &'static str)
         "windsurf" => Some(("windsurf", "windsurf")),
         "kiro" => Some(("kiro", "kiro")),
         "cursor" => Some(("cursor", "cursor")),
-        "gemini" => Some(("gemini", "gemini")),
+        "grok" => Some(("grok", "grok")),
         "codebuddy" => Some(("codebuddy", "codebuddy")),
         "codebuddy_cn" | "codebuddycn" => Some(("codebuddy_cn", "codebuddy-cn")),
         "qoder" => Some(("qoder", "qoder")),
@@ -435,6 +435,15 @@ mod tests {
         assert_eq!(payload.api_base_url, None);
         assert_eq!(payload.min_app_version, None);
         assert!(payload.auto_import);
+    }
+
+    #[test]
+    fn parse_grok_import_link() {
+        let raw = "cockpit-tools://import?provider=grok&token=%7B%7D";
+        let payload = parse_external_import_url(raw).expect("payload");
+        assert_eq!(payload.provider_id, "grok");
+        assert_eq!(payload.page, "grok");
+        assert_eq!(payload.token, "{}");
     }
 
     #[test]

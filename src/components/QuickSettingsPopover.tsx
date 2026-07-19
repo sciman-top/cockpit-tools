@@ -23,8 +23,13 @@ import {
 } from '../utils/accountFilters';
 import { getSubscriptionTier } from '../utils/account';
 import {
+  getCodexPlanBadgeStyle,
+  isCodexAdditionalQuotaVisibleByDefault,
   isCodexCodeReviewQuotaVisibleByDefault,
+  persistCodexAdditionalQuotaVisible,
   persistCodexCodeReviewQuotaVisible,
+  persistCodexPlanBadgeStyle,
+  type CodexPlanBadgeStyle,
 } from '../utils/codexPreferences';
 import {
   FEATURE_UNLOCK_CHANGED_EVENT,
@@ -47,6 +52,7 @@ import {
   resolveAccountsOverviewScopeFromQuickSettingsType,
   setAccountsOverviewFilterPersistenceEnabled,
 } from '../utils/accountsOverviewFilterPersistence';
+import { CodexSshSyncSettingsControl } from './codex/CodexSshSyncSettingsControl';
 import './QuickSettingsPopover.css';
 
 /** GeneralConfig from backend */
@@ -58,13 +64,14 @@ interface GeneralConfig {
   codex_auto_refresh_minutes: number;
   claude_auto_refresh_minutes: number;
   codex_sync_wsl: boolean;
+  codex_app_ui_injection_enabled?: boolean;
   codex_wsl_config_dir: string;
   ghcp_auto_refresh_minutes: number;
   windsurf_auto_refresh_minutes: number;
   kiro_auto_refresh_minutes: number;
   cursor_auto_refresh_minutes: number;
-  gemini_auto_refresh_minutes: number;
-  gemini_sync_wsl: boolean;
+  grok_auto_refresh_minutes: number;
+  grok_sync_official_auth_on_switch: boolean;
   codebuddy_auto_refresh_minutes: number;
   codebuddy_cn_auto_refresh_minutes: number;
   qoder_auto_refresh_minutes: number;
@@ -109,6 +116,7 @@ interface GeneralConfig {
   ghcp_opencode_auth_overwrite_on_switch: boolean;
   ghcp_launch_on_switch: boolean;
   openclaw_auth_overwrite_on_switch: boolean;
+  hermes_auth_overwrite_on_switch?: boolean;
   codex_launch_on_switch: boolean;
   antigravity_launch_on_switch: boolean;
   codex_restart_specified_app_on_switch: boolean;
@@ -141,8 +149,8 @@ interface GeneralConfig {
   kiro_quota_alert_threshold: number;
   cursor_quota_alert_enabled: boolean;
   cursor_quota_alert_threshold: number;
-  gemini_quota_alert_enabled: boolean;
-  gemini_quota_alert_threshold: number;
+  grok_quota_alert_enabled: boolean;
+  grok_quota_alert_threshold: number;
   claude_quota_alert_enabled: boolean;
   claude_quota_alert_threshold: number;
   codebuddy_quota_alert_enabled: boolean;
@@ -173,7 +181,7 @@ export type QuickSettingsType =
   | 'windsurf'
   | 'kiro'
   | 'cursor'
-  | 'gemini'
+  | 'grok'
   | 'codebuddy'
   | 'codebuddy_cn'
   | 'qoder'
@@ -213,7 +221,7 @@ type QuotaAlertEnabledKey =
   | 'windsurf_quota_alert_enabled'
   | 'kiro_quota_alert_enabled'
   | 'cursor_quota_alert_enabled'
-  | 'gemini_quota_alert_enabled'
+  | 'grok_quota_alert_enabled'
   | 'codebuddy_quota_alert_enabled'
   | 'codebuddy_cn_quota_alert_enabled'
   | 'qoder_quota_alert_enabled'
@@ -231,7 +239,7 @@ type QuotaAlertThresholdKey =
   | 'windsurf_quota_alert_threshold'
   | 'kiro_quota_alert_threshold'
   | 'cursor_quota_alert_threshold'
-  | 'gemini_quota_alert_threshold'
+  | 'grok_quota_alert_threshold'
   | 'codebuddy_quota_alert_threshold'
   | 'codebuddy_cn_quota_alert_threshold'
   | 'qoder_quota_alert_threshold'
@@ -292,27 +300,6 @@ const getAppPathKeyForTarget = (target: AppPathTarget): keyof GeneralConfig => {
       return 'workbuddy_app_path';
     case 'zed':
       return 'zed_app_path';
-  }
-};
-
-const isTraeQuickSettingsType = (
-  value: QuickSettingsType,
-): value is 'trae' | 'trae_solo' | 'trae_cn' | 'trae_solo_cn' =>
-  value === 'trae' || value === 'trae_solo' || value === 'trae_cn' || value === 'trae_solo_cn';
-
-type TraeQuickSettingsType = 'trae' | 'trae_solo' | 'trae_cn' | 'trae_solo_cn';
-
-const getTraeAppScanRootsKey = (value: TraeQuickSettingsType): keyof GeneralConfig => {
-  switch (value) {
-    case 'trae_solo':
-      return 'trae_solo_app_scan_roots';
-    case 'trae_cn':
-      return 'trae_cn_app_scan_roots';
-    case 'trae_solo_cn':
-      return 'trae_solo_cn_app_scan_roots';
-    case 'trae':
-    default:
-      return 'trae_app_scan_roots';
   }
 };
 
@@ -398,8 +385,8 @@ const getCurrentAccountRefreshPlatformForType = (
       return 'kiro';
     case 'cursor':
       return 'cursor';
-    case 'gemini':
-      return 'gemini';
+    case 'grok':
+      return 'grok';
     case 'codebuddy':
       return 'codebuddy';
     case 'codebuddy_cn':
@@ -443,9 +430,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     );
   const [isOpen, setIsOpen] = useState(false);
   const [config, setConfig] = useState<GeneralConfig | null>(null);
-  const [saving, setSaving] = useState(false);
   const [pathDetecting, setPathDetecting] = useState(false);
-  const [appScanRootsDraft, setAppScanRootsDraft] = useState('');
   const [appLaunchCandidates, setAppLaunchCandidates] = useState<AppLaunchCandidate[]>([]);
   const [openingCodexConfig, setOpeningCodexConfig] = useState(false);
   const [codexQuickConfig, setCodexQuickConfig] = useState<CodexQuickConfig | null>(null);
@@ -484,12 +469,22 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   const [codexShowCodeReviewQuota, setCodexShowCodeReviewQuota] = useState(
     isCodexCodeReviewQuotaVisibleByDefault,
   );
+  const [codexShowAdditionalQuota, setCodexShowAdditionalQuota] = useState(
+    isCodexAdditionalQuotaVisibleByDefault,
+  );
+  const [codexPlanBadgeStyle, setCodexPlanBadgeStyle] = useState<CodexPlanBadgeStyle>(
+    getCodexPlanBadgeStyle,
+  );
   const [currentAccountRefreshMap, setCurrentAccountRefreshMap] =
     useState<CurrentAccountRefreshMinutesMap>(() => buildDefaultCurrentAccountRefreshMinutesMap());
   const [antigravitySeamlessSwitchUnlocked, setAntigravitySeamlessSwitchUnlocked] = useState(
     isAntigravitySeamlessSwitchFeatureUnlocked,
   );
   const modalRef = useRef<HTMLDivElement>(null);
+  const configRef = useRef<GeneralConfig | null>(null);
+  const configSaveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const configSaveVersionRef = useRef(0);
+  const configLoadVersionRef = useRef(0);
   const refreshPresets = ['-1', '2', '5', '10', '15'];
   const thresholdPresets = ['0', '20', '40', '60'];
   const creditsThresholdPresets = ['0', '5', '10', '20'];
@@ -822,6 +817,10 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       setOverviewFilterPersistenceEnabledState(
         readAccountsOverviewFilterPersistenceEnabled(overviewFilterScope),
       );
+    } else {
+      configLoadVersionRef.current += 1;
+      configRef.current = null;
+      setConfig(null);
     }
   }, [isOpen, loadCodexQuickConfig, overviewFilterScope, type]);
 
@@ -862,7 +861,20 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   }, [type]);
 
   const loadConfig = async () => {
+    const loadVersion = configLoadVersionRef.current + 1;
+    configLoadVersionRef.current = loadVersion;
     try {
+      while (true) {
+        const pendingSaves = configSaveQueueRef.current;
+        await pendingSaves;
+        if (pendingSaves === configSaveQueueRef.current) {
+          break;
+        }
+      }
+      if (loadVersion !== configLoadVersionRef.current) {
+        return;
+      }
+      const saveVersionAtStart = configSaveVersionRef.current;
       setError(null);
       const antigravityScopeDataPromise =
         type === 'antigravity'
@@ -887,6 +899,13 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       ]);
       const [nextAntigravityAccounts, nextAntigravityGroups] = antigravityScopeData;
       const [nextCodexAccounts, nextCodexGroups] = codexScopeData;
+      if (
+        loadVersion !== configLoadVersionRef.current ||
+        saveVersionAtStart !== configSaveVersionRef.current
+      ) {
+        return;
+      }
+      configRef.current = cfg;
       setConfig(cfg);
       setAutoSwitchDisplayGroups(groups);
       setAntigravityAccounts(nextAntigravityAccounts || []);
@@ -907,15 +926,11 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       setCodexAutoSwitchSecondaryCustomThreshold(String(cfg.codex_auto_switch_secondary_threshold));
       setCodexQuotaAlertPrimaryCustomThreshold(String(cfg.codex_quota_alert_primary_threshold));
       setCodexQuotaAlertSecondaryCustomThreshold(String(cfg.codex_quota_alert_secondary_threshold));
-      setAppScanRootsDraft(
-        type === 'claude'
-          ? cfg.claude_app_scan_roots || ''
-          : isTraeQuickSettingsType(type)
-            ? String(cfg[getTraeAppScanRootsKey(type)] || '')
-            : '',
-      );
       setAppLaunchCandidates([]);
     } catch (err) {
+      if (loadVersion !== configLoadVersionRef.current) {
+        return;
+      }
       console.error('Failed to load config:', err);
       setError(t('quickSettings.error.loadFailed', {
         error: String(err),
@@ -933,7 +948,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       case 'windsurf': return 'windsurf_auto_refresh_minutes';
       case 'kiro': return 'kiro_auto_refresh_minutes';
       case 'cursor': return 'cursor_auto_refresh_minutes';
-      case 'gemini': return 'gemini_auto_refresh_minutes';
+      case 'grok': return 'grok_auto_refresh_minutes';
       case 'codebuddy': return 'codebuddy_auto_refresh_minutes';
       case 'codebuddy_cn': return 'codebuddy_cn_auto_refresh_minutes';
       case 'qoder': return 'qoder_auto_refresh_minutes';
@@ -950,137 +965,39 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
 
   const saveConfig = useCallback(
     async (updates: Partial<GeneralConfig>) => {
-      if (!config || saving) return;
-      const merged = { ...config, ...updates };
-      setConfig(merged);
-      setSaving(true);
-      try {
-        await invoke('save_general_config', {
-          language: merged.language,
-          theme: merged.theme,
-          uiScale: merged.ui_scale,
-          autoRefreshMinutes: merged.auto_refresh_minutes,
-          codexAutoRefreshMinutes: merged.codex_auto_refresh_minutes,
-          claudeAutoRefreshMinutes: merged.claude_auto_refresh_minutes,
-          codexSyncWsl: merged.codex_sync_wsl,
-          codexWslConfigDir: merged.codex_wsl_config_dir,
-          ghcpAutoRefreshMinutes: merged.ghcp_auto_refresh_minutes,
-          windsurfAutoRefreshMinutes: merged.windsurf_auto_refresh_minutes,
-          kiroAutoRefreshMinutes: merged.kiro_auto_refresh_minutes,
-          cursorAutoRefreshMinutes: merged.cursor_auto_refresh_minutes,
-          geminiAutoRefreshMinutes: merged.gemini_auto_refresh_minutes,
-          geminiSyncWsl: merged.gemini_sync_wsl,
-          codebuddyAutoRefreshMinutes: merged.codebuddy_auto_refresh_minutes,
-          codebuddyCnAutoRefreshMinutes: merged.codebuddy_cn_auto_refresh_minutes,
-          workbuddyAutoRefreshMinutes: merged.workbuddy_auto_refresh_minutes,
-          qoderAutoRefreshMinutes: merged.qoder_auto_refresh_minutes,
-          zcodeAutoRefreshMinutes: merged.zcode_auto_refresh_minutes,
-          traeAutoRefreshMinutes: merged.trae_auto_refresh_minutes,
-          traeSoloAutoRefreshMinutes: merged.trae_solo_auto_refresh_minutes,
-          traeCnAutoRefreshMinutes: merged.trae_cn_auto_refresh_minutes,
-          traeSoloCnAutoRefreshMinutes: merged.trae_solo_cn_auto_refresh_minutes,
-          zedAutoRefreshMinutes: merged.zed_auto_refresh_minutes,
-          closeBehavior: merged.close_behavior,
-          minimizeBehavior: merged.minimize_behavior,
-          hideDockIcon: merged.hide_dock_icon,
-          trayIconStyle: merged.tray_icon_style,
-          opencodeAppPath: merged.opencode_app_path,
-          antigravityAppPath: merged.antigravity_app_path,
-          codexAppPath: merged.codex_app_path,
-          claudeAppPath: merged.claude_app_path,
-          claudeAppScanRoots: merged.claude_app_scan_roots,
-          codexSpecifiedAppPath: merged.codex_specified_app_path,
-          vscodeAppPath: merged.vscode_app_path,
-          windsurfAppPath: merged.windsurf_app_path,
-          kiroAppPath: merged.kiro_app_path,
-          cursorAppPath: merged.cursor_app_path,
-          codebuddyAppPath: merged.codebuddy_app_path,
-          codebuddyCnAppPath: merged.codebuddy_cn_app_path,
-          qoderAppPath: merged.qoder_app_path,
-          zcodeAppPath: merged.zcode_app_path,
-          traeAppPath: merged.trae_app_path,
-          traeSoloAppPath: merged.trae_solo_app_path,
-          traeCnAppPath: merged.trae_cn_app_path,
-          traeSoloCnAppPath: merged.trae_solo_cn_app_path,
-          traeAppScanRoots: merged.trae_app_scan_roots,
-          traeSoloAppScanRoots: merged.trae_solo_app_scan_roots,
-          traeCnAppScanRoots: merged.trae_cn_app_scan_roots,
-          traeSoloCnAppScanRoots: merged.trae_solo_cn_app_scan_roots,
-          workbuddyAppPath: merged.workbuddy_app_path,
-          zedAppPath: merged.zed_app_path,
-          opencodeSyncOnSwitch: merged.opencode_sync_on_switch,
-          opencodeAuthOverwriteOnSwitch: merged.opencode_auth_overwrite_on_switch,
-          ghcpOpencodeSyncOnSwitch: merged.ghcp_opencode_sync_on_switch,
-          ghcpOpencodeAuthOverwriteOnSwitch: merged.ghcp_opencode_auth_overwrite_on_switch,
-          ghcpLaunchOnSwitch: merged.ghcp_launch_on_switch,
-          openclawAuthOverwriteOnSwitch: merged.openclaw_auth_overwrite_on_switch,
-          codexLaunchOnSwitch: merged.codex_launch_on_switch,
-          antigravityLaunchOnSwitch: merged.antigravity_launch_on_switch,
-          codexRestartSpecifiedAppOnSwitch: merged.codex_restart_specified_app_on_switch,
-          codexLocalAccessEntryVisible: merged.codex_local_access_entry_visible,
-          antigravityDualSwitchNoRestartEnabled: merged.antigravity_dual_switch_no_restart_enabled,
-          autoSwitchEnabled: merged.auto_switch_enabled,
-          autoSwitchThreshold: merged.auto_switch_threshold,
-          autoSwitchCreditsEnabled: merged.auto_switch_credits_enabled,
-          autoSwitchCreditsThreshold: merged.auto_switch_credits_threshold,
-          autoSwitchScopeMode: merged.auto_switch_scope_mode,
-          autoSwitchSelectedGroupIds: merged.auto_switch_selected_group_ids,
-          autoSwitchAccountScopeMode: merged.auto_switch_account_scope_mode,
-          autoSwitchSelectedAccountIds: merged.auto_switch_selected_account_ids,
-          codexAutoSwitchEnabled: merged.codex_auto_switch_enabled,
-          codexAutoSwitchPrimaryThreshold: merged.codex_auto_switch_primary_threshold,
-          codexAutoSwitchSecondaryThreshold: merged.codex_auto_switch_secondary_threshold,
-          codexAutoSwitchAccountScopeMode: merged.codex_auto_switch_account_scope_mode,
-          codexAutoSwitchSelectedAccountIds: merged.codex_auto_switch_selected_account_ids,
-          quotaAlertEnabled: merged.quota_alert_enabled,
-          quotaAlertThreshold: merged.quota_alert_threshold,
-          codexQuotaAlertEnabled: merged.codex_quota_alert_enabled,
-          codexQuotaAlertThreshold: merged.codex_quota_alert_threshold,
-          codexQuotaAlertPrimaryThreshold: merged.codex_quota_alert_primary_threshold,
-          codexQuotaAlertSecondaryThreshold: merged.codex_quota_alert_secondary_threshold,
-          claudeQuotaAlertEnabled: merged.claude_quota_alert_enabled,
-          claudeQuotaAlertThreshold: merged.claude_quota_alert_threshold,
-          ghcpQuotaAlertEnabled: merged.ghcp_quota_alert_enabled,
-          ghcpQuotaAlertThreshold: merged.ghcp_quota_alert_threshold,
-          windsurfQuotaAlertEnabled: merged.windsurf_quota_alert_enabled,
-          windsurfQuotaAlertThreshold: merged.windsurf_quota_alert_threshold,
-          kiroQuotaAlertEnabled: merged.kiro_quota_alert_enabled,
-          kiroQuotaAlertThreshold: merged.kiro_quota_alert_threshold,
-          cursorQuotaAlertEnabled: merged.cursor_quota_alert_enabled,
-          cursorQuotaAlertThreshold: merged.cursor_quota_alert_threshold,
-          geminiQuotaAlertEnabled: merged.gemini_quota_alert_enabled,
-          geminiQuotaAlertThreshold: merged.gemini_quota_alert_threshold,
-          codebuddyQuotaAlertEnabled: merged.codebuddy_quota_alert_enabled,
-          codebuddyQuotaAlertThreshold: merged.codebuddy_quota_alert_threshold,
-          codebuddyCnQuotaAlertEnabled: merged.codebuddy_cn_quota_alert_enabled,
-          codebuddyCnQuotaAlertThreshold: merged.codebuddy_cn_quota_alert_threshold,
-          qoderQuotaAlertEnabled: merged.qoder_quota_alert_enabled,
-          qoderQuotaAlertThreshold: merged.qoder_quota_alert_threshold,
-          traeQuotaAlertEnabled: merged.trae_quota_alert_enabled,
-          traeQuotaAlertThreshold: merged.trae_quota_alert_threshold,
-          traeSoloQuotaAlertEnabled: merged.trae_solo_quota_alert_enabled,
-          traeSoloQuotaAlertThreshold: merged.trae_solo_quota_alert_threshold,
-          traeCnQuotaAlertEnabled: merged.trae_cn_quota_alert_enabled,
-          traeCnQuotaAlertThreshold: merged.trae_cn_quota_alert_threshold,
-          traeSoloCnQuotaAlertEnabled: merged.trae_solo_cn_quota_alert_enabled,
-          traeSoloCnQuotaAlertThreshold: merged.trae_solo_cn_quota_alert_threshold,
-          workbuddyQuotaAlertEnabled: merged.workbuddy_quota_alert_enabled,
-          workbuddyQuotaAlertThreshold: merged.workbuddy_quota_alert_threshold,
-          zedQuotaAlertEnabled: merged.zed_quota_alert_enabled,
-          zedQuotaAlertThreshold: merged.zed_quota_alert_threshold,
-        });
+      const current = configRef.current;
+      if (!current) return;
+      const optimisticConfig = { ...current, ...updates };
+      configRef.current = optimisticConfig;
+      setConfig(optimisticConfig);
+      setError(null);
+      const saveVersion = configSaveVersionRef.current + 1;
+      configSaveVersionRef.current = saveVersion;
+
+      const operation = configSaveQueueRef.current.then(async () => {
+        const latest = await invoke<GeneralConfig>('get_general_config');
+        const merged = { ...latest, ...updates };
+        await invoke('patch_general_config', { updates });
+        if (saveVersion === configSaveVersionRef.current) {
+          configRef.current = merged;
+          setConfig(merged);
+        }
         window.dispatchEvent(new Event('config-updated'));
-      } catch (err) {
+      }).catch((err) => {
         console.error('Failed to save config:', err);
         setError(t('quickSettings.error.saveFailed', {
           error: String(err),
           defaultValue: '保存配置失败：{{error}}',
         }));
-      } finally {
-        setSaving(false);
-      }
+        if (saveVersion === configSaveVersionRef.current) {
+          void loadConfig();
+        }
+      });
+
+      configSaveQueueRef.current = operation;
+      await operation;
     },
-    [config, saving]
+    [t]
   );
 
   const handlePickAppPath = async (target: AppPathTarget) => {
@@ -1100,38 +1017,6 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     }
   };
 
-  const handlePickAppScanRoot = async () => {
-    try {
-      const selected = await open({ multiple: false, directory: true });
-      const path = Array.isArray(selected) ? selected[0] : selected;
-      if (!path || !config) return;
-      setAppScanRootsDraft(path);
-      setAppLaunchCandidates([]);
-      if (type === 'claude') {
-        saveConfig({ claude_app_scan_roots: path });
-      } else if (isTraeQuickSettingsType(type)) {
-        saveConfig({ [getTraeAppScanRootsKey(type)]: path });
-      }
-    } catch (err) {
-      console.error('Failed to pick app scan root:', err);
-      setError(t('quickSettings.error.pickPathFailed', {
-        error: String(err),
-        defaultValue: '选择路径失败：{{error}}',
-      }));
-    }
-  };
-
-  const handleClearAppScanRoot = () => {
-    if (!config || pathDetecting) return;
-    setAppScanRootsDraft('');
-    setAppLaunchCandidates([]);
-    if (type === 'claude') {
-      saveConfig({ claude_app_scan_roots: '' });
-    } else if (isTraeQuickSettingsType(type)) {
-      saveConfig({ [getTraeAppScanRootsKey(type)]: '' });
-    }
-  };
-
   const handleResetAppPath = async (target: AppPathTarget) => {
     if (pathDetecting) return;
     if (isWindows) {
@@ -1140,16 +1025,13 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       try {
         const candidates = await invoke<AppLaunchCandidate[]>('scan_app_launch_targets', {
           app: target,
-          scanRoots: appScanRootsDraft.trim() || null,
         });
         setAppLaunchCandidates(candidates);
-        if (candidates.length === 0 && target !== 'claude') {
-          setError(t('quickSettings.appPath.scanEmpty', '未扫描到应用，请手动选择路径或调整扫描范围。'));
-        } else if (candidates.length === 0) {
+        if (candidates.length === 0) {
           setError(
             t(
-              'quickSettings.claude.scanEmpty',
-              '未扫描到 Claude Desktop，请手动选择 Claude.exe 或调整扫描范围。',
+              'quickSettings.appPath.scanEmpty',
+              '未检测到正在运行的应用，请先启动后重试，或手动选择路径。',
             ),
           );
         }
@@ -1228,13 +1110,13 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         case 'github_copilot':
           return 'GitHub Copilot';
         case 'windsurf':
-          return 'Windsurf';
+          return 'Devin';
         case 'kiro':
           return 'Kiro';
         case 'cursor':
           return 'Cursor';
-        case 'gemini':
-          return 'Gemini Cli';
+        case 'grok':
+          return 'Grok CLI';
         case 'codebuddy':
           return 'CodeBuddy';
         case 'codebuddy_cn':
@@ -1278,8 +1160,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         return 'kiro_quota_alert_enabled';
       case 'cursor':
         return 'cursor_quota_alert_enabled';
-      case 'gemini':
-        return 'gemini_quota_alert_enabled';
+      case 'grok':
+        return 'grok_quota_alert_enabled';
       case 'codebuddy':
         return 'codebuddy_quota_alert_enabled';
       case 'codebuddy_cn':
@@ -1317,8 +1199,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         return 'kiro_quota_alert_threshold';
       case 'cursor':
         return 'cursor_quota_alert_threshold';
-      case 'gemini':
-        return 'gemini_quota_alert_threshold';
+      case 'grok':
+        return 'grok_quota_alert_threshold';
       case 'codebuddy':
         return 'codebuddy_quota_alert_threshold';
       case 'codebuddy_cn':
@@ -1358,8 +1240,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         return t('quickSettings.kiroRefreshInterval', '配额自动刷新');
       case 'cursor':
         return t('quickSettings.cursorRefreshInterval', '配额自动刷新');
-      case 'gemini':
-        return t('quickSettings.geminiRefreshInterval', '配额自动刷新');
+      case 'grok':
+        return t('quickSettings.refreshInterval', '配额自动刷新');
       case 'codebuddy':
         return t('quickSettings.refreshInterval', '配额自动刷新');
       case 'codebuddy_cn':
@@ -1380,7 +1262,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     }
   };
 
-  const showAppPathSection = type !== 'gemini';
+  const showAppPathSection = type !== 'grok';
   const antigravityLaunchOnSwitch = config?.antigravity_launch_on_switch ?? true;
 
   const getAppPath = (): string => {
@@ -1400,7 +1282,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         return config.kiro_app_path;
       case 'cursor':
         return config.cursor_app_path;
-      case 'gemini':
+      case 'grok':
         return '';
       case 'codebuddy':
         return config.codebuddy_app_path;
@@ -1438,13 +1320,13 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       case 'github_copilot':
         return t('quickSettings.githubCopilot.appPath', 'VS Code 路径');
       case 'windsurf':
-        return t('quickSettings.windsurf.appPath', 'Windsurf 路径');
+        return t('quickSettings.windsurf.appPath', 'Devin 路径');
       case 'kiro':
         return t('quickSettings.kiro.appPath', 'Kiro 路径');
       case 'cursor':
         return t('quickSettings.cursor.appPath', 'Cursor 路径');
-      case 'gemini':
-        return t('quickSettings.gemini.appPath', 'Gemini Cli 路径');
+      case 'grok':
+        return t('quickSettings.grok.appPath', 'Grok CLI 路径');
       case 'codebuddy':
         return t('quickSettings.codebuddy.appPath', 'CodeBuddy 路径');
       case 'codebuddy_cn':
@@ -1484,7 +1366,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         return 'kiro';
       case 'cursor':
         return 'cursor';
-      case 'gemini':
+      case 'grok':
         return 'antigravity';
       case 'codebuddy':
         return 'codebuddy';
@@ -1565,6 +1447,34 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     config?.codex_auto_switch_account_scope_mode,
   );
   const codexAutoSwitchSelectedAccountIds = config?.codex_auto_switch_selected_account_ids ?? [];
+
+  // Drop stale selected-ID lists when scope is "all accounts" (runtime already ignores them).
+  useEffect(() => {
+    if (!config) return;
+    if (
+      type === 'codex' &&
+      codexAutoSwitchAccountScopeMode === AUTO_SWITCH_SCOPE_ALL_ACCOUNTS &&
+      codexAutoSwitchSelectedAccountIds.length > 0
+    ) {
+      void saveConfig({ codex_auto_switch_selected_account_ids: [] });
+      return;
+    }
+    if (
+      type === 'antigravity' &&
+      autoSwitchAccountScopeMode === AUTO_SWITCH_SCOPE_ALL_ACCOUNTS &&
+      autoSwitchSelectedAccountIds.length > 0
+    ) {
+      void saveConfig({ auto_switch_selected_account_ids: [] });
+    }
+  }, [
+    autoSwitchAccountScopeMode,
+    autoSwitchSelectedAccountIds.length,
+    codexAutoSwitchAccountScopeMode,
+    codexAutoSwitchSelectedAccountIds.length,
+    config,
+    saveConfig,
+    type,
+  ]);
 
   const handleRefreshSelectChange = (val: string) => {
     if (val === 'custom') {
@@ -1757,6 +1667,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   /** 共用的配额预警 enable + threshold 控件 */
   const renderQuotaAlertControls = () => {
     const isCodexAlert = type === 'codex';
+    const isGrokAlert = type === 'grok';
     return (
       <>
         <div className="qs-row" style={{ marginTop: type === 'antigravity' ? 10 : 0 }}>
@@ -1925,10 +1836,15 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
               </div>
             )}
             <div className="qs-hint" style={{ marginTop: 6 }}>
-              {t(
-                'quickSettings.quotaAlert.hint',
-                '当当前账号任意模型配额低于阈值时，发送原生通知并在页面提示快捷切号。'
-              )}
+              {isGrokAlert
+                ? t(
+                    'grok.quotaAlert.hint',
+                    '当当前账号任意配额项低于阈值时，发送原生通知并在页面提示快捷切号。',
+                  )
+                : t(
+                    'quickSettings.quotaAlert.hint',
+                    '当当前账号任意模型配额低于阈值时，发送原生通知并在页面提示快捷切号。',
+                  )}
               {isCodexAlert && (
                 <>
                   <div>
@@ -1954,6 +1870,16 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     persistCodexCodeReviewQuotaVisible(checked);
   };
 
+  const handleCodexAdditionalQuotaToggle = (checked: boolean) => {
+    setCodexShowAdditionalQuota(checked);
+    persistCodexAdditionalQuotaVisible(checked);
+  };
+
+  const handleCodexPlanBadgeStyleChange = (style: CodexPlanBadgeStyle) => {
+    setCodexPlanBadgeStyle(style);
+    persistCodexPlanBadgeStyle(style);
+  };
+
   const overlayContent = isOpen ? (
     <div className="qs-overlay">
       <div className="qs-modal" ref={modalRef}>
@@ -1976,6 +1902,40 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
 
         {config && (
           <div className="qs-body">
+            {type === 'grok' && (
+              <div className="qs-section">
+                <div className="qs-row">
+                  <div className="qs-row-label">
+                    <span>
+                      {t(
+                        'quickSettings.grok.syncOfficialAuthOnSwitch',
+                        '切号同步官方登录',
+                      )}
+                    </span>
+                  </div>
+                  <div className="qs-row-control">
+                    <label className="qs-switch">
+                      <input
+                        type="checkbox"
+                        checked={config.grok_sync_official_auth_on_switch}
+                        onChange={(event) =>
+                          saveConfig({
+                            grok_sync_official_auth_on_switch: event.target.checked,
+                          })
+                        }
+                      />
+                      <span className="qs-switch-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                <div className="qs-hint">
+                  {t(
+                    'quickSettings.grok.syncOfficialAuthOnSwitchDesc',
+                    '开启后，默认实例切换 OAuth 账号会写入官方 ~/.grok/auth.json；关闭时使用独立 GROK_HOME。API Key 和多开实例不改写官方登录。',
+                  )}
+                </div>
+              </div>
+            )}
             {type === 'codex' && (
               <div className="qs-section">
                 <div className="qs-row">
@@ -2005,6 +1965,36 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                   {t(
                     'settings.general.codexLocalAccessEntryVisibleDesc',
                     '仅控制 Codex 总览中的 API 服务入口显示，不会停止本地 API 服务；关闭后可在这里重新打开。',
+                  )}
+                </div>
+                <div className="qs-row" style={{ marginTop: 8 }}>
+                  <div className="qs-row-label">
+                    <span>
+                      {t(
+                        'settings.general.codexAppUiInjection',
+                        '显示 API 服务额度',
+                      )}
+                    </span>
+                  </div>
+                  <div className="qs-row-control">
+                    <label className="qs-switch">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(config.codex_app_ui_injection_enabled)}
+                        onChange={(event) =>
+                          saveConfig({
+                            codex_app_ui_injection_enabled: event.target.checked,
+                          })
+                        }
+                      />
+                      <span className="qs-switch-slider"></span>
+                    </label>
+                  </div>
+                </div>
+                <div className="qs-hint">
+                  {t(
+                    'settings.general.codexAppUiInjectionDesc',
+                    '重启 Codex 实例后，在输入框下方显示 Cockpit Tools API 服务的账号数、周额度和 5h 额度。需保持 Cockpit Tools 在后台运行；完全退出或网络不可用时，额度不会继续刷新。',
                   )}
                 </div>
                 {isWindows && (
@@ -2050,33 +2040,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                     )}
                   </>
                 )}
-              </div>
-            )}
-
-            {type === 'gemini' && isWindows && (
-              <div className="qs-section">
-                <div className="qs-row">
-                  <div className="qs-row-label">
-                    <span>
-                      {t('quickSettings.gemini.syncWsl', '同步 WSL 配置')}
-                    </span>
-                  </div>
-                  <div className="qs-row-control">
-                    <label className="qs-switch">
-                      <input
-                        type="checkbox"
-                        checked={config.gemini_sync_wsl}
-                        onChange={(e) =>
-                          saveConfig({ gemini_sync_wsl: e.target.checked })
-                        }
-                      />
-                      <span className="qs-switch-slider"></span>
-                    </label>
-                  </div>
-                </div>
-                <div className="qs-hint">
-                  {t('quickSettings.gemini.syncWslDesc', '切号时自动覆盖 WSL 下的 .gemini 配置')}
-                </div>
+                <CodexSshSyncSettingsControl variant="quick" />
               </div>
             )}
 
@@ -2267,40 +2231,6 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                     </div>
                   </>
                 )}
-	                {isWindows && config && (
-	                  <div className="qs-claude-scan-roots">
-                    <label>{t('appPath.missing.scanRoots', '扫描范围')}</label>
-                    <div className="qs-claude-scan-root-row">
-                      <input
-                        type="text"
-                        className="qs-path-input qs-claude-scan-roots-input"
-                        value={appScanRootsDraft}
-                        placeholder={t(
-                          'appPath.missing.scanRootsPlaceholder',
-                          '可选，选择一个目录或盘符；留空时按盘符扫描 WindowsApps 并补充开始菜单应用。',
-                        )}
-                        readOnly
-                        disabled={pathDetecting}
-                      />
-                      <div className="qs-path-actions">
-                        <button
-                          className="qs-btn"
-                          onClick={handlePickAppScanRoot}
-                          disabled={pathDetecting}
-                        >
-                          {t('settings.general.codexPathSelect', '选择')}
-                        </button>
-                        <button
-                          className="qs-btn"
-                          onClick={handleClearAppScanRoot}
-                          disabled={pathDetecting || !appScanRootsDraft.trim()}
-                        >
-                          {t('common.clear', '清除')}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
                 {config && (type !== 'antigravity' || antigravityLaunchOnSwitch) && (
 	                <div className="qs-path-control">
                   <input
@@ -2350,14 +2280,14 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                         pathDetecting
                           ? t('common.loading', '加载中...')
                           : isWindows
-                            ? t('appPath.missing.scanApps', '扫描应用')
+                            ? t('appPath.missing.scanApps', '检测运行中应用')
                             : t('settings.general.codexPathReset', '恢复默认')
                       }
                     >
                       {isWindows ? (
                         pathDetecting
                           ? t('common.loading', '加载中...')
-                          : t('appPath.missing.scanApps', '扫描应用')
+                          : t('appPath.missing.scanApps', '检测运行中应用')
                       ) : (
                         <RefreshCw size={12} className={pathDetecting ? 'spin' : undefined} />
                       )}
@@ -2704,6 +2634,30 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                     <Zap size={15} />
                     <span>
                       {t(
+                        'settings.general.hermesAuthOverwrite',
+                        '切换 Codex 时同步 Hermes'
+                      )}
+                    </span>
+                  </div>
+                  <div className="qs-row-control">
+                    <label className="qs-switch">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(config.hermes_auth_overwrite_on_switch)}
+                        onChange={(e) =>
+                          saveConfig({ hermes_auth_overwrite_on_switch: e.target.checked })
+                        }
+                      />
+                      <span className="qs-switch-slider"></span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="qs-row">
+                  <div className="qs-row-label">
+                    <Zap size={15} />
+                    <span>
+                      {t(
                         'settings.general.opencodeAuthOverwrite',
                         '切换 Codex 时覆盖 OpenCode 登录信息'
                       )}
@@ -2762,6 +2716,44 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                       />
                       <span className="qs-switch-slider"></span>
                     </label>
+                  </div>
+                </div>
+
+                <div className="qs-row">
+                  <div className="qs-row-label">
+                    <Zap size={15} />
+                    <span>{t('codex.list.showAdditionalQuota', '显示模型专属配额')}</span>
+                  </div>
+                  <div className="qs-row-control">
+                    <label className="qs-switch">
+                      <input
+                        type="checkbox"
+                        checked={codexShowAdditionalQuota}
+                        onChange={(e) => handleCodexAdditionalQuotaToggle(e.target.checked)}
+                      />
+                      <span className="qs-switch-slider"></span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="qs-row">
+                  <div className="qs-row-label">
+                    <Zap size={15} />
+                    <span>{t('codex.list.planBadgeStyle', '套餐徽章样式')}</span>
+                  </div>
+                  <div className="qs-row-control">
+                    <select
+                      className="qs-select"
+                      value={codexPlanBadgeStyle}
+                      onChange={(e) =>
+                        handleCodexPlanBadgeStyleChange(e.target.value as CodexPlanBadgeStyle)
+                      }
+                    >
+                      <option value="default">{t('codex.list.planBadgeStyleDefault', '默认')}</option>
+                      <option value="outline">{t('codex.list.planBadgeStyleOutline', '描边')}</option>
+                      <option value="soft">{t('codex.list.planBadgeStyleSoft', '柔和')}</option>
+                      <option value="mono">{t('codex.list.planBadgeStyleMono', '单色')}</option>
+                    </select>
                   </div>
                 </div>
 
@@ -2891,9 +2883,18 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                         <div className="qs-row-control qs-row-control--fill">
                           <AutoSwitchAccountScopeSelector
                             mode={codexAutoSwitchAccountScopeMode}
-                            onModeChange={(mode) =>
-                              saveConfig({ codex_auto_switch_account_scope_mode: mode })
-                            }
+                            onModeChange={(mode) => {
+                              // all_accounts ignores selected IDs at runtime; clear
+                              // the list so config does not keep a stale subset.
+                              if (mode === AUTO_SWITCH_SCOPE_ALL_ACCOUNTS) {
+                                saveConfig({
+                                  codex_auto_switch_account_scope_mode: mode,
+                                  codex_auto_switch_selected_account_ids: [],
+                                });
+                                return;
+                              }
+                              saveConfig({ codex_auto_switch_account_scope_mode: mode });
+                            }}
                             selectedAccountIds={codexAutoSwitchSelectedAccountIds}
                             onSelectedAccountIdsChange={(ids) =>
                               saveConfig({ codex_auto_switch_selected_account_ids: ids })
@@ -3246,9 +3247,16 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                       <div className="qs-row-control qs-row-control--fill">
                         <AutoSwitchAccountScopeSelector
                           mode={autoSwitchAccountScopeMode}
-                          onModeChange={(mode) =>
-                            saveConfig({ auto_switch_account_scope_mode: mode })
-                          }
+                          onModeChange={(mode) => {
+                            if (mode === AUTO_SWITCH_SCOPE_ALL_ACCOUNTS) {
+                              saveConfig({
+                                auto_switch_account_scope_mode: mode,
+                                auto_switch_selected_account_ids: [],
+                              });
+                              return;
+                            }
+                            saveConfig({ auto_switch_account_scope_mode: mode });
+                          }}
                           selectedAccountIds={autoSwitchSelectedAccountIds}
                           onSelectedAccountIdsChange={(ids) =>
                             saveConfig({ auto_switch_selected_account_ids: ids })

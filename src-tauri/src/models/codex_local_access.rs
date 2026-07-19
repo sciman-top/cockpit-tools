@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum CodexLocalAccessRoutingStrategy {
     Auto,
+    Random,
     SingleAccount,
     QuotaHighFirst,
     QuotaLowFirst,
@@ -117,6 +118,8 @@ pub struct CodexLocalAccessCustomRoutingRule {
     pub priority: i32,
     #[serde(default = "default_custom_routing_weight")]
     pub weight: u32,
+    #[serde(default)]
+    pub is_backup: bool,
 }
 
 fn default_custom_routing_weight() -> u32 {
@@ -144,12 +147,32 @@ pub struct CodexLocalAccessModelAlias {
 #[serde(rename_all = "camelCase")]
 pub struct CodexLocalAccessModelPricing {
     pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub long_context_threshold_tokens: Option<u64>,
     #[serde(default)]
     pub input_usd_per_million: f64,
     #[serde(default)]
     pub output_usd_per_million: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cached_input_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_long_input_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_long_output_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_long_cached_input_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_input_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_output_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_cached_input_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_long_input_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_long_output_usd_per_million: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_long_cached_input_usd_per_million: Option<f64>,
 }
 
 fn default_session_affinity_ttl_ms() -> i64 {
@@ -158,6 +181,10 @@ fn default_session_affinity_ttl_ms() -> i64 {
 
 fn default_max_retry_interval_ms() -> u64 {
     3 * 1000
+}
+
+fn default_max_concurrent_image_requests() -> u16 {
+    1
 }
 
 fn default_legacy_request_read_timeout_ms() -> u64 {
@@ -377,8 +404,14 @@ pub struct CodexLocalAccessApiKey {
     pub key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_gateway: Option<CodexLocalAccessProviderGateway>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inherit_account_pool: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub account_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub priority_account_ids: Vec<String>,
+    #[serde(default, skip_serializing)]
+    pub preferred_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_prefix: Option<String>,
     #[serde(default)]
@@ -445,6 +478,8 @@ pub struct CodexLocalAccessCollection {
     #[serde(default)]
     pub session_affinity_default_enabled_migrated: bool,
     #[serde(default)]
+    pub responses_websockets_enabled: bool,
+    #[serde(default)]
     pub max_retry_credentials: u16,
     #[serde(default = "default_max_retry_interval_ms")]
     pub max_retry_interval_ms: u64,
@@ -460,6 +495,10 @@ pub struct CodexLocalAccessCollection {
     pub restrict_free_accounts: bool,
     #[serde(default = "default_true")]
     pub debug_logs: bool,
+    #[serde(default)]
+    pub immediate_sse_response: bool,
+    #[serde(default = "default_max_concurrent_image_requests")]
+    pub max_concurrent_image_requests: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_oauth_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -575,12 +614,17 @@ pub struct CodexLocalAccessUsageEvent {
     pub api_key_id: String,
     #[serde(default)]
     pub api_key_label: String,
+    /// 来自客户端静态 header `x-cockpit-instance-id`（多开 profile 目录名）。
+    #[serde(default)]
+    pub client_instance_id: String,
     #[serde(default)]
     pub model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_mode: Option<CodexLocalAccessGatewayMode>,
     #[serde(default)]
     pub request_kind: CodexLocalAccessRequestKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     #[serde(default)]
     pub success: bool,
     #[serde(default)]
@@ -671,6 +715,9 @@ pub struct CodexLocalAccessAccountHealth {
     pub last_failure_message: Option<String>,
     pub image_generation_status: CodexLocalAccessImageGenerationStatus,
     pub image_generation_checked_at: Option<i64>,
+    pub scheduler_available: Option<bool>,
+    pub scheduler_reason: Option<String>,
+    pub scheduler_next_retry_at: Option<i64>,
     pub cooldowns: Vec<CodexLocalAccessAccountCooldown>,
 }
 
@@ -703,6 +750,22 @@ pub struct CodexLocalAccessState {
     pub stats: CodexLocalAccessStats,
     pub account_health: Vec<CodexLocalAccessAccountHealth>,
     pub quota_reserve_status: Option<CodexLocalAccessQuotaReserveStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessAppendAccountSkipped {
+    pub account_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexLocalAccessAppendAccountsResult {
+    pub state: CodexLocalAccessState,
+    pub synced_account_ids: Vec<String>,
+    pub added_account_ids: Vec<String>,
+    pub skipped_accounts: Vec<CodexLocalAccessAppendAccountSkipped>,
 }
 
 #[derive(Debug, Clone, Serialize)]

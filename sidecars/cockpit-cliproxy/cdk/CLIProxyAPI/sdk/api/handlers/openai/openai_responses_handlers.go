@@ -27,7 +27,7 @@ import (
 const codexResponsesLiteHeader = "X-OpenAI-Internal-Codex-Responses-Lite"
 
 func normalizeResponsesLiteRequest(rawJSON []byte, enabled bool) []byte {
-	if !enabled {
+	if !enabled && !registry.CodexClientModelUsesResponsesLite(gjson.GetBytes(rawJSON, "model").String()) {
 		return rawJSON
 	}
 	updated, err := sjson.SetBytes(rawJSON, "parallel_tool_calls", false)
@@ -579,12 +579,8 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesStream(c *gin.Context, flush
 			if errMsg.StatusCode > 0 {
 				status = errMsg.StatusCode
 			}
-			errText := http.StatusText(status)
-			if errMsg.Error != nil && errMsg.Error.Error() != "" {
-				errText = errMsg.Error.Error()
-			}
-			chunk := handlers.BuildOpenAIResponsesStreamErrorChunk(status, errText, 0)
-			_, _ = fmt.Fprintf(c.Writer, "\nevent: error\ndata: %s\n\n", string(chunk))
+			eventName, chunk := handlers.BuildOpenAIResponsesStreamTerminalEvent(status, errMsg.Error, 0)
+			_, _ = fmt.Fprintf(c.Writer, "\nevent: %s\ndata: %s\n\n", eventName, string(chunk))
 		},
 		WriteDone: func() {
 			framer.Flush(c.Writer)
