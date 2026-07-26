@@ -1,0 +1,120 @@
+{
+  "schema_version": "1.0",
+  "policy_id": "cockpit-tools-local-reference-basis-policy",
+  "status": "enforced",
+  "reviewed_on": "2026-06-14",
+  "review_expires_at": "2026-07-14",
+  "decision_claim": "Changes touching reference-bound Codex protocol, local hardened API routing, session visibility, Tauri desktop boundaries, or release/preflight surfaces must record which local reference shelf repos were reviewed before the contract gate passes.",
+  "reference_catalog_path": "docs/research/reference-basis-catalog.json",
+  "evidence_directory": "reports/reference-basis/",
+  "evidence_excluded_prefixes": [],
+  "required_evidence_tokens": [
+    "reference_basis_review",
+    "changed_surface_paths",
+    "reference_basis_surface_ids",
+    "required_local_reference_ids_reviewed",
+    "reference_adoption_decision"
+  ],
+  "reference_surfaces": [
+    {
+      "surface_id": "codex-protocol-and-continuity",
+      "path_exact": [
+        "docs/reference-gateway-best-practices.md",
+        "docs/local-hardened-api-quota-continuity-guardrails.md",
+        "docs/LOCAL_HARDENED_API_CODEX_RESPONSES_PROTOCOL.md",
+        "reports/codex-api-service-source-audit/20260531-source-audit-matrix.md",
+        "scripts/test-codex-api-service-continuity-focus.ps1",
+        "scripts/test-local-hardened-api-live-monitor.ps1",
+        "src-tauri/src/modules/codex_local_access.rs",
+        "src-tauri/src/modules/codex_session_visibility.rs"
+      ],
+      "required_local_reference_ids": [
+        "openai-codex",
+        "openai-openapi",
+        "CLIProxyAPI"
+      ],
+      "rationale": "Codex-facing Responses, stream terminal, previous_response_id, turn metadata, and continuity boundaries must stay anchored to first-party Codex/OpenAPI semantics plus the local sidecar reference."
+    },
+    {
+      "surface_id": "local-hardened-api-routing-and-risk",
+      "path_exact": [
+        "docs/LOCAL_HARDENED_API.md",
+        "docs/LOCAL_HARDENED_API_ROADMAP.md",
+        "docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md",
+        "docs/LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md",
+        "docs/ACCOUNT_RISK_CONTROL_REFRESH_HARDENING_PLAN.md",
+        "scripts/test-local-hardened-api-live-risk-guard.ps1",
+        "scripts/test-refresh-risk-guard.cjs",
+        "scripts/smoke-local-hardened-api.ps1",
+        "scripts/accept-local-hardened-api-continuity.ps1",
+        "src/stores/useCodexAccountStore.ts",
+        "src/pages/CodexAccountsPage.tsx",
+        "src/services/codexLocalAccessService.ts",
+        "crates/cockpit-core/src/modules/wakeup_gateway.rs",
+        "src-tauri/src/modules/wakeup_gateway.rs"
+      ],
+      "required_local_reference_ids": [
+        "openai-codex",
+        "CLIProxyAPI",
+        "sub2api",
+        "new-api",
+        "litellm"
+      ],
+      "rationale": "Pool scheduling, cooldown, backpressure, retry, refresh-risk, and local-hardened API guardrail changes should cite the local routing and gateway shelf instead of relying on local prose alone."
+    },
+    {
+      "surface_id": "session-visibility-and-workspace-filtering",
+      "path_exact": [
+        "src-tauri/src/modules/codex_session_visibility.rs",
+        "src/components/CodexSessionManager.tsx",
+        "src/services/codexInstanceService.ts"
+      ],
+      "required_local_reference_ids": [
+        "openai-codex",
+        "cockpit-tools-upstream"
+      ],
+      "rationale": "Session visibility, workspace-root filtering, and host continuity behavior must stay aligned with official Codex host semantics and the upstream Cockpit baseline."
+    },
+    {
+      "surface_id": "tauri-capability-and-desktop-boundaries",
+      "path_prefixes": [
+        "src-tauri/capabilities/",
+        "src-tauri/src/commands/",
+        "src-tauri/src/"
+      ],
+      "path_contains": [
+        "tauri",
+        "capabilit",
+        "single-instance",
+        "deep-link",
+        "updater"
+      ],
+      "required_local_reference_ids": [
+        "tauri",
+        "tao",
+        "wry",
+        "plugins-workspace"
+      ],
+      "rationale": "Desktop runtime, capability, updater, single-instance, and host integration changes should be reviewed against the local official Tauri shelf."
+    },
+    {
+      "surface_id": "reference-and-release-gate-boundaries",
+      "path_exact": [
+        "docs/architecture/reference-basis-policy.json",
+        "docs/research/reference-basis-catalog.json",
+        "docs/research/reference-basis-matrix.md",
+        "docs/reference-sources.md",
+        "scripts/release/preflight.cjs",
+        "scripts/update-reference-snapshots.ps1",
+        "scripts/verify-reference-basis.py",
+        ".github/workflows/build-matrix.yml"
+      ],
+      "required_local_reference_ids": [
+        "openai-codex",
+        "cockpit-tools-upstream"
+      ],
+      "rationale": "Reference governance, preflight, and CI boundary changes must keep the local reference shelf and host baseline synchronized."
+    }
+  ],
+  "rollback_ref": "git revert docs/architecture/reference-basis-policy.json, docs/research/reference-basis-catalog.json, docs/research/reference-basis-matrix.md, scripts/verify-reference-basis.py, scripts/release/preflight.cjs, scripts/test-local-hardened-api-live-risk-guard.ps1, docs/reference-sources.md, README.md, README.en.md, README.pt-br.md, and matching reports/reference-basis evidence"
+}

@@ -135,6 +135,14 @@ if (!hasFlag('--skip-refresh-risk-guard')) {
   });
 }
 
+if (!hasFlag('--skip-reference-basis')) {
+  steps.push({
+    name: 'Reference-basis guard',
+    command: 'python',
+    args: ['scripts/verify-reference-basis.py'],
+  });
+}
+
 if (!hasFlag('--skip-codex-api-service-continuity')) {
   steps.push({
     name: 'Codex API service continuity focus',

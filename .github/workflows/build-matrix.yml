@@ -30,6 +30,11 @@ jobs:
           node-version: 20
           cache: "npm"
 
+      - name: Python setup
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
       - name: Install frontend dependencies
         run: npm install
 
@@ -41,6 +46,9 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Verify reference basis
+        run: python scripts/verify-reference-basis.py
 
   build:
     name: Build (${{ matrix.label }})

@@ -23,6 +23,7 @@
 - 当前自用发布号是 `0.24.12-local.1`，`package.json`、`src-tauri/Cargo.toml` 与 `src-tauri/tauri.conf.json` 已同步到同一版本。
 - 当前发布姿态是 `Windows-first` 自用桌面控制面 + 默认只监听 `127.0.0.1` 的本地 Hardened API Runtime。
 - 低风险证据已经收口到可复用状态：browser-preview UI smoke、recent-audit explainability、隔离 loopback listener、单账号隔离上游 smoke，以及 `~/.codex` / `Codex App` 连续性守卫都有现成报告可查。
+- 参考治理现在有 `reference-basis` 合同：命中受管 surface 的改动除了更新文档，还必须留下命名本地 reference review 证据，并通过 `scripts/verify-reference-basis.py`。
 - 真实边界仍然存在：截至 `2026-06-09`，单账号隔离上游 chat 已能通过，但小池 continuity/fallback 主合同仍未闭合。即使做了有界 drain，也还没有观察到 `usage_limit_reached -> model_cooldown_applied -> fallback_blocked` 这条链，因此“同任务 hard-affinity 闭合”和“后续新请求避开 exhausted/cooldown 账号”仍是 `blocked`，不能写成已完成。
 - tray / notification / live continuity 提示这类高风险桌面验收也还没有闭合，仍需要显式 live acceptance，而不能被 preview 或只读探针冒充。
 
@@ -84,6 +85,7 @@ Cockpit Tools Local 目前支持 12 个平台目标：
 - 剩余 blocker / truth boundary： [LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md](docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md)
 - 上游吸收与自用差异： [SELF_USE_DELTA.md](docs/SELF_USE_DELTA.md)、[UPSTREAM_SYNC_POLICY.md](docs/UPSTREAM_SYNC_POLICY.md)
 - 参考源码与本地 reference shelf： [reference-sources.md](docs/reference-sources.md)
+- Reference-basis contract： [reference-basis-policy.json](docs/architecture/reference-basis-policy.json)、[reference-basis-catalog.json](docs/research/reference-basis-catalog.json)、[reference-basis-matrix.md](docs/research/reference-basis-matrix.md)
 - Ubuntu / WSL2 本地构建： [build-wsl2-ubuntu24.md](docs/build-wsl2-ubuntu24.md)
 
 ## 快速开始
@@ -118,6 +120,7 @@ npm run tauri:dev
 | `cargo test --manifest-path src-tauri/Cargo.toml --lib` | Rust lib tests |
 | `npm run release:preflight` | 完整 release preflight |
 | `node scripts/release/preflight.cjs --skip-typecheck --skip-build --skip-cargo --skip-cargo-test` | 仅跑 contract/invariant 类检查 |
+| `python scripts/verify-reference-basis.py` | 校验受管 surface 改动是否附带本地 reference review 证据 |
 | `npm run tauri:dev` | 启动开发版桌面应用 |
 | `npm run tauri -- build` | 调用包装脚本执行 Tauri 打包 |
 | `npm run preview -- --host 127.0.0.1 --port 4173` | 仅预览前端，用于 browser-preview smoke |

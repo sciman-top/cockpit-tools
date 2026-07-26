@@ -23,6 +23,7 @@ Repository status date: `2026-06-13`
 - The current self-use app version is `0.24.12-local.1`, and `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` are aligned to that version.
 - The current release posture is `Windows-first`: a self-use desktop control plane plus a local Hardened API Runtime that defaults to `127.0.0.1`.
 - Low-risk evidence is already reusable: browser-preview UI smoke, recent-audit explainability, isolated loopback listener probes, single-account isolated upstream smoke, and `~/.codex` / `Codex App` continuity guards all have current reports.
+- Reference governance now has a `reference-basis` contract: guarded-surface changes must ship named local reference-review evidence and pass `scripts/verify-reference-basis.py`.
 - The hard truth boundary is still open: as of `2026-06-09`, isolated single-account upstream chat passes, but the small-pool continuity/fallback main contract is still not closed. Even with bounded drain runs, the repo still did not observe the `usage_limit_reached -> model_cooldown_applied -> fallback_blocked` chain, so same-task hard-affinity closure and new-request avoidance of exhausted/cooldown accounts remain `blocked`.
 - Tray / notification / live continuity prompts are also not closed and still require explicit live acceptance rather than preview-only evidence.
 
@@ -84,6 +85,7 @@ Use these entrypoints by topic:
 - Remaining blockers / truth boundary: [LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md](docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md)
 - Upstream absorption and local delta: [SELF_USE_DELTA.md](docs/SELF_USE_DELTA.md), [UPSTREAM_SYNC_POLICY.md](docs/UPSTREAM_SYNC_POLICY.md)
 - Local reference shelf and source snapshots: [reference-sources.md](docs/reference-sources.md)
+- Reference-basis contract: [reference-basis-policy.json](docs/architecture/reference-basis-policy.json), [reference-basis-catalog.json](docs/research/reference-basis-catalog.json), [reference-basis-matrix.md](docs/research/reference-basis-matrix.md)
 - Ubuntu / WSL2 local builds: [build-wsl2-ubuntu24.md](docs/build-wsl2-ubuntu24.md)
 
 ## Quick Start
@@ -118,6 +120,7 @@ npm run tauri:dev
 | `cargo test --manifest-path src-tauri/Cargo.toml --lib` | Rust lib tests |
 | `npm run release:preflight` | Full release preflight |
 | `node scripts/release/preflight.cjs --skip-typecheck --skip-build --skip-cargo --skip-cargo-test` | Contract/invariant checks only |
+| `python scripts/verify-reference-basis.py` | Verify guarded-surface changes include named local reference-review evidence |
 | `npm run tauri:dev` | Start the desktop dev profile |
 | `npm run tauri -- build` | Run the Tauri packaging wrapper |
 | `npm run preview -- --host 127.0.0.1 --port 4173` | Frontend-only preview for browser-preview smoke |

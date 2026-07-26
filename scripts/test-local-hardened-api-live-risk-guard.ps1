@@ -100,9 +100,13 @@ $doc = Get-Content -LiteralPath (Join-Path $repoRoot "docs\LOCAL_HARDENED_API.md
 $roadmap = Get-Content -LiteralPath (Join-Path $repoRoot "docs\LOCAL_HARDENED_API_ROADMAP.md") -Raw
 $accountPoolPlan = Get-Content -LiteralPath (Join-Path $repoRoot "docs\LOCAL_HARDENED_API_ACCOUNT_POOL_SCHEDULING_PLAN.md") -Raw
 $referenceReview = Get-Content -LiteralPath (Join-Path $repoRoot "docs\reference-gateway-best-practices.md") -Raw
+$referenceBasisPolicy = Get-Content -LiteralPath (Join-Path $repoRoot "docs\architecture\reference-basis-policy.json") -Raw
+$referenceBasisCatalog = Get-Content -LiteralPath (Join-Path $repoRoot "docs\research\reference-basis-catalog.json") -Raw
+$referenceBasisMatrix = Get-Content -LiteralPath (Join-Path $repoRoot "docs\research\reference-basis-matrix.md") -Raw
 $smoke = Get-Content -LiteralPath (Join-Path $PSScriptRoot "smoke-local-hardened-api.ps1") -Raw
 $accept = Get-Content -LiteralPath (Join-Path $PSScriptRoot "accept-local-hardened-api-continuity.ps1") -Raw
 $preflight = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\release\preflight.cjs") -Raw
+$referenceBasisVerifier = Get-Content -LiteralPath (Join-Path $repoRoot "scripts\verify-reference-basis.py") -Raw
 $localAccessModal = Get-Content -LiteralPath (Join-Path $repoRoot "src\components\CodexLocalAccessModal.tsx") -Raw
 $accountsPage = Get-Content -LiteralPath (Join-Path $repoRoot "src\pages\CodexAccountsPage.tsx") -Raw
 $codexAccountStore = Get-Content -LiteralPath (Join-Path $repoRoot "src\stores\useCodexAccountStore.ts") -Raw
@@ -143,6 +147,15 @@ Assert-Contains $referenceReview "ResponseStreamDisconnected" "reference review 
 Assert-Contains $referenceReview "previous_response_id" "reference review must pin official continuation semantics"
 Assert-Contains $referenceReview "TurnContext.turn_id" "reference review must pin official turn identity semantics"
 Assert-Contains $referenceReview "previous_response_not_found" "reference review must pin official full-context retry guidance"
+Assert-Contains $referenceBasisPolicy "codex-protocol-and-continuity" "reference-basis policy must guard Codex protocol and continuity surfaces"
+Assert-Contains $referenceBasisPolicy "local-hardened-api-routing-and-risk" "reference-basis policy must guard local hardened API routing and risk surfaces"
+Assert-Contains $referenceBasisPolicy "reference-and-release-gate-boundaries" "reference-basis policy must guard reference/release gate surfaces"
+Assert-Contains $referenceBasisCatalog "openai-openapi" "reference-basis catalog must include official OpenAPI semantics"
+Assert-Contains $referenceBasisCatalog "cockpit-tools-upstream" "reference-basis catalog must include upstream Cockpit baseline"
+Assert-Contains $referenceBasisMatrix "scripts/verify-reference-basis.py" "reference-basis matrix must point to the verifier"
+Assert-Contains $referenceBasisMatrix "reference_basis_review" "reference-basis matrix must define evidence tokens"
+Assert-Contains $referenceBasisVerifier "missing_reference_basis_evidence" "reference-basis verifier must fail closed without evidence"
+Assert-Contains $referenceBasisVerifier "reference_basis_evidence_incomplete" "reference-basis verifier must fail closed for incomplete evidence"
 Assert-LiveUpstreamDocExamplesRequireAcknowledgement $repoRoot
 
 Assert-Contains $smoke "live_upstream_risk_ack_required" "smoke script must fail closed without live acknowledgement"
@@ -161,6 +174,7 @@ Assert-Contains $smoke "new_request_avoids_exhausted_account" "smoke report must
 Assert-Contains $smoke "New-SmokeContinuitySummary" "smoke report must emit the two-part continuity summary"
 Assert-Contains $smoke 'ProcessName -ceq $name' "Codex App process guard must use exact process-name matching so nested lowercase codex CLI probes do not fail App stability"
 Assert-Contains $preflight "test-local-hardened-api-live-risk-guard.ps1" "release preflight must run the local hardened API live-risk guard"
+Assert-Contains $preflight "verify-reference-basis.py" "release preflight must run the reference-basis guard"
 Assert-Contains $preflight "check-merge-conflict-markers.ps1" "release preflight must block unresolved merge conflict markers"
 Assert-Contains $preflight "test-codex-api-service-continuity-focus.ps1" "release preflight must run Codex API service continuity focused tests"
 Assert-Contains $localAccessModal "balancedSelfUseDesc" "API service safety presets must keep the balanced self-use label visible"

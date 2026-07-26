@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "updated_on": "2026-06-14",
+  "reference_root": "D:/CODE/external/Cockpit-Tools-Local-references",
+  "manifest_path": "docs/reference-sources.md",
+  "references": [
+    {
+      "reference_id": "openai-codex",
+      "relative_path": "openai-codex",
+      "tier": "Tier 1 / Must Read",
+      "category": "official-or-protocol",
+      "why": "Codex host semantics, Responses SSE lifecycle, turn state, previous_response_id, provider/model/config behavior"
+    },
+    {
+      "reference_id": "openai-openapi",
+      "relative_path": "openai-openapi",
+      "tier": "Tier 1 / Must Read",
+      "category": "official-or-protocol",
+      "why": "OpenAI API schema, endpoint contracts, request/response fields, compatibility boundary"
+    },
+    {
+      "reference_id": "CLIProxyAPI",
+      "relative_path": "CLIProxyAPI",
+      "tier": "Tier 1 / Must Read",
+      "category": "gateway-and-routing",
+      "why": "Codex-oriented sidecar runtime, fill-first/session affinity, bootstrap retry boundary, sidecar executor behavior"
+    },
+    {
+      "reference_id": "sub2api",
+      "relative_path": "sub2api",
+      "tier": "Tier 2 / Keep",
+      "category": "gateway-and-routing",
+      "why": "Account health state machine, persistent cooldown, schedulability and sticky cleanup"
+    },
+    {
+      "reference_id": "new-api",
+      "relative_path": "new-api",
+      "tier": "Tier 2 / Keep",
+      "category": "gateway-and-routing",
+      "why": "Retry, disable-channel, rate-limit and gateway backpressure structure"
+    },
+    {
+      "reference_id": "litellm",
+      "relative_path": "litellm",
+      "tier": "Tier 2 / Keep",
+      "category": "gateway-and-routing",
+      "why": "Pre-call limiter, cooldown matrix, local-vs-upstream 429 separation, proxy observability"
+    },
+    {
+      "reference_id": "cockpit-tools-upstream",
+      "relative_path": "cockpit-tools-upstream",
+      "tier": "Tier 1 / Must Read",
+      "category": "upstream-product",
+      "why": "Pure upstream Cockpit baseline for fork divergence review"
+    },
+    {
+      "reference_id": "tauri",
+      "relative_path": "tauri",
+      "tier": "Tier 1 / Must Read",
+      "category": "desktop-runtime",
+      "why": "Tauri 2 runtime, capabilities, updater, and desktop contract semantics"
+    },
+    {
+      "reference_id": "tao",
+      "relative_path": "tao",
+      "tier": "Tier 2 / Keep",
+      "category": "desktop-runtime",
+      "why": "Native window lifecycle, tray, focus, and single-instance behavior"
+    },
+    {
+      "reference_id": "wry",
+      "relative_path": "wry",
+      "tier": "Tier 2 / Keep",
+      "category": "desktop-runtime",
+      "why": "WebView host integration, navigation, deep-link, and runtime surface semantics"
+    },
+    {
+      "reference_id": "plugins-workspace",
+      "relative_path": "plugins-workspace",
+      "tier": "Tier 2 / Keep",
+      "category": "desktop-runtime",
+      "why": "Official plugin implementations for dialog/fs/opener/process/updater/single-instance/deep-link/autostart"
+    }
+  ]
+}

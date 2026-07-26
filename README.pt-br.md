@@ -23,6 +23,7 @@ Data de referência do repositório: `2026-06-13`
 - A versão self-use atual é `0.24.12-local.1`, e `package.json`, `src-tauri/Cargo.toml` e `src-tauri/tauri.conf.json` já estão alinhados.
 - A postura atual de release é `Windows-first`: um painel desktop self-use mais um Hardened API Runtime local que, por padrão, escuta em `127.0.0.1`.
 - As evidências de baixo risco já estão reaproveitáveis: browser-preview UI smoke, explainability de recent-audit, probes isolados de loopback listener, smoke upstream isolado de conta única e guardas de continuidade para `~/.codex` / `Codex App`.
+- A governança de referências agora tem um contrato `reference-basis`: mudanças em surfaces guardadas precisam enviar evidência nomeada de revisão da shelf local e passar em `scripts/verify-reference-basis.py`.
 - O limite honesto ainda está aberto: em `2026-06-09`, o chat upstream isolado de conta única já passou, mas o contrato principal de continuity/fallback para small-pool ainda não fechou. Mesmo com drain limitado, o repositório ainda não observou a cadeia `usage_limit_reached -> model_cooldown_applied -> fallback_blocked`, então o fechamento por hard-affinity na mesma tarefa e o desvio de novas requisições para longe de contas exhausted/cooldown continuam `blocked`.
 - Tray / notification / prompts de live continuity também não estão fechados e ainda exigem live acceptance explícito.
 
@@ -84,6 +85,7 @@ Entradas por assunto:
 - Blockers restantes / truth boundary: [LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md](docs/LOCAL_HARDENED_API_NEXT_PHASE_BACKLOG.md)
 - Absorção de upstream e delta local: [SELF_USE_DELTA.md](docs/SELF_USE_DELTA.md), [UPSTREAM_SYNC_POLICY.md](docs/UPSTREAM_SYNC_POLICY.md)
 - Reference shelf local e snapshots de fonte: [reference-sources.md](docs/reference-sources.md)
+- Contrato reference-basis: [reference-basis-policy.json](docs/architecture/reference-basis-policy.json), [reference-basis-catalog.json](docs/research/reference-basis-catalog.json), [reference-basis-matrix.md](docs/research/reference-basis-matrix.md)
 - Builds locais em Ubuntu / WSL2: [build-wsl2-ubuntu24.md](docs/build-wsl2-ubuntu24.md)
 
 ## Início Rápido
@@ -118,6 +120,7 @@ npm run tauri:dev
 | `cargo test --manifest-path src-tauri/Cargo.toml --lib` | Testes Rust de biblioteca |
 | `npm run release:preflight` | Release preflight completo |
 | `node scripts/release/preflight.cjs --skip-typecheck --skip-build --skip-cargo --skip-cargo-test` | Somente verificações de contrato/invariantes |
+| `python scripts/verify-reference-basis.py` | Verifica se mudanças em surfaces guardadas incluem evidência nomeada de revisão da shelf local |
 | `npm run tauri:dev` | Inicia o perfil desktop de desenvolvimento |
 | `npm run tauri -- build` | Executa o wrapper de empacotamento do Tauri |
 | `npm run preview -- --host 127.0.0.1 --port 4173` | Preview só do frontend para browser-preview smoke |

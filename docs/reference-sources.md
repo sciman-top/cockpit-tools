@@ -43,6 +43,9 @@
 以下文档已经把这些参考源纳入决策链或设计论证：
 
 - [COCKPIT_LOCAL_TARGET_ARCHITECTURE.md](/D:/CODE/external/Cockpit-Tools-Local/docs/COCKPIT_LOCAL_TARGET_ARCHITECTURE.md)
+- [reference-basis-policy.json](/D:/CODE/external/Cockpit-Tools-Local/docs/architecture/reference-basis-policy.json)
+- [reference-basis-catalog.json](/D:/CODE/external/Cockpit-Tools-Local/docs/research/reference-basis-catalog.json)
+- [reference-basis-matrix.md](/D:/CODE/external/Cockpit-Tools-Local/docs/research/reference-basis-matrix.md)
 - [reference-gateway-best-practices.md](/D:/CODE/external/Cockpit-Tools-Local/docs/reference-gateway-best-practices.md)
 - [LOCAL_HARDENED_API_ROADMAP.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_ROADMAP.md)
 - [LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md](/D:/CODE/external/Cockpit-Tools-Local/docs/LOCAL_HARDENED_API_IMPLEMENTATION_PLAN.md)
@@ -109,4 +112,10 @@ git -C "$root\plugins-workspace" pull --ff-only origin v2
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/update-reference-snapshots.ps1 -Apply
+```
+
+如果本轮改动命中 `reference-basis` guarded surfaces，还应补跑：
+
+```powershell
+python scripts/verify-reference-basis.py
 ```
