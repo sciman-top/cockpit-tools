@@ -31,6 +31,12 @@ type responsesTerminalEventTestError struct {
 	event []byte
 }
 
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
 func TestReadManifestCodexTokenAuthAcceptsAgentIdentityWithoutAccessToken(t *testing.T) {
 	authDir := t.TempDir()
 	path := filepath.Join(authDir, "agent.json")
@@ -2686,6 +2692,51 @@ func TestRelayServerProviderGatewayChatStreamTerminatesResponsesSSEFrames(t *tes
 	}
 }
 
+func TestRelayServerProviderGatewayTransportFailureIsAmbiguousAndNeverReplayed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var calls int
+	client := &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, fmt.Errorf("connection reset after request body was sent")
+	})}
+	gateway := &providerGatewaySpec{
+		BaseURL:        "https://provider.invalid",
+		APIKey:         "upstream-key",
+		UpstreamModel:  "gpt-5.5",
+		UpstreamModels: []string{"gpt-5.5"},
+		WireAPI:        "responses",
+	}
+	apiKey := &apiKeySpec{ID: "provider_gateway_account_1", Label: "Provider Gateway", Key: "client-key", Enabled: true, ProviderGateway: gateway}
+	m := &manifest{
+		APIKeys:       []apiKeySpec{*apiKey},
+		ModelIDs:      []string{"gpt-5.5"},
+		apiKeyByValue: map[string]*apiKeySpec{"client-key": apiKey},
+	}
+	router := (&relayServer{
+		runtime:    &fakeRuntime{},
+		cfg:        &config.Config{},
+		manifest:   m,
+		policy:     &requestPolicy{manifest: m},
+		httpClient: client,
+	}).router()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","input":"hello","stream":false}`))
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"ambiguous_submission"`) {
+		t.Fatalf("transport uncertainty must be explicit: %s", w.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("ambiguous submission was transparently replayed: calls=%d", calls)
+	}
+}
+
 func TestRelayServerProviderGatewayFallsBackToDefaultUpstreamModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var upstreamBody string
@@ -3382,6 +3433,29 @@ func TestRelayServerRetriesWhenStreamDoesNotOpen(t *testing.T) {
 	}
 }
 
+func TestRelayServerRetriesPreSemantic429BeforeWritingDownstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	oldAttempts := streamOpenMaxAttempts
+	streamOpenMaxAttempts = 2
+	defer func() { streamOpenMaxAttempts = oldAttempts }()
+	stream := make(chan cliproxyexecutor.StreamChunk, 1)
+	stream <- cliproxyexecutor.StreamChunk{Payload: []byte(`[DONE]`)}
+	close(stream)
+	runtime := &fakeRuntime{
+		streamErrors: []error{relayStatusError{status: http.StatusTooManyRequests, message: "controlled 429"}},
+		streamResult: &cliproxyexecutor.StreamResult{Headers: http.Header{"Content-Type": []string{"text/event-stream"}}, Chunks: stream},
+	}
+	router := testRelayRouter(runtime)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","input":"hello","stream":true}`))
+	req.Header.Set("Authorization", "Bearer client-key")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || runtime.streamCalls != 2 || !strings.Contains(w.Body.String(), "[DONE]") {
+		t.Fatalf("pre-semantic 429 was not parked and retried: status=%d calls=%d body=%s", w.Code, runtime.streamCalls, w.Body.String())
+	}
+}
+
 func TestRelayServerKeepsStreamContextOpenAfterOpen(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	oldOpenTimeout := streamOpenTimeout
@@ -3641,6 +3715,7 @@ type fakeRuntime struct {
 	streamOpenDelay         time.Duration
 	streamResultDelay       time.Duration
 	streamResultPayload     []byte
+	streamErrors            []error
 
 	executeCalls int
 	streamCalls  int
@@ -3686,6 +3761,9 @@ func (r *fakeRuntime) ExecuteStream(ctx context.Context, _ []string, req cliprox
 	r.streamCalls++
 	r.lastReq = req
 	r.lastOpts = opts
+	if r.streamCalls <= len(r.streamErrors) {
+		return nil, r.streamErrors[r.streamCalls-1]
+	}
 	if r.streamWaitForContext || r.streamCalls <= r.streamWaitAttempts {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -4184,7 +4262,6 @@ func TestCoreAuthSelectorFiltersNewModelExclusionsBeforeSessionAffinity(t *testi
 		t.Fatalf("Pick after exclusion = %#v, want %q", second, pro.ID)
 	}
 }
-
 
 func TestSidecarRuntimeDoesNotSelectAccountWithExcludedModel(t *testing.T) {
 	tempDir := t.TempDir()

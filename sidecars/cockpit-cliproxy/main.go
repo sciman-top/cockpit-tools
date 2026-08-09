@@ -2992,20 +2992,27 @@ func errorCategory(status int, body string, success bool) string {
 }
 
 type authHook struct {
-	manifest *manifest
-	emitter  *eventEmitter
+	manifest  *manifest
+	emitter   *eventEmitter
+	readiness *readinessTracker
 }
 
 func (h *authHook) OnAuthRegistered(_ context.Context, auth *coreauth.Auth) {
 	h.emit("auth_registered", auth)
+	if h != nil && h.readiness != nil {
+		h.readiness.signal()
+	}
 }
 
 func (h *authHook) OnAuthUpdated(_ context.Context, auth *coreauth.Auth) {
 	h.emit("auth_updated", auth)
+	if h != nil && h.readiness != nil {
+		h.readiness.signal()
+	}
 }
 
 func (h *authHook) OnResult(ctx context.Context, result coreauth.Result) {
-	if h == nil || h.emitter == nil {
+	if h == nil {
 		return
 	}
 	if ctx == nil {
@@ -3047,27 +3054,40 @@ func (h *authHook) OnResult(ctx context.Context, result coreauth.Result) {
 	if !result.NextRetryAt.IsZero() {
 		nextRetryAtMS = result.NextRetryAt.UnixMilli()
 	}
-	h.emitter.emit(requestDiagnosticPayload{
-		Type:            "auth_result",
-		RequestID:       internallogging.GetRequestID(ctx),
-		Provider:        result.Provider,
-		Model:           model,
-		AuthID:          result.AuthID,
-		AccountID:       stringFromAccount(account, "id"),
-		AccountEmail:    stringFromAccount(account, "email"),
-		APIKeyID:        stringFromAPIKey(spec, "id"),
-		APIKeyLabel:     stringFromAPIKey(spec, "label"),
-		RequestKind:     requestKind,
-		Success:         &success,
-		HTTPStatus:      status,
-		ErrorCode:       errorCode,
-		ErrorMessage:    errorMessage,
-		Retryable:       retryablePtr,
-		RetryAfterMS:    retryAfterMS,
-		AuthAvailable:   authAvailable,
-		NextRetryAtMS:   nextRetryAtMS,
-		AuthStateReason: result.AuthStateReason,
-	})
+	if h.readiness != nil {
+		if result.Success {
+			h.readiness.markLiveSuccess(spec, model, time.Now())
+		} else if retryable || status == 0 || status == http.StatusRequestTimeout ||
+			status == http.StatusTooManyRequests || status == http.StatusUnauthorized ||
+			status == http.StatusForbidden || status >= http.StatusInternalServerError {
+			h.readiness.markLiveFailure(spec, model, time.Now())
+		} else {
+			h.readiness.signal()
+		}
+	}
+	if h.emitter != nil {
+		h.emitter.emit(requestDiagnosticPayload{
+			Type:            "auth_result",
+			RequestID:       internallogging.GetRequestID(ctx),
+			Provider:        result.Provider,
+			Model:           model,
+			AuthID:          result.AuthID,
+			AccountID:       stringFromAccount(account, "id"),
+			AccountEmail:    stringFromAccount(account, "email"),
+			APIKeyID:        stringFromAPIKey(spec, "id"),
+			APIKeyLabel:     stringFromAPIKey(spec, "label"),
+			RequestKind:     requestKind,
+			Success:         &success,
+			HTTPStatus:      status,
+			ErrorCode:       errorCode,
+			ErrorMessage:    errorMessage,
+			Retryable:       retryablePtr,
+			RetryAfterMS:    retryAfterMS,
+			AuthAvailable:   authAvailable,
+			NextRetryAtMS:   nextRetryAtMS,
+			AuthStateReason: result.AuthStateReason,
+		})
+	}
 }
 
 func (h *authHook) accountForAuthID(authID string) *accountSpec {
@@ -4020,6 +4040,9 @@ type relayServer struct {
 	authManager        *coreauth.Manager
 	emitter            *eventEmitter
 	policy             *requestPolicy
+	readiness          *readinessTracker
+	admission          *preSemanticAdmission
+	httpClient         *http.Client
 	responsesWebsocket gin.HandlerFunc
 	quotaPoolStatePath string
 }
@@ -4029,6 +4052,8 @@ func (s *relayServer) router() *gin.Engine {
 	router.Use(gin.Recovery())
 	router.Use(corsMiddleware())
 	router.Use(s.policy.middleware())
+	router.GET("/healthz", s.handleHealthz)
+	router.GET("/readyz", s.handleReadyz)
 	router.GET("/v1/models", s.handleModels)
 	router.GET(cockpitQuotaPath, s.handleCockpitQuota)
 	router.POST("/v1/cockpit/auth/reset", s.handleResetAuthState)
@@ -5450,9 +5475,13 @@ func (s *relayServer) handleExecutorRequest(c *gin.Context, sourceFormat sdktran
 	if !ok {
 		return
 	}
-	body, err := readAndRestoreBody(c.Request)
+	body, tooLarge, err := readAndRestoreBodyBounded(c.Request, s.preSemanticAdmission().maxBodyBytes())
 	if err != nil {
 		writeAPIError(c, http.StatusBadRequest, "failed to read request body", "invalid_request")
+		return
+	}
+	if tooLarge {
+		writeAPIError(c, http.StatusRequestEntityTooLarge, "request body exceeds the bounded pre-semantic admission limit", "request_body_too_large")
 		return
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
@@ -5467,6 +5496,12 @@ func (s *relayServer) handleExecutorBody(c *gin.Context, spec *apiKeySpec, body 
 		writeAPIError(c, http.StatusUnauthorized, "missing or invalid API key", "invalid_api_key")
 		return
 	}
+	lease, admissionErr := s.preSemanticAdmission().acquire(c.Request.Context(), int64(len(body)))
+	if admissionErr != nil {
+		writePreSemanticAdmissionError(c, admissionErr)
+		return
+	}
+	defer lease.release()
 	model := requestBodyModel(body)
 	if model == "" {
 		writeAPIError(c, http.StatusBadRequest, "model is required", "invalid_request")
@@ -5593,9 +5628,11 @@ func (s *relayServer) handleProviderGatewayRequest(c *gin.Context, gateway *prov
 	}
 	copyProviderGatewayDiagnosticHeaders(req.Header, c.Request.Header)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.providerHTTPClient().Do(req)
 	if err != nil {
-		writeAPIError(c, http.StatusBadGateway, err.Error(), "bad_gateway")
+		// The transport error does not prove whether the request reached the
+		// provider. Never retry or replay a potentially submitted effect.
+		writeAmbiguousSubmission(c, err)
 		return
 	}
 	defer resp.Body.Close()
@@ -5611,36 +5648,29 @@ func (s *relayServer) handleProviderGatewayRequest(c *gin.Context, gateway *prov
 	}
 
 	if stream {
+		latch := &semanticEventLatch{}
 		if wireAPI == "chat_completions" {
 			switch {
 			case sourceFormatEqual(sourceFormat, sdktranslator.FormatOpenAIResponse):
-				s.writeProviderGatewayChatStream(c, resp.Body, upstreamModel, body, upstreamBody)
+				s.writeProviderGatewayChatStream(c, resp.Body, upstreamModel, body, upstreamBody, latch)
 			case sourceFormatEqual(sourceFormat, sdktranslator.FormatOpenAI):
-				c.Status(http.StatusOK)
-				c.Stream(func(w io.Writer) bool {
-					_, _ = io.Copy(w, resp.Body)
-					return false
-				})
+				s.writeProviderGatewayRawStream(c, resp.Body, latch)
 			default:
 				alt := fixedAlt
 				if alt == "" {
 					alt = requestAlt(c)
 				}
-				s.writeProviderGatewayTranslatedChatStream(c, resp.Body, upstreamModel, body, upstreamBody, sourceFormat, alt)
+				s.writeProviderGatewayTranslatedChatStream(c, resp.Body, upstreamModel, body, upstreamBody, sourceFormat, alt, latch)
 			}
 			return
 		}
-		c.Status(http.StatusOK)
-		c.Stream(func(w io.Writer) bool {
-			_, _ = io.Copy(w, resp.Body)
-			return false
-		})
+		s.writeProviderGatewayRawStream(c, resp.Body, latch)
 		return
 	}
 
 	payload, err := io.ReadAll(resp.Body)
 	if err != nil {
-		writeAPIError(c, http.StatusBadGateway, err.Error(), "bad_gateway")
+		writeAmbiguousSubmission(c, err)
 		return
 	}
 	if wireAPI == "chat_completions" {
@@ -5701,7 +5731,7 @@ func copyProviderGatewayDiagnosticHeaders(dst http.Header, src http.Header) {
 	}
 }
 
-func (s *relayServer) writeProviderGatewayChatStream(c *gin.Context, body io.Reader, model string, originalBody []byte, chatBody []byte) {
+func (s *relayServer) writeProviderGatewayChatStream(c *gin.Context, body io.Reader, model string, originalBody []byte, chatBody []byte, latch *semanticEventLatch) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		writeAPIError(c, http.StatusInternalServerError, "streaming not supported", "streaming_not_supported")
@@ -5711,6 +5741,7 @@ func (s *relayServer) writeProviderGatewayChatStream(c *gin.Context, body io.Rea
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Status(http.StatusOK)
+	writer := semanticTrackingWriter{writer: c.Writer, latch: latch}
 	var state any
 	startedAt := time.Now()
 	doneSeen := false
@@ -5719,12 +5750,10 @@ func (s *relayServer) writeProviderGatewayChatStream(c *gin.Context, body io.Rea
 	convertedEventCount := 0
 	rawLineCount := 0
 	eventCounts := make(map[string]int)
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
+	processLine := func(line []byte) error {
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
-			continue
+			return nil
 		}
 		rawLineCount++
 		if providerGatewayStreamLineIsDone(line) {
@@ -5743,13 +5772,29 @@ func (s *relayServer) writeProviderGatewayChatStream(c *gin.Context, body io.Rea
 				}
 			}
 			convertedEventCount++
-			if _, err := c.Writer.Write(providerGatewaySSEFrame(event)); err != nil {
-				return
+			if _, err := writer.Write(providerGatewaySSEFrame(event)); err != nil {
+				return err
 			}
 			flusher.Flush()
 		}
+		return nil
 	}
-	if err := scanner.Err(); err != nil {
+	keepAlive := func() error {
+		if _, err := writer.Write([]byte(": keep-alive\n\n")); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+	err := forEachSSEFrameWithKeepAlive(relayContext(c), body, streamKeepAliveInterval(s.cfg), func(frame []byte) error {
+		for _, line := range bytes.Split(frame, []byte("\n")) {
+			if err := processLine(line); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, keepAlive)
+	if err != nil && !errors.Is(err, context.Canceled) {
 		s.emitExecutorDiagnostic(c, "provider_gateway_stream_scan_failed", model, "provider_gateway_chat_stream", startedAt, err.Error())
 		writeStreamTerminalErrorForFormat(c, err, sdktranslator.FormatOpenAIResponse)
 		flusher.Flush()
@@ -5770,7 +5815,7 @@ func (s *relayServer) writeProviderGatewayChatStream(c *gin.Context, body io.Rea
 				}
 			}
 			convertedEventCount++
-			if _, err := c.Writer.Write(providerGatewaySSEFrame(event)); err != nil {
+			if _, err := writer.Write(providerGatewaySSEFrame(event)); err != nil {
 				s.emitExecutorDiagnostic(c, "provider_gateway_stream_write_failed", model, "provider_gateway_chat_stream", startedAt, err.Error())
 				return
 			}
@@ -5795,7 +5840,7 @@ func (s *relayServer) writeProviderGatewayChatStream(c *gin.Context, body io.Rea
 	)
 }
 
-func (s *relayServer) writeProviderGatewayTranslatedChatStream(c *gin.Context, body io.Reader, model string, originalBody []byte, chatBody []byte, targetFormat sdktranslator.Format, alt string) {
+func (s *relayServer) writeProviderGatewayTranslatedChatStream(c *gin.Context, body io.Reader, model string, originalBody []byte, chatBody []byte, targetFormat sdktranslator.Format, alt string, latch *semanticEventLatch) {
 	flusher, ok := c.Writer.(http.Flusher)
 	if !ok {
 		writeAPIError(c, http.StatusInternalServerError, "streaming not supported", "streaming_not_supported")
@@ -5805,14 +5850,13 @@ func (s *relayServer) writeProviderGatewayTranslatedChatStream(c *gin.Context, b
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Status(http.StatusOK)
+	writer := semanticTrackingWriter{writer: c.Writer, latch: latch}
 
 	var state any
-	scanner := bufio.NewScanner(body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
+	processLine := func(line []byte) error {
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
-			continue
+			return nil
 		}
 		outputs := sdktranslator.TranslateStream(relayContext(c), sdktranslator.FormatOpenAI, targetFormat, model, originalBody, chatBody, line, &state)
 		for _, output := range outputs {
@@ -5822,15 +5866,60 @@ func (s *relayServer) writeProviderGatewayTranslatedChatStream(c *gin.Context, b
 			if sourceFormatEqual(targetFormat, sdktranslator.FormatGemini) && alt == "" {
 				output = frameOpenAIStreamChunk(output)
 			}
-			if _, err := c.Writer.Write(output); err != nil {
-				return
+			if _, err := writer.Write(output); err != nil {
+				return err
 			}
 			flusher.Flush()
 		}
+		return nil
 	}
-	if err := scanner.Err(); err != nil {
+	keepAlive := func() error {
+		if _, err := writer.Write([]byte(": keep-alive\n\n")); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+	if err := forEachSSEFrameWithKeepAlive(relayContext(c), body, streamKeepAliveInterval(s.cfg), func(frame []byte) error {
+		for _, line := range bytes.Split(frame, []byte("\n")) {
+			if err := processLine(line); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, keepAlive); err != nil && !errors.Is(err, context.Canceled) {
 		writeStreamTerminalErrorForFormat(c, err, targetFormat)
 		flusher.Flush()
+	}
+}
+
+func (s *relayServer) writeProviderGatewayRawStream(c *gin.Context, body io.Reader, latch *semanticEventLatch) {
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		writeAPIError(c, http.StatusInternalServerError, "streaming not supported", "streaming_not_supported")
+		return
+	}
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Status(http.StatusOK)
+	writer := semanticTrackingWriter{writer: c.Writer, latch: latch}
+	keepAlive := func() error {
+		if _, err := writer.Write([]byte(": keep-alive\n\n")); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}
+	err := forEachSSEFrameWithKeepAlive(relayContext(c), body, streamKeepAliveInterval(s.cfg), func(frame []byte) error {
+		if _, err := writer.Write(frame); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	}, keepAlive)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		s.emitExecutorDiagnostic(c, "provider_gateway_stream_scan_failed", "", "provider_gateway_raw_stream", time.Now(), err.Error())
 	}
 }
 
@@ -6028,6 +6117,8 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 	}
 
 	framer := newRelayStreamFramer(sourceFormat, requestPath(c.Request))
+	latch := &semanticEventLatch{}
+	writer := semanticTrackingWriter{writer: c.Writer, latch: latch}
 	keepAlive := streamKeepAliveInterval(s.cfg)
 	var ticker *time.Ticker
 	var tickerC <-chan time.Time
@@ -6062,7 +6153,7 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 			s.emitExecutorDiagnostic(c, "stream_client_gone", model, "stream_loop", startedAt, c.Request.Context().Err().Error())
 			return
 		case <-tickerC:
-			if _, err := c.Writer.Write([]byte(": keep-alive\n\n")); err != nil {
+			if _, err := writer.Write([]byte(": keep-alive\n\n")); err != nil {
 				endReason = "write_failed"
 				s.emitExecutorDiagnostic(c, "stream_write_failed", model, "stream_loop", startedAt, err.Error())
 				return
@@ -6080,7 +6171,7 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 			}
 			idleTimer.Reset(timeouts.idle)
 			if !ok {
-				if err := framer.Close(c.Writer); err != nil {
+				if err := framer.Close(writer); err != nil {
 					endReason = "write_failed"
 					s.emitExecutorDiagnostic(c, "stream_write_failed", model, "stream_loop", startedAt, err.Error())
 					return
@@ -6102,7 +6193,7 @@ func (s *relayServer) handleStream(c *gin.Context, body []byte, model string, so
 				firstChunkLogged = true
 				s.emitExecutorDiagnostic(c, "stream_first_chunk", model, "stream_loop", startedAt, fmt.Sprintf("bytes=%d", len(chunk.Payload)))
 			}
-			if err := framer.Write(c.Writer, chunk.Payload); err != nil {
+			if err := framer.Write(writer, chunk.Payload); err != nil {
 				endReason = "write_failed"
 				s.emitExecutorDiagnostic(c, "stream_write_failed", model, "stream_loop", startedAt, err.Error())
 				return
@@ -6136,7 +6227,7 @@ func (s *relayServer) executeStreamWithOpenTimeout(
 		openTimeout = streamOpenTimeout
 	}
 	for attempt := 1; attempt <= attempts; attempt++ {
-		attemptCtx, cancelAttempt := context.WithCancel(ctx)
+		attemptCtx, cancelAttempt := newStreamAttemptContext(ctx)
 		done := make(chan executeStreamResult, 1)
 		s.emitExecutorDiagnostic(
 			c,
@@ -6157,6 +6248,17 @@ func (s *relayServer) executeStreamWithOpenTimeout(
 			timer.Stop()
 			if out.err != nil || out.result == nil {
 				cancelAttempt()
+			}
+			if out.err != nil && attempt < attempts && isPreSemanticRetryableStatus(statusCodeFromError(out.err)) {
+				detail := fmt.Sprintf("attempt=%d/%d status=%d", attempt, attempts, statusCodeFromError(out.err))
+				s.emitExecutorDiagnostic(c, "stream_open_retry", model, "execute_stream", startedAt, detail)
+				if waitErr := util.SleepContext(ctx, s.downstreamExecutorErrorDelay()); waitErr != nil {
+					return nil, waitErr
+				}
+				continue
+			}
+			if out.err == nil && out.result != nil {
+				return bindStreamAttemptLifetime(ctx, out.result, cancelAttempt), nil
 			}
 			return out.result, out.err
 		case <-ctx.Done():
@@ -6184,6 +6286,48 @@ func (s *relayServer) executeStreamWithOpenTimeout(
 		}
 	}
 	return nil, relayTimeoutError{phase: "stream_open", timeout: openTimeout}
+}
+
+func newStreamAttemptContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return context.WithCancel(parent)
+}
+
+func bindStreamAttemptLifetime(
+	parent context.Context,
+	result *cliproxyexecutor.StreamResult,
+	cancel context.CancelFunc,
+) *cliproxyexecutor.StreamResult {
+	if result == nil || result.Chunks == nil {
+		cancel()
+		return result
+	}
+	forwarded := make(chan cliproxyexecutor.StreamChunk)
+	go func() {
+		defer close(forwarded)
+		defer cancel()
+		for {
+			select {
+			case <-parent.Done():
+				return
+			case chunk, ok := <-result.Chunks:
+				if !ok {
+					return
+				}
+				select {
+				case <-parent.Done():
+					return
+				case forwarded <- chunk:
+				}
+			}
+		}
+	}()
+	return &cliproxyexecutor.StreamResult{Headers: result.Headers, Chunks: forwarded}
+}
+
+func isPreSemanticRetryableStatus(status int) bool {
+	return status == http.StatusRequestTimeout || status == http.StatusTooManyRequests ||
+		status == http.StatusBadGateway || status == http.StatusServiceUnavailable ||
+		status == http.StatusGatewayTimeout
 }
 
 func (s *relayServer) startExecutorWaitLogger(c *gin.Context, model, phase string, startedAt time.Time) func() {
@@ -8095,7 +8239,9 @@ func main() {
 
 	usageTracker := newRequestUsageTracker()
 	policy := &requestPolicy{manifest: m, emitter: emitter, tracker: usageTracker}
-	hook := &authHook{manifest: m, emitter: emitter}
+	readiness := newReadinessTracker()
+	hook := &authHook{manifest: m, emitter: emitter, readiness: readiness}
+	admission := newPreSemanticAdmission(preSemanticAdmissionConfig{})
 	priorityState := newAPIKeyPriorityStateStore(*manifestPath)
 	selector := &cockpitSelector{
 		manifest:   m,
@@ -8138,6 +8284,9 @@ func main() {
 		authManager:        coreManager,
 		emitter:            emitter,
 		policy:             policy,
+		readiness:          readiness,
+		admission:          admission,
+		httpClient:         http.DefaultClient,
 		responsesWebsocket: responsesHandler.ResponsesWebsocket,
 		quotaPoolStatePath: *quotaPoolStatePath,
 	}
