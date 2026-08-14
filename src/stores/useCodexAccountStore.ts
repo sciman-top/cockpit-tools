@@ -137,6 +137,8 @@ interface CodexAccountState {
     apiWireApi?: CodexProviderWireApi,
     apiSupportsWebsockets?: boolean,
     apiSyncModelCatalogToCodex?: boolean,
+    accountName?: string,
+    apiModelContextWindows?: Record<string, number>,
   ) => Promise<CodexAccount>;
   updateApiKeyBoundOAuthAccount: (
     accountId: string,
@@ -145,6 +147,11 @@ interface CodexAccountState {
   updateAccountTags: (accountId: string, tags: string[]) => Promise<CodexAccount>;
   updateAccountNote: (accountId: string, update: string | CodexAccountNoteUpdate) => Promise<CodexAccount>;
   updateAccountAppSpeed: (accountId: string, speed: CodexAppSpeed) => Promise<CodexAccount>;
+  updateAccountInstanceAccess: (
+    accountId: string,
+    accessMode?: string | null,
+    startupModel?: string | null,
+  ) => Promise<CodexAccount>;
 }
 
 export const useCodexAccountStore = create<CodexAccountState>((set, get) => ({
@@ -448,6 +455,8 @@ export const useCodexAccountStore = create<CodexAccountState>((set, get) => ({
     apiWireApi?: CodexProviderWireApi,
     apiSupportsWebsockets?: boolean,
     apiSyncModelCatalogToCodex?: boolean,
+    accountName?: string,
+    apiModelContextWindows?: Record<string, number>,
   ) => {
     const account = await codexService.updateCodexApiKeyCredentials(
       accountId,
@@ -463,6 +472,8 @@ export const useCodexAccountStore = create<CodexAccountState>((set, get) => ({
       apiWireApi,
       apiSupportsWebsockets,
       apiSyncModelCatalogToCodex,
+      accountName,
+      apiModelContextWindows,
     );
     await get().fetchAccounts();
     await get().fetchCurrentAccount();
@@ -497,6 +508,21 @@ export const useCodexAccountStore = create<CodexAccountState>((set, get) => ({
 
   updateAccountAppSpeed: async (accountId: string, speed: CodexAppSpeed) => {
     const account = await codexService.updateCodexAccountAppSpeed(accountId, speed);
+    await get().fetchAccounts();
+    await get().fetchCurrentAccount();
+    return account;
+  },
+
+  updateAccountInstanceAccess: async (
+    accountId: string,
+    accessMode?: string | null,
+    startupModel?: string | null,
+  ) => {
+    const account = await codexService.updateCodexAccountInstanceAccess(
+      accountId,
+      accessMode,
+      startupModel,
+    );
     await get().fetchAccounts();
     await get().fetchCurrentAccount();
     return account;
