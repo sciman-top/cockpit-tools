@@ -3,7 +3,7 @@ use crate::models::codex::{
     CodexApiProviderMode, CodexAppSpeed, CodexAuthFile, CodexAuthMode, CodexAuthTokens,
     CodexExperimentalModelDefinition, CodexJwtPayload, CodexQuickConfig, CodexTokens,
 };
-use crate::modules::{account, codex_agent_identity, codex_oauth, logger};
+use crate::modules::{account, codex_oauth, logger};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ed25519_dalek::pkcs8::DecodePrivateKey;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION};
