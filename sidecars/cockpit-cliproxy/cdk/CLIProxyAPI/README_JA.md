@@ -112,7 +112,6 @@ CLIProxyAPIは[Amp CLI](https://ampcode.com)およびAmp IDE拡張機能の統�
 - 上級（エグゼキューターとトランスレーター）：[docs/sdk-advanced.md](docs/sdk-advanced.md)
 - アクセス：[docs/sdk-access.md](docs/sdk-access.md)
 - ウォッチャー：[docs/sdk-watcher.md](docs/sdk-watcher.md)
-- カスタムプロバイダーの例：`examples/custom-provider`
 
 ## コントリビューション
 
