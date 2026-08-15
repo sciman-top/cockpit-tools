@@ -345,10 +345,6 @@ fn credential_key(home_dir: &Path) -> [u8; 32] {
     Sha256::digest(credential_secret_for_home(home_dir).as_bytes()).into()
 }
 
-fn credential_key_from_fallback(platform: &str, home_dir: &Path, username: &str) -> [u8; 32] {
-    Sha256::digest(fallback_credential_secret(platform, home_dir, username).as_bytes()).into()
-}
-
 fn decode_component(value: &str) -> Result<Vec<u8>, String> {
     URL_SAFE_NO_PAD
         .decode(value)
@@ -1145,8 +1141,11 @@ mod tests {
     #[test]
     fn decrypts_fixed_official_enc_v1_fixture() {
         // Independently generated with Node.js AES-256-GCM using ZCode's fallback key material.
-        let key =
-            credential_key_from_fallback("darwin", Path::new("/Users/zcode-test"), "test-user");
+        let key: [u8; 32] = Sha256::digest(
+            fallback_credential_secret("darwin", Path::new("/Users/zcode-test"), "test-user")
+                .as_bytes(),
+        )
+        .into();
         let encrypted =
             "enc:v1:AAECAwQFBgcICQoL.NTIF8rgqI66J7hvPIwTD8g.QTtgwDlfAEvz72ttQggYC2KZyVwLVA";
         assert_eq!(
