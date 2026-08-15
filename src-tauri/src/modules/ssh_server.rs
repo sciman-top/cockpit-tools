@@ -710,33 +710,6 @@ pub async fn sync_selected_server_after_codex_switch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    struct StoreBackup {
-        path: PathBuf,
-        original: Option<Vec<u8>>,
-    }
-
-    impl StoreBackup {
-        fn capture() -> Self {
-            let path = store_path().expect("resolve ssh server store path");
-            let original = std::fs::read(&path).ok();
-            Self { path, original }
-        }
-    }
-
-    impl Drop for StoreBackup {
-        fn drop(&mut self) {
-            if let Some(original) = self.original.as_ref() {
-                if let Some(parent) = self.path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&self.path, original);
-            } else if self.path.exists() {
-                let _ = std::fs::remove_file(&self.path);
-            }
-        }
-    }
 
     fn valid_server() -> SshServer {
         SshServer {
@@ -823,52 +796,4 @@ mod tests {
         assert!(!sanitized.contains("sk-test"));
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn live_ssh_own_syncs_current_codex_account() {
-        if std::env::var("COCKPIT_LIVE_SSH_OWN_SYNC").ok().as_deref() != Some("1") {
-            eprintln!("set COCKPIT_LIVE_SSH_OWN_SYNC=1 to run the live own SSH sync test");
-            return;
-        }
-
-        let current = codex_account::get_current_account()
-            .expect("a current Codex account is required for live SSH sync");
-        let _backup = StoreBackup::capture();
-        let now = now_timestamp();
-        let server = SshServer {
-            id: "live-ssh-own".to_string(),
-            name: "own".to_string(),
-            host: "own".to_string(),
-            port: 22,
-            username: "ubuntu".to_string(),
-            codex_home: "~/.codex".to_string(),
-            auth: SshAuthConfig::Agent,
-            sync_on_codex_switch: true,
-            created_at: now,
-            updated_at: now,
-            last_sync: None,
-        };
-        let store = SshServerStore {
-            version: STORE_VERSION.to_string(),
-            selected_server_id: Some(server.id.clone()),
-            servers: vec![server.clone()],
-        };
-        save_store(&store).expect("write live SSH server store");
-
-        test_connection(&server.id)
-            .await
-            .expect("live SSH connection test should pass");
-        let result = sync_current_account_to_server(Some(server.id.clone()))
-            .await
-            .expect("live SSH sync should return a result");
-
-        assert!(
-            result.verified,
-            "live SSH sync should verify remote hashes: {:?}",
-            result.error
-        );
-        assert_eq!(result.account_id, current.id);
-        assert_eq!(result.account_email, current.email);
-        assert_eq!(result.token_generation, current.token_generation);
-    }
 }

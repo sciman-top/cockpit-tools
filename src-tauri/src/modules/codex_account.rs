@@ -16066,38 +16066,6 @@ wire_api = "responses"
     }
 
     #[test]
-    #[ignore = "manual local Codex repair smoke test"]
-    fn local_codex_index_repair_smoke() {
-        crate::modules::logger::init_logger();
-
-        let index_path = get_accounts_storage_path();
-        let accounts_dir = get_accounts_dir();
-        eprintln!(
-            "[LocalCodexRepairTest] 检测到本地 Codex 索引路径: {}",
-            index_path.display()
-        );
-        eprintln!(
-            "[LocalCodexRepairTest] 检测到本地 Codex 详情目录: {}",
-            accounts_dir.display()
-        );
-
-        let accounts = list_accounts_checked().expect("local Codex repair should succeed");
-        let index = load_account_index();
-        eprintln!(
-            "[LocalCodexRepairTest] 修复/读取完成: accounts={}, current_account_id={}",
-            accounts.len(),
-            index.current_account_id.as_deref().unwrap_or("-")
-        );
-
-        if let Ok(log_file) = crate::modules::logger::get_latest_app_log_file() {
-            eprintln!(
-                "[LocalCodexRepairTest] 应用日志文件: {}",
-                log_file.display()
-            );
-        }
-    }
-
-    #[test]
     fn codex_group_quota_policy_defaults_to_inherit() {
         let groups: Vec<CodexAccountGroupRecord> =
             serde_json::from_str(r#"[{"accountIds":["a1"]}]"#).expect("parse");

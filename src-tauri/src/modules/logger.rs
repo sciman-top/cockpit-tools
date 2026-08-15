@@ -132,13 +132,6 @@ pub fn resolve_managed_log_file(file_name: Option<&str>) -> Result<PathBuf, Stri
         .ok_or_else(|| "未找到可用日志文件".to_string())
 }
 
-pub fn get_latest_app_log_file() -> Result<PathBuf, String> {
-    list_log_files_by_name(|name| is_log_file_with_prefix(name, APP_LOG_FILE_PREFIX))?
-        .into_iter()
-        .next()
-        .ok_or_else(|| "未找到可用日志文件".to_string())
-}
-
 pub fn read_log_tail_lines(log_file: &Path, line_limit: usize) -> Result<String, String> {
     let line_limit = line_limit.max(1);
     let mut file = File::open(log_file).map_err(|e| format!("打开日志文件失败: {}", e))?;
