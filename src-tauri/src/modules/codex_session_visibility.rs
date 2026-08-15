@@ -3,10 +3,10 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use crate::modules;
-use chrono::{TimeZone, Utc};
+use chrono::Utc;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
@@ -24,7 +24,6 @@ const SESSION_DIRS: [&str; 2] = ["sessions", "archived_sessions"];
 const SESSION_VISIBILITY_REPAIR_BACKUP_PREFIX: &str = "backup-";
 const SESSION_VISIBILITY_REPAIR_BACKUP_SUFFIX: &str = "-session-visibility-repair";
 const MAX_SESSION_VISIBILITY_REPAIR_BACKUPS: usize = 1;
-const SESSION_INDEX_ACTIVITY_DRIFT_MS: i128 = 3_600_000;
 pub const SESSION_VISIBILITY_REPAIR_PROGRESS_EVENT: &str =
     "codex:session_visibility_repair_progress";
 
@@ -175,22 +174,6 @@ enum RolloutProviderUpdate {
 struct CodexSessionVisibilityRepairOptions {
     mode: CodexSessionVisibilityRepairMode,
     dry_run: bool,
-    repair_rollout: bool,
-    repair_referenced_rollouts: bool,
-    rewrite_all_session_meta: bool,
-    sqlite_scope: SqliteRepairScope,
-    repair_sqlite_timestamps: bool,
-    collect_rollout_thread_facts: bool,
-    repair_session_index: bool,
-    update_existing_session_index_entries: bool,
-    rebuild_metadata: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SqliteRepairScope {
-    LegacyStateOnly,
-    OfficialStateDbs,
-    AllSessionDbs,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -261,10 +244,6 @@ impl RepairTargetSelection {
             .unwrap_or(true)
     }
 
-    fn has_session_filter(&self) -> bool {
-        self.session_ids.is_some()
-    }
-
     fn session_ids(&self) -> Option<&HashSet<String>> {
         self.session_ids.as_ref()
     }
@@ -275,15 +254,6 @@ impl CodexSessionVisibilityRepairOptions {
         Self {
             mode,
             dry_run: false,
-            repair_rollout: false,
-            repair_referenced_rollouts: true,
-            rewrite_all_session_meta: matches!(mode, CodexSessionVisibilityRepairMode::Deep),
-            sqlite_scope: SqliteRepairScope::OfficialStateDbs,
-            repair_sqlite_timestamps: false,
-            collect_rollout_thread_facts: false,
-            repair_session_index: false,
-            update_existing_session_index_entries: false,
-            rebuild_metadata: false,
         }
     }
 
@@ -302,50 +272,13 @@ impl CodexSessionVisibilityRepairOptions {
     }
 }
 
-#[derive(Debug, Clone, Default)]
-struct RolloutThreadFacts {
-    user_event_thread_ids: HashSet<String>,
-    cwd_by_thread_id: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Copy)]
 struct SqliteProviderScan {
     rows_to_update: usize,
     skipped_unusable_database: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct SessionIndexRepairScan {
-    entries_to_add: usize,
-    entries_to_update: usize,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct SessionIndexReconcileResult {
-    added_entries: usize,
-    updated_entries: usize,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
 struct RepairSingleInstanceResult {
     updated_sqlite_rows: usize,
-    updated_sqlite_timestamp_rows: usize,
-    added_session_index_entries: usize,
-    updated_session_index_entries: usize,
-}
-
-#[derive(Debug, Clone)]
-struct SqliteTimestampUpdate {
-    id: String,
-    updated_at_seconds: i64,
-    updated_at_ms: i64,
-}
-
-#[derive(Debug, Clone, Default)]
-struct SqliteTimestampRepairPlan {
-    updates: Vec<SqliteTimestampUpdate>,
-    has_updated_at: bool,
-    has_updated_at_ms: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -358,30 +291,7 @@ struct ThreadsTableColumns {
     cwd: bool,
 }
 
-#[derive(Debug, Clone)]
-struct SqliteThreadIndexRow {
-    id: String,
-    title: String,
-    updated_at: Option<i64>,
-    updated_at_ms: Option<i64>,
-    rollout_path: Option<String>,
-}
-
 type ProgressReporter<'a> = Option<&'a dyn Fn(CodexSessionVisibilityRepairProgress)>;
-
-pub fn repair_session_visibility_across_instances(
-) -> Result<CodexSessionVisibilityRepairSummary, String> {
-    repair_session_visibility_across_instances_with_progress(
-        CodexSessionVisibilityRepairMode::Quick,
-        None,
-        None,
-    )
-}
-
-pub fn repair_session_visibility_quick_across_instances(
-) -> Result<CodexSessionVisibilityRepairSummary, String> {
-    repair_session_visibility_auto_across_instances(CodexSessionVisibilityAutoRepairMode::Current)
-}
 
 /// Repairs the launch target only, using the same bounded quick-repair plan as the
 /// automatic multi-instance repair. The caller supplies the already-resolved data
@@ -430,60 +340,6 @@ pub fn repair_session_visibility_quick_for_instance(
         )),
     }
     result
-}
-
-pub fn repair_session_visibility_auto_across_instances(
-    mode: CodexSessionVisibilityAutoRepairMode,
-) -> Result<CodexSessionVisibilityRepairSummary, String> {
-    let started = std::time::Instant::now();
-    modules::logger::log_info(&format!(
-        "[Codex Session Visibility] auto repair started: mode={}",
-        mode.label()
-    ));
-    let result = repair_session_visibility_across_instances_with_options(
-        CodexSessionVisibilityRepairOptions::for_auto_repair_mode(mode),
-        None,
-        None,
-        RepairTargetSelection::default(),
-    );
-    match &result {
-        Ok(summary) => modules::logger::log_info(&format!(
-            "[Codex Session Visibility] auto repair finished: mode={}, instances={}, mutated_instances={}, rollout_files={}, sqlite_rows={}, sqlite_timestamp_rows={}, session_index_added={}, session_index_updated={}, metadata_failed={}, elapsed_ms={}",
-            mode.label(),
-            summary.instance_count,
-            summary.mutated_instance_count,
-            summary.changed_rollout_file_count,
-            summary.updated_sqlite_row_count,
-            summary.updated_sqlite_timestamp_row_count,
-            summary.added_session_index_entry_count,
-            summary.updated_session_index_entry_count,
-            summary.metadata_rebuild_failed_count,
-            started.elapsed().as_millis()
-        )),
-        Err(error) => modules::logger::log_warn(&format!(
-            "[Codex Session Visibility] auto repair failed: mode={}, elapsed_ms={}, error={}",
-            mode.label(),
-            started.elapsed().as_millis(),
-            error
-        )),
-    }
-    result
-}
-
-pub fn repair_session_visibility_across_instances_with_progress(
-    mode: CodexSessionVisibilityRepairMode,
-    run_id: Option<String>,
-    progress_reporter: ProgressReporter<'_>,
-) -> Result<CodexSessionVisibilityRepairSummary, String> {
-    repair_session_visibility_across_instances_with_target(
-        mode,
-        run_id,
-        progress_reporter,
-        None,
-        None,
-        None,
-        false,
-    )
 }
 
 pub fn repair_session_visibility_across_instances_with_target(
@@ -550,11 +406,11 @@ fn repair_session_visibility_for_instances_with_options(
     let mut mutated_instance_count = 0usize;
     let mut changed_rollout_file_count = 0usize;
     let mut updated_sqlite_row_count = 0usize;
-    let mut updated_sqlite_timestamp_row_count = 0usize;
-    let mut added_session_index_entry_count = 0usize;
-    let mut updated_session_index_entry_count = 0usize;
+    let updated_sqlite_timestamp_row_count = 0usize;
+    let added_session_index_entry_count = 0usize;
+    let updated_session_index_entry_count = 0usize;
     let mut skipped_sqlite_file_count = 0usize;
-    let mut metadata_rebuild_failed_count = 0usize;
+    let metadata_rebuild_failed_count = 0usize;
     let mut mutated_running_instance_count = 0usize;
 
     let total_instances = instances.len().max(1);
@@ -583,23 +439,12 @@ fn repair_session_visibility_for_instances_with_options(
         );
         let running = is_instance_running(instance, &process_entries);
         let target_provider = selection.target_provider_for(&instance.data_dir)?;
-        let rollout_changes = if options.repair_rollout {
-            collect_rollout_provider_changes(
-                &instance.data_dir,
-                &target_provider,
-                options,
-                &selection,
-            )?
-        } else if options.repair_referenced_rollouts {
-            collect_referenced_rollout_provider_changes(
-                &instance.data_dir,
-                &target_provider,
-                options,
-                &selection,
-            )?
-        } else {
-            Vec::new()
-        };
+        let rollout_changes = collect_referenced_rollout_provider_changes(
+            &instance.data_dir,
+            &target_provider,
+            options,
+            &selection,
+        )?;
         let sqlite_scan = count_sqlite_rows_to_update_for_options(
             &instance.data_dir,
             &target_provider,
@@ -607,33 +452,12 @@ fn repair_session_visibility_for_instances_with_options(
             &selection,
         )?;
         let sqlite_rows_to_update = sqlite_scan.rows_to_update;
-        let sqlite_timestamp_rows_to_update = if options.repair_sqlite_timestamps {
-            count_sqlite_thread_timestamps_to_update_for_options(
-                &instance.data_dir,
-                options,
-                &selection,
-            )?
-        } else {
-            0
-        };
-        let session_index_scan = if options.repair_session_index {
-            count_session_index_entries_to_repair_for_options(
-                &instance.data_dir,
-                options,
-                &selection,
-            )?
-        } else {
-            SessionIndexRepairScan::default()
-        };
         if sqlite_scan.skipped_unusable_database {
             skipped_sqlite_file_count += 1;
         }
 
-        let instance_has_planned_changes = !rollout_changes.is_empty()
-            || sqlite_rows_to_update > 0
-            || sqlite_timestamp_rows_to_update > 0
-            || session_index_scan.entries_to_add > 0
-            || session_index_scan.entries_to_update > 0;
+        let instance_has_planned_changes =
+            !rollout_changes.is_empty() || sqlite_rows_to_update > 0;
 
         if options.dry_run {
             if instance_has_planned_changes {
@@ -644,18 +468,15 @@ fn repair_session_visibility_for_instances_with_options(
             }
             changed_rollout_file_count += rollout_changes.len();
             updated_sqlite_row_count += sqlite_rows_to_update;
-            updated_sqlite_timestamp_row_count += sqlite_timestamp_rows_to_update;
-            added_session_index_entry_count += session_index_scan.entries_to_add;
-            updated_session_index_entry_count += session_index_scan.entries_to_update;
             items.push(CodexSessionVisibilityRepairItem {
                 instance_id: instance.id.clone(),
                 instance_name: instance.name.clone(),
                 target_provider,
                 changed_rollout_file_count: rollout_changes.len(),
                 updated_sqlite_row_count: sqlite_rows_to_update,
-                updated_sqlite_timestamp_row_count: sqlite_timestamp_rows_to_update,
-                added_session_index_entry_count: session_index_scan.entries_to_add,
-                updated_session_index_entry_count: session_index_scan.entries_to_update,
+                updated_sqlite_timestamp_row_count: 0,
+                added_session_index_entry_count: 0,
+                updated_session_index_entry_count: 0,
                 skipped_sqlite_file: sqlite_scan.skipped_unusable_database,
                 metadata_rebuild_failed: false,
                 backup_dir: None,
@@ -665,23 +486,6 @@ fn repair_session_visibility_for_instances_with_options(
         }
 
         if !instance_has_planned_changes {
-            let mut metadata_rebuild_failed = false;
-            if options.rebuild_metadata {
-                report_repair_progress(
-                    progress_reporter,
-                    &run_id,
-                    options,
-                    "rebuild_metadata",
-                    instance_progress_percent(index, total_instances, 3, 4),
-                    current_instance,
-                    total_instances,
-                    Some(instance),
-                );
-                if !try_rebuild_thread_metadata(instance) {
-                    metadata_rebuild_failed = true;
-                    metadata_rebuild_failed_count += 1;
-                }
-            }
             items.push(CodexSessionVisibilityRepairItem {
                 instance_id: instance.id.clone(),
                 instance_name: instance.name.clone(),
@@ -692,7 +496,7 @@ fn repair_session_visibility_for_instances_with_options(
                 added_session_index_entry_count: 0,
                 updated_session_index_entry_count: 0,
                 skipped_sqlite_file: sqlite_scan.skipped_unusable_database,
-                metadata_rebuild_failed,
+                metadata_rebuild_failed: false,
                 backup_dir: None,
                 running,
             });
@@ -712,8 +516,8 @@ fn repair_session_visibility_for_instances_with_options(
         let backup_dir = backup_instance_files(
             &instance.data_dir,
             &rollout_changes,
-            sqlite_rows_to_update > 0 || sqlite_timestamp_rows_to_update > 0,
-            session_index_scan.entries_to_add > 0 || session_index_scan.entries_to_update > 0,
+            sqlite_rows_to_update > 0,
+            false,
             &instance.id,
             &target_provider,
             options,
@@ -735,8 +539,6 @@ fn repair_session_visibility_for_instances_with_options(
             &target_provider,
             &rollout_changes,
             sqlite_rows_to_update > 0,
-            sqlite_timestamp_rows_to_update > 0,
-            session_index_scan.entries_to_add > 0 || session_index_scan.entries_to_update > 0,
             options,
             &selection,
             progress_reporter,
@@ -751,7 +553,7 @@ fn repair_session_visibility_for_instances_with_options(
                 let restore_result = restore_instance_files_from_backup(
                     &instance.data_dir,
                     &backup_dir,
-                    sqlite_rows_to_update > 0 || sqlite_timestamp_rows_to_update > 0,
+                    sqlite_rows_to_update > 0,
                 );
                 if let Err(restore_error) = restore_result {
                     return Err(format!(
@@ -771,28 +573,8 @@ fn repair_session_visibility_for_instances_with_options(
             }
         };
 
-        let instance_mutated = !rollout_changes.is_empty()
-            || repaired.updated_sqlite_rows > 0
-            || repaired.updated_sqlite_timestamp_rows > 0
-            || repaired.added_session_index_entries > 0
-            || repaired.updated_session_index_entries > 0;
-        let mut metadata_rebuild_failed = false;
-        if options.rebuild_metadata && instance_mutated {
-            report_repair_progress(
-                progress_reporter,
-                &run_id,
-                options,
-                "rebuild_metadata",
-                instance_progress_percent(index, total_instances, 3, 4),
-                current_instance,
-                total_instances,
-                Some(instance),
-            );
-        }
-        if options.rebuild_metadata && instance_mutated && !try_rebuild_thread_metadata(instance) {
-            metadata_rebuild_failed = true;
-            metadata_rebuild_failed_count += 1;
-        }
+        let instance_mutated =
+            !rollout_changes.is_empty() || repaired.updated_sqlite_rows > 0;
 
         if instance_mutated {
             mutated_instance_count += 1;
@@ -802,9 +584,6 @@ fn repair_session_visibility_for_instances_with_options(
         }
         changed_rollout_file_count += rollout_changes.len();
         updated_sqlite_row_count += repaired.updated_sqlite_rows;
-        updated_sqlite_timestamp_row_count += repaired.updated_sqlite_timestamp_rows;
-        added_session_index_entry_count += repaired.added_session_index_entries;
-        updated_session_index_entry_count += repaired.updated_session_index_entries;
         backup_dirs.push(backup_dir_string.clone());
         items.push(CodexSessionVisibilityRepairItem {
             instance_id: instance.id.clone(),
@@ -812,11 +591,11 @@ fn repair_session_visibility_for_instances_with_options(
             target_provider,
             changed_rollout_file_count: rollout_changes.len(),
             updated_sqlite_row_count: repaired.updated_sqlite_rows,
-            updated_sqlite_timestamp_row_count: repaired.updated_sqlite_timestamp_rows,
-            added_session_index_entry_count: repaired.added_session_index_entries,
-            updated_session_index_entry_count: repaired.updated_session_index_entries,
+            updated_sqlite_timestamp_row_count: 0,
+            added_session_index_entry_count: 0,
+            updated_session_index_entry_count: 0,
             skipped_sqlite_file: sqlite_scan.skipped_unusable_database,
-            metadata_rebuild_failed,
+            metadata_rebuild_failed: false,
             backup_dir: Some(backup_dir_string),
             running,
         });
@@ -1097,13 +876,11 @@ pub fn read_history_visibility_provider_for_dir(data_dir: &Path) -> Result<Strin
     read_target_provider(data_dir)
 }
 
-fn repair_single_instance(
+#[cfg(test)]
+fn repair_single_instance_for_test(
     data_dir: &Path,
     target_provider: &str,
     rollout_changes: &[RolloutProviderChange],
-    update_sqlite: bool,
-    update_sqlite_timestamps: bool,
-    reconcile_session_index: bool,
     options: CodexSessionVisibilityRepairOptions,
     selection: &RepairTargetSelection,
 ) -> Result<RepairSingleInstanceResult, String> {
@@ -1117,9 +894,7 @@ fn repair_single_instance(
         data_dir,
         target_provider,
         rollout_changes,
-        update_sqlite,
-        update_sqlite_timestamps,
-        reconcile_session_index,
+        true,
         options,
         selection,
         None,
@@ -1135,8 +910,6 @@ fn repair_single_instance_with_progress(
     target_provider: &str,
     rollout_changes: &[RolloutProviderChange],
     update_sqlite: bool,
-    update_sqlite_timestamps: bool,
-    reconcile_session_index: bool,
     options: CodexSessionVisibilityRepairOptions,
     selection: &RepairTargetSelection,
     progress_reporter: ProgressReporter<'_>,
@@ -1182,41 +955,8 @@ fn repair_single_instance_with_progress(
         );
         rewrite_rollout_provider(change)?;
     }
-    let sqlite_timestamp_rows_updated = if update_sqlite_timestamps {
-        report_repair_progress(
-            progress_reporter,
-            run_id,
-            options,
-            "write_sqlite_timestamps",
-            instance_progress_percent(instance_index, total_instances, 6, 8),
-            0,
-            0,
-            Some(instance),
-        );
-        repair_sqlite_thread_timestamps_for_options(data_dir, options, selection)?
-    } else {
-        0
-    };
-    let session_index_result = if reconcile_session_index {
-        report_repair_progress(
-            progress_reporter,
-            run_id,
-            options,
-            "write_session_index",
-            instance_progress_percent(instance_index, total_instances, 7, 8),
-            0,
-            0,
-            Some(instance),
-        );
-        reconcile_session_index_from_sqlite_for_options(data_dir, options, selection)?
-    } else {
-        SessionIndexReconcileResult::default()
-    };
     Ok(RepairSingleInstanceResult {
         updated_sqlite_rows: sqlite_rows_updated,
-        updated_sqlite_timestamp_rows: sqlite_timestamp_rows_updated,
-        added_session_index_entries: session_index_result.added_entries,
-        updated_session_index_entries: session_index_result.updated_entries,
     })
 }
 
@@ -1365,36 +1105,6 @@ fn is_instance_running(
     let codex_home = instance.data_dir.to_str();
     modules::process::resolve_codex_pid_from_entries(instance.last_pid, codex_home, process_entries)
         .is_some()
-}
-
-fn try_rebuild_thread_metadata(instance: &CodexSyncInstance) -> bool {
-    let started = std::time::Instant::now();
-    modules::logger::log_info(&format!(
-        "[Codex Session Visibility] rebuild official metadata started: instance_id={}, instance_name={}, data_dir={}",
-        instance.id,
-        instance.name,
-        instance.data_dir.display()
-    ));
-    match modules::codex_official_app_server::rebuild_thread_metadata(&instance.data_dir) {
-        Ok(()) => {
-            modules::logger::log_info(&format!(
-                "[Codex Session Visibility] rebuild official metadata finished: instance_id={}, elapsed_ms={}",
-                instance.id,
-                started.elapsed().as_millis()
-            ));
-            true
-        }
-        Err(error) => {
-            modules::logger::log_warn(&format!(
-                "Codex 会话索引修复后触发官方侧边栏索引重建失败 ({} / {}): {}; elapsed_ms={}",
-                instance.name,
-                instance.data_dir.display(),
-                error,
-                started.elapsed().as_millis()
-            ));
-            false
-        }
-    }
 }
 
 fn read_target_provider(data_dir: &Path) -> Result<String, String> {
@@ -1601,89 +1311,6 @@ fn sqlite_provider_ids(db_path: &Path) -> Result<Vec<String>, String> {
     Ok(ids)
 }
 
-fn collect_rollout_provider_changes(
-    data_dir: &Path,
-    target_provider: &str,
-    options: CodexSessionVisibilityRepairOptions,
-    selection: &RepairTargetSelection,
-) -> Result<Vec<RolloutProviderChange>, String> {
-    let session_index_map = match read_session_index_map(data_dir) {
-        Ok(value) => value,
-        Err(error) => {
-            modules::logger::log_warn(&format!(
-                "读取 Codex session_index.jsonl 失败，跳过该时间来源并继续修复会话可见性: {}",
-                error
-            ));
-            HashMap::new()
-        }
-    };
-    let mut changes = Vec::new();
-
-    for dir_name in SESSION_DIRS {
-        let root_dir = data_dir.join(dir_name);
-        if !root_dir.exists() {
-            continue;
-        }
-        let rollout_paths = list_rollout_files(&root_dir)?;
-        for rollout_path in rollout_paths {
-            let rewrite = if options.rewrite_all_session_meta {
-                let Some(content) = read_rollout_text(&rollout_path)? else {
-                    continue;
-                };
-                rewrite_rollout_session_meta_providers(&content, target_provider)?
-            } else {
-                rewrite_rollout_first_session_meta_provider(&rollout_path, target_provider)?
-            };
-            if rewrite.session_meta_count == 0 {
-                continue;
-            }
-            let session_id = rewrite.thread_id.clone();
-            if let Some(session_id) = session_id.as_deref() {
-                if !selection.includes_session_id(session_id) {
-                    continue;
-                }
-            } else if selection.has_session_filter() {
-                continue;
-            }
-            let fallback_modified_ms =
-                modules::codex_session_file_time::read_modified_time(&rollout_path)
-                    .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                    .map(|value| value.as_millis() as i128);
-            let target_modified_at = resolve_target_modified_at_ms(
-                session_id.as_deref(),
-                &session_index_map,
-                &rollout_path,
-                fallback_modified_ms,
-            )
-            .and_then(modules::codex_session_file_time::system_time_from_unix_millis);
-            let current_modified_at =
-                modules::codex_session_file_time::read_modified_time(&rollout_path);
-            let provider_matches = !rewrite.rewrite_needed;
-            let modified_time_matches = target_modified_at.is_none()
-                || modules::codex_session_file_time::same_modified_time_millis(
-                    current_modified_at,
-                    target_modified_at,
-                );
-            if provider_matches && modified_time_matches {
-                continue;
-            }
-
-            let relative_path = rollout_path
-                .strip_prefix(data_dir)
-                .map_err(|_| format!("无法计算 rollout 相对路径: {}", rollout_path.display()))?;
-            changes.push(RolloutProviderChange {
-                relative_path: relative_path.to_path_buf(),
-                absolute_path: rollout_path,
-                updated_content: rewrite.updated_content,
-                target_modified_at,
-            });
-        }
-    }
-
-    changes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    Ok(changes)
-}
-
 fn collect_referenced_rollout_provider_changes(
     data_dir: &Path,
     target_provider: &str,
@@ -1691,7 +1318,7 @@ fn collect_referenced_rollout_provider_changes(
     selection: &RepairTargetSelection,
 ) -> Result<Vec<RolloutProviderChange>, String> {
     let mut candidates: HashMap<PathBuf, Option<SystemTime>> = HashMap::new();
-    for db_path in sqlite_candidate_paths_for_options(data_dir, options) {
+    for db_path in official_state_db_candidate_paths(data_dir) {
         collect_referenced_rollout_paths_for_db(data_dir, &db_path, selection, &mut candidates)?;
     }
 
@@ -1700,7 +1327,7 @@ fn collect_referenced_rollout_provider_changes(
         if !rollout_path.exists() || !is_plain_rollout_file(&rollout_path) {
             continue;
         }
-        let rewrite = if options.rewrite_all_session_meta {
+        let rewrite = if matches!(options.mode, CodexSessionVisibilityRepairMode::Deep) {
             let Some(content) = read_rollout_text(&rollout_path)? else {
                 continue;
             };
@@ -1733,6 +1360,17 @@ fn collect_referenced_rollout_provider_changes(
 
     changes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(changes)
+}
+
+fn resolve_rollout_path(data_dir: &Path, rollout_path: &str) -> PathBuf {
+    let trimmed = rollout_path.trim();
+    let stripped = trimmed.strip_prefix(r"\\?\").unwrap_or(trimmed);
+    let path = Path::new(stripped);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        data_dir.join(path)
+    }
 }
 
 fn collect_referenced_rollout_paths_for_db(
@@ -2026,59 +1664,6 @@ fn split_line_ending(segment: &str) -> (&str, &str) {
     }
 }
 
-fn collect_rollout_thread_facts(
-    data_dir: &Path,
-    selection: &RepairTargetSelection,
-) -> Result<RolloutThreadFacts, String> {
-    let mut facts = RolloutThreadFacts::default();
-    for dir_name in SESSION_DIRS {
-        let root_dir = data_dir.join(dir_name);
-        if !root_dir.exists() {
-            continue;
-        }
-        for rollout_path in list_rollout_files(&root_dir)? {
-            let Some(content) = read_rollout_text(&rollout_path)? else {
-                continue;
-            };
-            let has_user_event =
-                content.contains("\"user_message\"") || content.contains("\"user_input\"");
-            for line in content.lines() {
-                let Ok(record) = serde_json::from_str::<JsonValue>(line.trim()) else {
-                    continue;
-                };
-                if record.get("type").and_then(JsonValue::as_str) != Some("session_meta") {
-                    continue;
-                }
-                let Some(payload) = record.get("payload").and_then(JsonValue::as_object) else {
-                    continue;
-                };
-                let Some(thread_id) = payload
-                    .get("id")
-                    .or_else(|| payload.get("session_id"))
-                    .and_then(JsonValue::as_str)
-                    .map(str::to_string)
-                else {
-                    continue;
-                };
-                if !selection.includes_session_id(&thread_id) {
-                    continue;
-                }
-                if has_user_event {
-                    facts.user_event_thread_ids.insert(thread_id.clone());
-                }
-                if let Some(cwd) = payload
-                    .get("cwd")
-                    .and_then(JsonValue::as_str)
-                    .and_then(to_desktop_workspace_path)
-                {
-                    facts.cwd_by_thread_id.entry(thread_id).or_insert(cwd);
-                }
-            }
-        }
-    }
-    Ok(facts)
-}
-
 pub(crate) fn to_desktop_workspace_path(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
@@ -2167,720 +1752,6 @@ fn is_plain_rollout_file(path: &Path) -> bool {
         .unwrap_or_default();
     file_name.starts_with("rollout-")
         && path.extension().and_then(|item| item.to_str()) == Some("jsonl")
-}
-
-fn read_session_index_map(root_dir: &Path) -> Result<HashMap<String, JsonValue>, String> {
-    let path = root_dir.join(SESSION_INDEX_FILE);
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-
-    let content = fs::read_to_string(&path).map_err(|error| {
-        format!(
-            "读取 session_index.jsonl 失败 ({}): {}",
-            path.display(),
-            error
-        )
-    })?;
-    let mut entries = HashMap::new();
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(entry) = serde_json::from_str::<JsonValue>(trimmed) else {
-            continue;
-        };
-        let Some(id) = entry.get("id").and_then(JsonValue::as_str) else {
-            continue;
-        };
-        entries.insert(id.to_string(), entry);
-    }
-    Ok(entries)
-}
-
-fn count_session_index_entries_to_repair(
-    data_dir: &Path,
-) -> Result<SessionIndexRepairScan, String> {
-    count_session_index_entries_to_repair_for_options(
-        data_dir,
-        CodexSessionVisibilityRepairOptions::for_mode(CodexSessionVisibilityRepairMode::Deep),
-        &RepairTargetSelection::default(),
-    )
-}
-
-fn count_session_index_entries_to_repair_for_options(
-    data_dir: &Path,
-    options: CodexSessionVisibilityRepairOptions,
-    selection: &RepairTargetSelection,
-) -> Result<SessionIndexRepairScan, String> {
-    let session_index_map = read_session_index_map(data_dir)?;
-    let rows = load_sqlite_thread_index_rows_for_options(data_dir, options, selection)?;
-    let mut scan = SessionIndexRepairScan::default();
-    for row in &rows {
-        match session_index_map.get(&row.id) {
-            Some(entry)
-                if options.update_existing_session_index_entries
-                    && session_index_entry_needs_update(data_dir, row, entry) =>
-            {
-                scan.entries_to_update += 1;
-            }
-            Some(_) => {}
-            None => {
-                scan.entries_to_add += 1;
-            }
-        }
-    }
-    Ok(scan)
-}
-
-fn count_missing_session_index_entries(data_dir: &Path) -> Result<usize, String> {
-    Ok(count_session_index_entries_to_repair(data_dir)?.entries_to_add)
-}
-
-fn load_sqlite_thread_index_rows(data_dir: &Path) -> Result<Vec<SqliteThreadIndexRow>, String> {
-    load_sqlite_thread_index_rows_for_options(
-        data_dir,
-        CodexSessionVisibilityRepairOptions::for_mode(CodexSessionVisibilityRepairMode::Deep),
-        &RepairTargetSelection::default(),
-    )
-}
-
-fn load_sqlite_thread_index_rows_for_options(
-    data_dir: &Path,
-    options: CodexSessionVisibilityRepairOptions,
-    selection: &RepairTargetSelection,
-) -> Result<Vec<SqliteThreadIndexRow>, String> {
-    let mut rows = Vec::new();
-    let mut seen_ids = HashSet::new();
-    for db_path in sqlite_candidate_paths_for_options(data_dir, options) {
-        for row in load_sqlite_thread_index_rows_from_db(&db_path)? {
-            if !selection.includes_session_id(&row.id) {
-                continue;
-            }
-            if seen_ids.insert(row.id.clone()) {
-                rows.push(row);
-            }
-        }
-    }
-    Ok(rows)
-}
-
-fn load_sqlite_thread_index_rows_from_db(
-    db_path: &Path,
-) -> Result<Vec<SqliteThreadIndexRow>, String> {
-    if !db_path.exists() {
-        return Ok(Vec::new());
-    }
-
-    let connection = match Connection::open(db_path) {
-        Ok(connection) => connection,
-        Err(error) if modules::db::is_unusable_sqlite_database_error(&error) => {
-            log_skipped_sqlite_database(db_path, &error.to_string());
-            return Ok(Vec::new());
-        }
-        Err(error) => {
-            return Err(format!(
-                "打开实例数据库失败 ({}): {}",
-                db_path.display(),
-                error
-            ));
-        }
-    };
-
-    let mut statement = match connection.prepare("PRAGMA table_info(threads)") {
-        Ok(statement) => statement,
-        Err(error) if is_missing_threads_table_error(&error) => return Ok(Vec::new()),
-        Err(error) => {
-            return Err(format_sqlite_read_error(
-                db_path,
-                "读取 SQLite threads 表结构失败",
-                &error,
-            ));
-        }
-    };
-    let rows = statement
-        .query_map([], |row| row.get::<usize, String>(1))
-        .map_err(|error| {
-            format_sqlite_read_error(db_path, "读取 SQLite threads 表结构失败", &error)
-        })?;
-    let mut names = HashSet::new();
-    for row in rows {
-        names.insert(row.map_err(|error| {
-            format_sqlite_read_error(db_path, "读取 SQLite threads 表结构失败", &error)
-        })?);
-    }
-    if !names.contains("id") {
-        return Ok(Vec::new());
-    }
-
-    let title_expr = if names.contains("title") {
-        "COALESCE(title, '')"
-    } else {
-        "''"
-    };
-    let updated_at_expr = if names.contains("updated_at") {
-        "updated_at"
-    } else {
-        "NULL"
-    };
-    let updated_at_ms_expr = if names.contains("updated_at_ms") {
-        "updated_at_ms"
-    } else {
-        "NULL"
-    };
-    let rollout_path_expr = if names.contains("rollout_path") {
-        "rollout_path"
-    } else {
-        "NULL"
-    };
-    let order_expr = if names.contains("updated_at") {
-        "updated_at DESC"
-    } else {
-        "id ASC"
-    };
-    let sql = format!(
-        "SELECT id, {title_expr}, {updated_at_expr}, {updated_at_ms_expr}, {rollout_path_expr} FROM threads ORDER BY {order_expr}"
-    );
-    let mut statement = connection.prepare(sql.as_str()).map_err(|error| {
-        format!(
-            "准备 SQLite 会话索引查询失败 ({}): {}",
-            db_path.display(),
-            error
-        )
-    })?;
-    let mapped = statement
-        .query_map([], |row| {
-            Ok(SqliteThreadIndexRow {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                updated_at: row.get(2)?,
-                updated_at_ms: row.get(3)?,
-                rollout_path: row.get(4)?,
-            })
-        })
-        .map_err(|error| {
-            format!(
-                "查询 SQLite 会话索引行失败 ({}): {}",
-                db_path.display(),
-                error
-            )
-        })?;
-    let mut result = Vec::new();
-    for row in mapped {
-        result.push(row.map_err(|error| {
-            format!(
-                "读取 SQLite 会话索引行失败 ({}): {}",
-                db_path.display(),
-                error
-            )
-        })?);
-    }
-    Ok(result)
-}
-
-fn format_thread_updated_at_iso_ms(updated_at_ms: Option<i128>) -> String {
-    let milliseconds = updated_at_ms.unwrap_or_else(|| Utc::now().timestamp_millis() as i128);
-    i64::try_from(milliseconds)
-        .ok()
-        .and_then(|value| Utc.timestamp_millis_opt(value).single())
-        .unwrap_or_else(Utc::now)
-        .to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
-}
-
-fn resolve_thread_updated_at_ms(data_dir: &Path, row: &SqliteThreadIndexRow) -> Option<i128> {
-    let rollout_activity_ms = row
-        .rollout_path
-        .as_deref()
-        .map(|path| resolve_rollout_path(data_dir, path))
-        .filter(|path| path.exists())
-        .and_then(|path| rollout_file_activity_ms(&path));
-    let sqlite_ms = row
-        .updated_at_ms
-        .map(|value| value as i128)
-        .or_else(|| row.updated_at.map(|value| value as i128 * 1000));
-    match (sqlite_ms, rollout_activity_ms) {
-        (Some(sqlite_ms), Some(activity_ms))
-            if (sqlite_ms - activity_ms).abs() > SESSION_INDEX_ACTIVITY_DRIFT_MS =>
-        {
-            Some(activity_ms)
-        }
-        (Some(sqlite_ms), _) => Some(sqlite_ms),
-        (None, Some(activity_ms)) => Some(activity_ms),
-        (None, None) => None,
-    }
-}
-
-fn build_session_index_entry_from_thread(data_dir: &Path, row: &SqliteThreadIndexRow) -> JsonValue {
-    json!({
-        "id": row.id,
-        "thread_name": if row.title.trim().is_empty() {
-            "Untitled"
-        } else {
-            row.title.as_str()
-        },
-        "updated_at": format_thread_updated_at_iso_ms(resolve_thread_updated_at_ms(data_dir, row)),
-    })
-}
-
-fn build_updated_session_index_entry(
-    data_dir: &Path,
-    existing: &JsonValue,
-    row: &SqliteThreadIndexRow,
-) -> JsonValue {
-    let mut entry = existing.clone();
-    let Some(object) = entry.as_object_mut() else {
-        return build_session_index_entry_from_thread(data_dir, row);
-    };
-    object.insert("id".to_string(), JsonValue::String(row.id.clone()));
-    if !row.title.trim().is_empty() {
-        object.insert(
-            "thread_name".to_string(),
-            JsonValue::String(row.title.clone()),
-        );
-    }
-    object.insert(
-        "updated_at".to_string(),
-        JsonValue::String(format_thread_updated_at_iso_ms(
-            resolve_thread_updated_at_ms(data_dir, row),
-        )),
-    );
-    entry
-}
-
-fn session_index_entry_needs_update(
-    data_dir: &Path,
-    row: &SqliteThreadIndexRow,
-    entry: &JsonValue,
-) -> bool {
-    let Some(target_ms) = resolve_thread_updated_at_ms(data_dir, row) else {
-        return false;
-    };
-    match parse_session_index_updated_at_ms(entry) {
-        Some(current_ms) => (current_ms - target_ms).abs() > 1000,
-        None => true,
-    }
-}
-
-fn reconcile_session_index_from_sqlite(
-    data_dir: &Path,
-) -> Result<SessionIndexReconcileResult, String> {
-    reconcile_session_index_from_sqlite_for_options(
-        data_dir,
-        CodexSessionVisibilityRepairOptions::for_mode(CodexSessionVisibilityRepairMode::Deep),
-        &RepairTargetSelection::default(),
-    )
-}
-
-fn reconcile_session_index_from_sqlite_for_options(
-    data_dir: &Path,
-    options: CodexSessionVisibilityRepairOptions,
-    selection: &RepairTargetSelection,
-) -> Result<SessionIndexReconcileResult, String> {
-    let session_index_map = read_session_index_map(data_dir)?;
-    let rows = load_sqlite_thread_index_rows_for_options(data_dir, options, selection)?;
-    let mut entries_to_add = Vec::<JsonValue>::new();
-    let mut entries_to_update = HashMap::<String, JsonValue>::new();
-    for row in &rows {
-        match session_index_map.get(&row.id) {
-            Some(existing)
-                if options.update_existing_session_index_entries
-                    && session_index_entry_needs_update(data_dir, row, existing) =>
-            {
-                entries_to_update.insert(
-                    row.id.clone(),
-                    build_updated_session_index_entry(data_dir, existing, row),
-                );
-            }
-            Some(_) => {}
-            None => entries_to_add.push(build_session_index_entry_from_thread(data_dir, row)),
-        }
-    }
-    if entries_to_add.is_empty() && entries_to_update.is_empty() {
-        return Ok(SessionIndexReconcileResult::default());
-    }
-
-    let path = data_dir.join(SESSION_INDEX_FILE);
-    let mut lines = if path.exists() {
-        fs::read_to_string(&path)
-            .map_err(|error| {
-                format!(
-                    "读取 session_index.jsonl 失败 ({}): {}",
-                    path.display(),
-                    error
-                )
-            })?
-            .lines()
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-
-    while lines.last().is_some_and(|line| line.trim().is_empty()) {
-        lines.pop();
-    }
-
-    let mut updated_ids = HashSet::<String>::new();
-    for line in &mut lines {
-        let Ok(entry) = serde_json::from_str::<JsonValue>(line.trim()) else {
-            continue;
-        };
-        let Some(id) = entry.get("id").and_then(JsonValue::as_str) else {
-            continue;
-        };
-        let Some(updated_entry) = entries_to_update.get(id) else {
-            continue;
-        };
-        *line = serde_json::to_string(updated_entry)
-            .map_err(|error| format!("序列化 session_index 条目失败: {}", error))?;
-        updated_ids.insert(id.to_string());
-    }
-
-    for entry in &entries_to_add {
-        let line = serde_json::to_string(&entry)
-            .map_err(|error| format!("序列化 session_index 条目失败: {}", error))?;
-        lines.push(line);
-    }
-
-    let mut output = lines.join("\n");
-    output.push('\n');
-    modules::atomic_write::write_string_atomic(&path, &output).map_err(|error| {
-        format!(
-            "写入 session_index.jsonl 失败 ({}): {}",
-            path.display(),
-            error
-        )
-    })?;
-    Ok(SessionIndexReconcileResult {
-        added_entries: entries_to_add.len(),
-        updated_entries: updated_ids.len(),
-    })
-}
-
-fn normalize_codex_timestamp_ms(timestamp: i64) -> i128 {
-    let timestamp = timestamp as i128;
-    if timestamp > 10_000_000_000_000 {
-        timestamp / 1_000
-    } else if timestamp > 10_000_000_000 {
-        timestamp
-    } else {
-        timestamp * 1_000
-    }
-}
-
-fn parse_timestamp_ms(value: &JsonValue) -> Option<i128> {
-    match value {
-        JsonValue::Number(number) => number.as_i64().map(normalize_codex_timestamp_ms),
-        JsonValue::String(text) => chrono::DateTime::parse_from_rfc3339(text)
-            .ok()
-            .map(|value| value.timestamp_millis() as i128)
-            .or_else(|| text.parse::<i64>().ok().map(normalize_codex_timestamp_ms)),
-        _ => None,
-    }
-}
-
-fn parse_session_index_updated_at_ms(entry: &JsonValue) -> Option<i128> {
-    [
-        "updated_at",
-        "updatedAt",
-        "last_updated_at",
-        "lastUpdatedAt",
-    ]
-    .iter()
-    .filter_map(|key| entry.get(*key))
-    .find_map(parse_timestamp_ms)
-}
-
-fn parse_rollout_line_timestamp_ms(value: &JsonValue) -> Option<i128> {
-    value
-        .get("timestamp")
-        .or_else(|| value.get("time"))
-        .or_else(|| value.get("created_at"))
-        .or_else(|| value.get("createdAt"))
-        .and_then(parse_timestamp_ms)
-        .or_else(|| {
-            value
-                .get("payload")
-                .and_then(|payload| {
-                    payload
-                        .get("timestamp")
-                        .or_else(|| payload.get("time"))
-                        .or_else(|| payload.get("created_at"))
-                        .or_else(|| payload.get("createdAt"))
-                })
-                .and_then(parse_timestamp_ms)
-        })
-}
-
-fn rollout_file_activity_ms(path: &Path) -> Option<i128> {
-    let content = fs::read_to_string(path).ok()?;
-    content
-        .lines()
-        .filter_map(|line| serde_json::from_str::<JsonValue>(line.trim()).ok())
-        .filter_map(|value| parse_rollout_line_timestamp_ms(&value))
-        .max()
-}
-
-fn resolve_target_modified_at_ms(
-    session_id: Option<&str>,
-    session_index_map: &HashMap<String, JsonValue>,
-    rollout_path: &Path,
-    fallback_ms: Option<i128>,
-) -> Option<i128> {
-    let indexed = session_id
-        .and_then(|id| session_index_map.get(id))
-        .and_then(parse_session_index_updated_at_ms);
-    let activity = rollout_file_activity_ms(rollout_path);
-    match (indexed, activity) {
-        (Some(indexed), Some(activity))
-            if (indexed - activity).abs() > SESSION_INDEX_ACTIVITY_DRIFT_MS =>
-        {
-            Some(activity)
-        }
-        (Some(indexed), _) => Some(indexed),
-        (None, Some(activity)) => Some(activity),
-        (None, None) => fallback_ms,
-    }
-}
-
-fn resolve_rollout_path(data_dir: &Path, rollout_path: &str) -> PathBuf {
-    let trimmed = rollout_path.trim();
-    let stripped = trimmed.strip_prefix(r"\\?\").unwrap_or(trimmed);
-    let path = Path::new(stripped);
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        data_dir.join(path)
-    }
-}
-
-fn count_sqlite_thread_timestamps_to_update(data_dir: &Path) -> Result<usize, String> {
-    count_sqlite_thread_timestamps_to_update_for_options(
-        data_dir,
-        CodexSessionVisibilityRepairOptions::for_mode(CodexSessionVisibilityRepairMode::Deep),
-        &RepairTargetSelection::default(),
-    )
-}
-
-fn count_sqlite_thread_timestamps_to_update_for_options(
-    data_dir: &Path,
-    options: CodexSessionVisibilityRepairOptions,
-    selection: &RepairTargetSelection,
-) -> Result<usize, String> {
-    let mut total = 0usize;
-    for db_path in sqlite_candidate_paths_for_options(data_dir, options) {
-        total += plan_sqlite_thread_timestamp_repair_for_db(data_dir, &db_path, selection)?
-            .updates
-            .len();
-    }
-    Ok(total)
-}
-
-fn plan_sqlite_thread_timestamp_repair_for_db(
-    data_dir: &Path,
-    db_path: &Path,
-    selection: &RepairTargetSelection,
-) -> Result<SqliteTimestampRepairPlan, String> {
-    if !db_path.exists() {
-        return Ok(SqliteTimestampRepairPlan::default());
-    }
-
-    let connection = match Connection::open(db_path) {
-        Ok(connection) => connection,
-        Err(error) if modules::db::is_unusable_sqlite_database_error(&error) => {
-            log_skipped_sqlite_database(db_path, &error.to_string());
-            return Ok(SqliteTimestampRepairPlan::default());
-        }
-        Err(error) => {
-            return Err(format!(
-                "打开实例数据库失败 ({}): {}",
-                db_path.display(),
-                error
-            ));
-        }
-    };
-
-    let mut statement = match connection.prepare("PRAGMA table_info(threads)") {
-        Ok(statement) => statement,
-        Err(error) if is_missing_threads_table_error(&error) => {
-            return Ok(SqliteTimestampRepairPlan::default())
-        }
-        Err(error) => {
-            return Err(format_sqlite_read_error(
-                db_path,
-                "读取 SQLite threads 表结构失败",
-                &error,
-            ));
-        }
-    };
-    let rows = statement
-        .query_map([], |row| row.get::<usize, String>(1))
-        .map_err(|error| {
-            format_sqlite_read_error(db_path, "读取 SQLite threads 表结构失败", &error)
-        })?;
-    let mut names = HashSet::new();
-    for row in rows {
-        names.insert(row.map_err(|error| {
-            format_sqlite_read_error(db_path, "读取 SQLite threads 表结构失败", &error)
-        })?);
-    }
-    drop(statement);
-
-    let has_updated_at = names.contains("updated_at");
-    let has_updated_at_ms = names.contains("updated_at_ms");
-    if !names.contains("id")
-        || !names.contains("rollout_path")
-        || (!has_updated_at && !has_updated_at_ms)
-    {
-        return Ok(SqliteTimestampRepairPlan::default());
-    }
-
-    let updated_at_expr = if has_updated_at { "updated_at" } else { "NULL" };
-    let updated_at_ms_expr = if has_updated_at_ms {
-        "updated_at_ms"
-    } else {
-        "NULL"
-    };
-    let sql = format!(
-        "SELECT id, rollout_path, {updated_at_expr}, {updated_at_ms_expr} FROM threads WHERE rollout_path IS NOT NULL AND rollout_path <> ''"
-    );
-    let mut statement = connection.prepare(sql.as_str()).map_err(|error| {
-        format_sqlite_read_error(db_path, "准备 SQLite 会话时间修复查询失败", &error)
-    })?;
-
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<i64>>(2)?,
-                row.get::<_, Option<i64>>(3)?,
-            ))
-        })
-        .map_err(|error| format_sqlite_read_error(db_path, "查询 SQLite 会话时间失败", &error))?;
-
-    let mut updates = Vec::new();
-    for row in rows {
-        let (thread_id, rollout_path, updated_at, updated_at_ms) = row.map_err(|error| {
-            format_sqlite_read_error(db_path, "读取 SQLite 会话时间失败", &error)
-        })?;
-        if !selection.includes_session_id(&thread_id) {
-            continue;
-        }
-        let rollout = resolve_rollout_path(data_dir, &rollout_path);
-        if !rollout.exists() {
-            continue;
-        }
-        let Some(activity_ms) = rollout_file_activity_ms(&rollout) else {
-            continue;
-        };
-        let activity_seconds = (activity_ms / 1000) as i64;
-        let activity_ms = activity_seconds * 1000;
-        let current_ms = updated_at_ms
-            .or_else(|| updated_at.map(|value| value * 1000))
-            .unwrap_or(0);
-        if i64::abs(current_ms - activity_ms) <= 1000 {
-            continue;
-        }
-        updates.push(SqliteTimestampUpdate {
-            id: thread_id,
-            updated_at_seconds: activity_seconds,
-            updated_at_ms: activity_ms,
-        });
-    }
-    Ok(SqliteTimestampRepairPlan {
-        updates,
-        has_updated_at,
-        has_updated_at_ms,
-    })
-}
-
-fn repair_sqlite_thread_timestamps(data_dir: &Path) -> Result<usize, String> {
-    repair_sqlite_thread_timestamps_for_options(
-        data_dir,
-        CodexSessionVisibilityRepairOptions::for_mode(CodexSessionVisibilityRepairMode::Deep),
-        &RepairTargetSelection::default(),
-    )
-}
-
-fn repair_sqlite_thread_timestamps_for_options(
-    data_dir: &Path,
-    options: CodexSessionVisibilityRepairOptions,
-    selection: &RepairTargetSelection,
-) -> Result<usize, String> {
-    let mut total = 0usize;
-    for db_path in sqlite_candidate_paths_for_options(data_dir, options) {
-        total += repair_sqlite_thread_timestamps_for_db(data_dir, &db_path, selection)?;
-    }
-    Ok(total)
-}
-
-fn repair_sqlite_thread_timestamps_for_db(
-    data_dir: &Path,
-    db_path: &Path,
-    selection: &RepairTargetSelection,
-) -> Result<usize, String> {
-    if !db_path.exists() {
-        return Ok(0);
-    }
-
-    let plan = plan_sqlite_thread_timestamp_repair_for_db(data_dir, db_path, selection)?;
-    let updates = plan.updates;
-
-    if updates.is_empty() {
-        return Ok(0);
-    }
-
-    let mut connection = match Connection::open(db_path) {
-        Ok(connection) => connection,
-        Err(error) if modules::db::is_unusable_sqlite_database_error(&error) => {
-            log_skipped_sqlite_database(db_path, &error.to_string());
-            return Ok(0);
-        }
-        Err(error) => {
-            return Err(format!(
-                "打开实例数据库失败 ({}): {}",
-                db_path.display(),
-                error
-            ));
-        }
-    };
-    let transaction = connection
-        .transaction()
-        .map_err(|error| format_sqlite_write_error(db_path, &error))?;
-    for update in &updates {
-        if plan.has_updated_at && plan.has_updated_at_ms {
-            transaction
-                .execute(
-                    "UPDATE threads SET updated_at = ?1, updated_at_ms = ?2 WHERE id = ?3",
-                    (
-                        update.updated_at_seconds,
-                        update.updated_at_ms,
-                        update.id.as_str(),
-                    ),
-                )
-                .map_err(|error| format_sqlite_write_error(db_path, &error))?;
-        } else if plan.has_updated_at {
-            transaction
-                .execute(
-                    "UPDATE threads SET updated_at = ?1 WHERE id = ?2",
-                    (update.updated_at_seconds, update.id.as_str()),
-                )
-                .map_err(|error| format_sqlite_write_error(db_path, &error))?;
-        } else if plan.has_updated_at_ms {
-            transaction
-                .execute(
-                    "UPDATE threads SET updated_at_ms = ?1 WHERE id = ?2",
-                    (update.updated_at_ms, update.id.as_str()),
-                )
-                .map_err(|error| format_sqlite_write_error(db_path, &error))?;
-        }
-    }
-    transaction
-        .commit()
-        .map_err(|error| format_sqlite_write_error(db_path, &error))?;
-    Ok(updates.len())
 }
 
 fn is_missing_threads_table_error(error: &rusqlite::Error) -> bool {
@@ -3011,40 +1882,19 @@ pub(crate) fn normalize_official_thread_cwds(data_dir: &Path) -> Result<usize, S
     Ok(total)
 }
 
-fn count_sqlite_rows_to_update(
-    data_dir: &Path,
-    target_provider: &str,
-) -> Result<SqliteProviderScan, String> {
-    count_sqlite_rows_to_update_for_options(
-        data_dir,
-        target_provider,
-        CodexSessionVisibilityRepairOptions::for_mode(CodexSessionVisibilityRepairMode::Deep),
-        &RepairTargetSelection::default(),
-    )
-}
-
 fn count_sqlite_rows_to_update_for_options(
     data_dir: &Path,
     target_provider: &str,
-    options: CodexSessionVisibilityRepairOptions,
+    _options: CodexSessionVisibilityRepairOptions,
     selection: &RepairTargetSelection,
 ) -> Result<SqliteProviderScan, String> {
-    let facts = if options.collect_rollout_thread_facts {
-        Some(collect_rollout_thread_facts(data_dir, selection)?)
-    } else {
-        None
-    };
     let mut scan = SqliteProviderScan {
         rows_to_update: 0,
         skipped_unusable_database: false,
     };
-    for db_path in sqlite_candidate_paths_for_options(data_dir, options) {
-        let item = count_sqlite_rows_to_update_for_db(
-            &db_path,
-            target_provider,
-            facts.as_ref(),
-            selection,
-        )?;
+    for db_path in official_state_db_candidate_paths(data_dir) {
+        let item =
+            count_sqlite_rows_to_update_for_db(&db_path, target_provider, selection)?;
         scan.rows_to_update += item.rows_to_update;
         scan.skipped_unusable_database |= item.skipped_unusable_database;
     }
@@ -3054,7 +1904,6 @@ fn count_sqlite_rows_to_update_for_options(
 fn count_sqlite_rows_to_update_for_db(
     db_path: &Path,
     target_provider: &str,
-    facts: Option<&RolloutThreadFacts>,
     selection: &RepairTargetSelection,
 ) -> Result<SqliteProviderScan, String> {
     if !db_path.exists() {
@@ -3174,42 +2023,6 @@ fn count_sqlite_rows_to_update_for_db(
             };
         }
     }
-    if let Some(facts) = facts {
-        if columns.has_user_event {
-            for thread_id in &facts.user_event_thread_ids {
-                count += connection
-                    .query_row(
-                        "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
-                        [thread_id.as_str()],
-                        |row| row.get::<usize, i64>(0),
-                    )
-                    .map_err(|error| {
-                        format!(
-                            "统计 SQLite has_user_event 差异失败 ({}): {}",
-                            db_path.display(),
-                            error
-                        )
-                    })?;
-            }
-        }
-        if columns.cwd {
-            for (thread_id, cwd) in &facts.cwd_by_thread_id {
-                count += connection
-                    .query_row(
-                        "SELECT COUNT(*) FROM threads WHERE id = ?1 AND COALESCE(cwd, '') <> ?2",
-                        (thread_id.as_str(), cwd.as_str()),
-                        |row| row.get::<usize, i64>(0),
-                    )
-                    .map_err(|error| {
-                        format!(
-                            "统计 SQLite cwd 差异失败 ({}): {}",
-                            db_path.display(),
-                            error
-                        )
-                    })?;
-            }
-        }
-    }
     if columns.id && columns.cwd {
         count += collect_sqlite_cwd_normalizations(&connection, db_path, selection)?.len() as i64;
     }
@@ -3219,30 +2032,15 @@ fn count_sqlite_rows_to_update_for_db(
     })
 }
 
-fn update_sqlite_provider(data_dir: &Path, target_provider: &str) -> Result<usize, String> {
-    update_sqlite_provider_for_options(
-        data_dir,
-        target_provider,
-        CodexSessionVisibilityRepairOptions::for_mode(CodexSessionVisibilityRepairMode::Deep),
-        &RepairTargetSelection::default(),
-    )
-}
-
 fn update_sqlite_provider_for_options(
     data_dir: &Path,
     target_provider: &str,
-    options: CodexSessionVisibilityRepairOptions,
+    _options: CodexSessionVisibilityRepairOptions,
     selection: &RepairTargetSelection,
 ) -> Result<usize, String> {
-    let facts = if options.collect_rollout_thread_facts {
-        Some(collect_rollout_thread_facts(data_dir, selection)?)
-    } else {
-        None
-    };
     let mut total = 0usize;
-    for db_path in sqlite_candidate_paths_for_options(data_dir, options) {
-        total +=
-            update_sqlite_provider_for_db(&db_path, target_provider, facts.as_ref(), selection)?;
+    for db_path in official_state_db_candidate_paths(data_dir) {
+        total += update_sqlite_provider_for_db(&db_path, target_provider, selection)?;
     }
     Ok(total)
 }
@@ -3250,7 +2048,6 @@ fn update_sqlite_provider_for_options(
 fn update_sqlite_provider_for_db(
     db_path: &Path,
     target_provider: &str,
-    facts: Option<&RolloutThreadFacts>,
     selection: &RepairTargetSelection,
 ) -> Result<usize, String> {
     if !db_path.exists() {
@@ -3344,28 +2141,6 @@ fn update_sqlite_provider_for_db(
                 }
                 Err(error) => return Err(format_sqlite_write_error(db_path, &error)),
             };
-        }
-    }
-    if let Some(facts) = facts {
-        if columns.has_user_event {
-            for thread_id in &facts.user_event_thread_ids {
-                updated_rows += transaction
-                    .execute(
-                        "UPDATE threads SET has_user_event = 1 WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
-                        [thread_id.as_str()],
-                    )
-                    .map_err(|error| format_sqlite_write_error(db_path, &error))?;
-            }
-        }
-        if columns.cwd {
-            for (thread_id, cwd) in &facts.cwd_by_thread_id {
-                updated_rows += transaction
-                    .execute(
-                        "UPDATE threads SET cwd = ?1 WHERE id = ?2 AND COALESCE(cwd, '') <> ?1",
-                        (cwd.as_str(), thread_id.as_str()),
-                    )
-                    .map_err(|error| format_sqlite_write_error(db_path, &error))?;
-            }
         }
     }
     for (thread_id, cwd) in cwd_normalizations {
@@ -3535,17 +2310,6 @@ fn sqlite_candidate_paths(data_dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-fn sqlite_candidate_paths_for_options(
-    data_dir: &Path,
-    options: CodexSessionVisibilityRepairOptions,
-) -> Vec<PathBuf> {
-    match options.sqlite_scope {
-        SqliteRepairScope::LegacyStateOnly => vec![data_dir.join(STATE_DB_FILE)],
-        SqliteRepairScope::OfficialStateDbs => official_state_db_candidate_paths(data_dir),
-        SqliteRepairScope::AllSessionDbs => sqlite_candidate_paths(data_dir),
-    }
-}
-
 fn official_state_db_candidate_paths(data_dir: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     push_unique_path(
@@ -3641,10 +2405,10 @@ fn remove_sqlite_sidecar_files(db_path: &Path) -> Result<(), String> {
 fn backup_sqlite_databases(
     data_dir: &Path,
     backup_dir: &Path,
-    options: CodexSessionVisibilityRepairOptions,
+    _options: CodexSessionVisibilityRepairOptions,
 ) -> Result<Vec<String>, String> {
     let mut backed_up = Vec::new();
-    for db_path in sqlite_candidate_paths_for_options(data_dir, options) {
+    for db_path in official_state_db_candidate_paths(data_dir) {
         if !db_path.exists() {
             continue;
         }
@@ -4353,6 +3117,7 @@ mod tests {
             )
             .expect("read provider-only row");
         assert_eq!(provider_only, ("relay".to_string(), 0));
+        drop(connection);
 
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
     }
@@ -4395,6 +3160,7 @@ mod tests {
             )
             .expect("read old provider");
         assert_eq!(old_provider, "relay");
+        drop(connection);
 
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
     }
@@ -4442,21 +3208,15 @@ mod tests {
         let scan = count_sqlite_rows_to_update_for_options(&data_dir, "relay", options, &selection)
             .expect("scan quick sqlite");
         assert_eq!(scan.rows_to_update, 2);
-        let repaired = repair_single_instance(
+        let repaired = repair_single_instance_for_test(
             &data_dir,
             "relay",
             &[],
-            true,
-            false,
-            false,
             options,
             &selection,
         )
         .expect("quick repair");
         assert_eq!(repaired.updated_sqlite_rows, 2);
-        assert_eq!(repaired.updated_sqlite_timestamp_rows, 0);
-        assert_eq!(repaired.added_session_index_entries, 0);
-        assert_eq!(repaired.updated_session_index_entries, 0);
 
         assert_eq!(
             fs::read_to_string(&rollout_path).expect("read rollout"),
@@ -4490,6 +3250,7 @@ mod tests {
             )
             .expect("read unrelated provider");
         assert_eq!(unrelated_provider, "old");
+        drop(connection);
 
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
     }
@@ -4550,13 +3311,10 @@ mod tests {
         assert_eq!(rollout_changes.len(), 1);
         assert_eq!(rollout_changes[0].absolute_path, referenced_rollout);
 
-        let repaired = repair_single_instance(
+        let repaired = repair_single_instance_for_test(
             &data_dir,
             "relay",
             &rollout_changes,
-            true,
-            false,
-            false,
             options,
             &selection,
         )
@@ -4625,12 +3383,6 @@ mod tests {
 
         let options = repair_options(CodexSessionVisibilityRepairMode::Deep);
         assert_eq!(options.mode, CodexSessionVisibilityRepairMode::Deep);
-        assert_eq!(options.sqlite_scope, SqliteRepairScope::OfficialStateDbs);
-        assert!(!options.repair_rollout);
-        assert!(options.repair_referenced_rollouts);
-        assert!(options.rewrite_all_session_meta);
-        assert!(!options.repair_session_index);
-        assert!(!options.rebuild_metadata);
 
         let selection = RepairTargetSelection::default();
         let rollout_changes =
@@ -4641,21 +3393,19 @@ mod tests {
             .expect("scan compatibility sqlite");
         assert_eq!(scan.rows_to_update, 1);
 
-        let repaired = repair_single_instance(
+        let repaired = repair_single_instance_for_test(
             &data_dir,
             "relay",
             &rollout_changes,
-            true,
-            false,
-            false,
             options,
             &selection,
         )
         .expect("compatibility repair");
         assert_eq!(repaired.updated_sqlite_rows, 1);
 
-        let connection = Connection::open(&official_db_path).expect("reopen official sqlite");
-        let official_provider = connection
+        let official_connection =
+            Connection::open(&official_db_path).expect("reopen official sqlite");
+        let official_provider = official_connection
             .query_row(
                 "SELECT model_provider FROM threads WHERE id = 'thread-1'",
                 [],
@@ -4664,8 +3414,9 @@ mod tests {
             .expect("read official provider");
         assert_eq!(official_provider, "relay");
 
-        let connection = Connection::open(&unrelated_db_path).expect("reopen unrelated sqlite");
-        let unrelated_provider = connection
+        let unrelated_connection =
+            Connection::open(&unrelated_db_path).expect("reopen unrelated sqlite");
+        let unrelated_provider = unrelated_connection
             .query_row(
                 "SELECT model_provider FROM threads WHERE id = 'thread-1'",
                 [],
@@ -4678,22 +3429,10 @@ mod tests {
             fs::read_to_string(&referenced_rollout).expect("read deep repaired rollout");
         assert!(referenced_content.contains("\"model_provider\":\"relay\""));
         assert!(!referenced_content.contains("old-later"));
+        drop(official_connection);
+        drop(unrelated_connection);
 
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn auto_repair_mode_stays_on_official_state_db_only() {
-        let options = CodexSessionVisibilityRepairOptions::for_auto_repair_mode(
-            CodexSessionVisibilityAutoRepairMode::Current,
-        );
-        assert_eq!(options.mode, CodexSessionVisibilityRepairMode::Quick);
-        assert_eq!(options.sqlite_scope, SqliteRepairScope::OfficialStateDbs);
-        assert!(!options.repair_rollout);
-        assert!(options.repair_referenced_rollouts);
-        assert!(!options.rewrite_all_session_meta);
-        assert!(!options.repair_session_index);
-        assert!(!options.rebuild_metadata);
     }
 
     #[test]
@@ -4756,6 +3495,7 @@ mod tests {
             )
             .expect("read restored provider");
         assert_eq!(provider, "old");
+        drop(connection);
 
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
     }
@@ -4859,6 +3599,7 @@ mod tests {
             })
             .count();
         assert_eq!(backup_count, 0);
+        drop(connection);
 
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
     }
