@@ -11,7 +11,6 @@ use sysinfo::{Pid, ProcessRefreshKind, System, UpdateKind};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 const OPENCODE_APP_NAME: &str = "OpenCode";
 #[cfg(target_os = "macos")]
-const TRAE_APP_NAME: &str = "Trae";
 #[cfg(target_os = "macos")]
 const CODEX_APP_PATH: &str = "/Applications/Codex.app/Contents/MacOS/Codex";
 #[cfg(target_os = "macos")]
@@ -2715,10 +2714,6 @@ fn detect_zed_exec_path() -> Option<std::path::PathBuf> {
     None
 }
 
-fn detect_trae_exec_path() -> Option<std::path::PathBuf> {
-    detect_trae_exec_path_for_platform(crate::modules::trae_account::TraePlatformKind::Trae)
-}
-
 fn detect_trae_exec_path_for_platform(
     platform: crate::modules::trae_account::TraePlatformKind,
 ) -> Option<std::path::PathBuf> {
@@ -3925,10 +3920,6 @@ pub fn ensure_qoder_launch_path_configured() -> Result<(), String> {
     resolve_qoder_launch_path().map(|_| ())
 }
 
-pub fn ensure_trae_launch_path_configured() -> Result<(), String> {
-    resolve_trae_launch_path().map(|_| ())
-}
-
 pub fn ensure_workbuddy_launch_path_configured() -> Result<(), String> {
     resolve_workbuddy_launch_path().map(|_| ())
 }
@@ -4081,10 +4072,6 @@ pub fn resolve_zed_launch_path() -> Result<std::path::PathBuf, String> {
     }
 
     Err(app_path_missing_error("zed"))
-}
-
-fn resolve_trae_launch_path() -> Result<std::path::PathBuf, String> {
-    resolve_trae_launch_path_for_platform(crate::modules::trae_account::TraePlatformKind::Trae)
 }
 
 fn trae_configured_app_path(
@@ -5683,13 +5670,6 @@ fn resolve_qoder_target_and_fallback(user_data_dir: Option<&str>) -> Option<(Str
     )
 }
 
-fn resolve_trae_target_and_fallback(user_data_dir: Option<&str>) -> Option<(String, bool)> {
-    resolve_trae_target_and_fallback_for_platform(
-        user_data_dir,
-        crate::modules::trae_account::TraePlatformKind::Trae,
-    )
-}
-
 fn resolve_trae_target_and_fallback_for_platform(
     user_data_dir: Option<&str>,
     platform: crate::modules::trae_account::TraePlatformKind,
@@ -5964,15 +5944,6 @@ pub fn resolve_qoder_pid(last_pid: Option<u32>, user_data_dir: Option<&str>) -> 
     resolve_qoder_pid_from_entries(last_pid, user_data_dir, &entries)
 }
 
-pub fn resolve_trae_pid_from_entries(
-    last_pid: Option<u32>,
-    user_data_dir: Option<&str>,
-    entries: &[(u32, Option<String>)],
-) -> Option<u32> {
-    let (target, allow_none_for_target) = resolve_trae_target_and_fallback(user_data_dir)?;
-    resolve_pid_from_entries_by_user_data_dir(last_pid, &target, allow_none_for_target, entries)
-}
-
 fn resolve_trae_pid_from_entries_for_platform(
     last_pid: Option<u32>,
     user_data_dir: Option<&str>,
@@ -5982,11 +5953,6 @@ fn resolve_trae_pid_from_entries_for_platform(
     let (target, allow_none_for_target) =
         resolve_trae_target_and_fallback_for_platform(user_data_dir, platform)?;
     resolve_pid_from_entries_by_user_data_dir(last_pid, &target, allow_none_for_target, entries)
-}
-
-pub fn resolve_trae_pid(last_pid: Option<u32>, user_data_dir: Option<&str>) -> Option<u32> {
-    let entries = collect_trae_process_entries();
-    resolve_trae_pid_from_entries(last_pid, user_data_dir, &entries)
 }
 
 pub fn resolve_trae_pid_for_platform(
@@ -7472,10 +7438,6 @@ pub fn collect_qoder_process_entries() -> Vec<(u32, Option<String>)> {
     }
 }
 
-pub fn collect_trae_process_entries() -> Vec<(u32, Option<String>)> {
-    collect_trae_process_entries_for_platform(crate::modules::trae_account::TraePlatformKind::Trae)
-}
-
 pub fn collect_trae_process_entries_for_platform(
     platform: crate::modules::trae_account::TraePlatformKind,
 ) -> Vec<(u32, Option<String>)> {
@@ -7727,12 +7689,6 @@ fn get_default_qoder_user_data_dir_for_os() -> Option<String> {
     crate::modules::qoder_instance::get_default_qoder_user_data_dir()
         .ok()
         .map(|value| value.to_string_lossy().to_string())
-}
-
-fn get_default_trae_user_data_dir_for_os() -> Option<String> {
-    get_default_trae_user_data_dir_for_platform_for_os(
-        crate::modules::trae_account::TraePlatformKind::Trae,
-    )
 }
 
 fn get_default_trae_user_data_dir_for_platform_for_os(
@@ -8224,21 +8180,6 @@ pub fn close_qoder_instances(user_data_dirs: &[String], timeout_secs: u64) -> Re
         timeout_secs,
         default_dir,
         collect_qoder_process_entries,
-    )
-}
-
-pub fn close_trae_instances(user_data_dirs: &[String], timeout_secs: u64) -> Result<(), String> {
-    let default_dir = get_default_trae_user_data_dir_for_os()
-        .map(|value| normalize_path_for_compare(&value))
-        .filter(|value| !value.is_empty());
-    close_user_data_dir_scoped_instances(
-        "Trae Close",
-        "Trae",
-        "Unable to close managed Trae instances; please close them manually and retry",
-        user_data_dirs,
-        timeout_secs,
-        default_dir,
-        collect_trae_process_entries,
     )
 }
 
@@ -10769,143 +10710,10 @@ pub fn close_codex_instances(codex_homes: &[String], timeout_secs: u64) -> Resul
     }
 }
 
-fn get_trae_pids() -> Vec<u32> {
-    let mut pids = Vec::new();
-
-    #[cfg(target_os = "macos")]
-    {
-        // Use ps to avoid sysinfo TCC dialogs on macOS
-        let app_lower = TRAE_APP_NAME.to_lowercase();
-        let bundle_pattern = format!("{}.app/contents/", app_lower);
-        if let Ok(output) = Command::new("ps")
-            .args(["-axww", "-o", "pid=,command="])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let mut parts = line.splitn(2, |ch: char| ch.is_whitespace());
-                let pid_str = parts.next().unwrap_or("").trim();
-                let cmdline = parts.next().unwrap_or("").trim();
-                let pid = match pid_str.parse::<u32>() {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                };
-                let lower = cmdline.to_lowercase();
-                if lower.contains(&bundle_pattern)
-                    && !lower.contains("--type=")
-                    && !lower.contains("crashpad_handler")
-                {
-                    pids.push(pid);
-                }
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let mut system = System::new();
-        system.refresh_processes_specifics(
-            sysinfo::ProcessesToUpdate::All,
-            true,
-            ProcessRefreshKind::nothing()
-                .with_exe(UpdateKind::OnlyIfNotSet)
-                .with_cmd(UpdateKind::OnlyIfNotSet),
-        );
-
-        let current_pid = std::process::id();
-
-        for (pid, process) in system.processes() {
-            let pid_u32 = pid.as_u32();
-            if pid_u32 == current_pid {
-                continue;
-            }
-
-            let name = process.name().to_string_lossy().to_lowercase();
-            let exe_path = process
-                .exe()
-                .and_then(|p| p.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-
-            let args = process.cmd();
-            let args_str = args
-                .iter()
-                .map(|arg| arg.to_string_lossy().to_lowercase())
-                .collect::<Vec<String>>()
-                .join(" ");
-
-            let is_helper = args_str.contains("--type=")
-                || name.contains("helper")
-                || name.contains("plugin")
-                || name.contains("renderer")
-                || name.contains("gpu")
-                || name.contains("crashpad")
-                || name.contains("utility")
-                || name.contains("audio")
-                || name.contains("sandbox")
-                || exe_path.contains("crashpad");
-
-            #[cfg(target_os = "windows")]
-            {
-                if (name.contains("trae") || exe_path.contains("trae")) && !is_helper {
-                    pids.push(pid_u32);
-                }
-            }
-
-            #[cfg(target_os = "linux")]
-            {
-                if (name.contains("trae") || exe_path.contains("/trae")) && !is_helper {
-                    pids.push(pid_u32);
-                }
-            }
-        }
-    }
-
-    if !pids.is_empty() {
-        crate::modules::logger::log_info(&format!(
-            "找到 {} 个 Trae 进程: {}",
-            pids.len(),
-            summarize_pid_list_for_log(&pids)
-        ));
-    }
-
-    pids
-}
-
-pub fn is_trae_running() -> bool {
-    !get_trae_pids().is_empty()
-}
-
 pub fn is_trae_running_for_platform(
     platform: crate::modules::trae_account::TraePlatformKind,
 ) -> bool {
     !collect_trae_process_entries_for_platform(platform).is_empty()
-}
-
-pub fn close_trae(timeout_secs: u64) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let _ = timeout_secs;
-
-    crate::modules::logger::log_info("正在关闭 Trae...");
-    let pids = get_trae_pids();
-    if pids.is_empty() {
-        crate::modules::logger::log_info("Trae 未在运行，无需关闭");
-        return Ok(());
-    }
-
-    crate::modules::logger::log_info(&format!("准备关闭 {} 个 Trae 进程...", pids.len()));
-    let _ = close_pids(&pids, timeout_secs);
-
-    if !get_trae_pids().is_empty() {
-        return Err("无法关闭 Trae 进程，请手动关闭后重试".to_string());
-    }
-
-    crate::modules::logger::log_info("Trae 已成功关闭");
-    Ok(())
 }
 
 /// 检查 OpenCode（桌面端）是否在运行
@@ -12540,133 +12348,6 @@ pub fn start_qoder_default_with_args_with_new_window(
     }
 }
 
-pub fn start_trae_with_args_with_new_window(
-    user_data_dir: &str,
-    extra_args: &[String],
-    use_new_window: bool,
-) -> Result<u32, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let target = user_data_dir.trim();
-        if target.is_empty() {
-            return Err("实例目录为空，无法启动".to_string());
-        }
-        let launch_path = resolve_trae_launch_path()?;
-        let app_root = resolve_macos_app_root_from_launch_path(&launch_path)
-            .ok_or_else(|| app_path_missing_error("trae"))?;
-
-        let mut args: Vec<String> = Vec::new();
-        args.push("--user-data-dir".to_string());
-        args.push(target.to_string());
-        if use_new_window {
-            args.push("--new-window".to_string());
-        } else {
-            args.push("--reuse-window".to_string());
-        }
-        for arg in extra_args {
-            let trimmed = arg.trim();
-            if !trimmed.is_empty() {
-                args.push(trimmed.to_string());
-            }
-        }
-
-        let open_pid = spawn_open_app_with_options(&app_root, &args, true)
-            .map_err(|e| format!("启动 Trae 失败: {}", e))?;
-        crate::modules::logger::log_info("Trae 启动命令已发送（open -n -a）");
-        let probe_started = Instant::now();
-        let timeout = Duration::from_secs(6);
-        while probe_started.elapsed() < timeout {
-            if let Some(resolved_pid) = resolve_trae_pid(None, Some(target)) {
-                return Ok(resolved_pid);
-            }
-            thread::sleep(Duration::from_millis(200));
-        }
-        crate::modules::logger::log_warn(&format!(
-            "[Trae Start] 启动后 6s 内未匹配到实例 PID，回退 open pid={}",
-            open_pid
-        ));
-        return Ok(open_pid);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-
-        let target = user_data_dir.trim();
-        if target.is_empty() {
-            return Err("实例目录为空，无法启动".to_string());
-        }
-        let launch_path = resolve_trae_launch_path()?;
-
-        let mut cmd = Command::new(&launch_path);
-        apply_managed_proxy_env_to_command(&mut cmd);
-        if should_detach_child() {
-            cmd.creation_flags(0x08000000 | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-        } else {
-            cmd.creation_flags(0x08000000);
-        }
-        cmd.arg("--user-data-dir").arg(target);
-        if use_new_window {
-            cmd.arg("--new-window");
-        } else {
-            cmd.arg("--reuse-window");
-        }
-        for arg in extra_args {
-            let trimmed = arg.trim();
-            if !trimmed.is_empty() {
-                cmd.arg(trimmed);
-            }
-        }
-
-        let child =
-            spawn_command_with_trace(&mut cmd).map_err(|e| format!("启动 Trae 失败: {}", e))?;
-        crate::modules::logger::log_info("Trae 启动命令已发送");
-        return Ok(child.id());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let target = user_data_dir.trim();
-        if target.is_empty() {
-            return Err("实例目录为空，无法启动".to_string());
-        }
-        let launch_path = resolve_trae_launch_path()?;
-
-        let mut cmd = Command::new(&launch_path);
-        apply_managed_proxy_env_to_command(&mut cmd);
-        if should_detach_child() {
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-        }
-        cmd.arg("--user-data-dir").arg(target);
-        if use_new_window {
-            cmd.arg("--new-window");
-        } else {
-            cmd.arg("--reuse-window");
-        }
-        for arg in extra_args {
-            let trimmed = arg.trim();
-            if !trimmed.is_empty() {
-                cmd.arg(trimmed);
-            }
-        }
-
-        let child = spawn_detached_unix(&mut cmd).map_err(|e| format!("启动 Trae 失败: {}", e))?;
-        crate::modules::logger::log_info("Trae 启动命令已发送");
-        return Ok(child.id());
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        let _ = (user_data_dir, extra_args, use_new_window);
-        Err("Trae 应用多开仅支持 macOS、Windows 和 Linux".to_string())
-    }
-}
-
 pub fn start_trae_platform_with_args_with_new_window(
     platform_id: &str,
     user_data_dir: &str,
@@ -12785,112 +12466,6 @@ pub fn start_trae_platform_with_args_with_new_window(
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
         let _ = (platform, user_data_dir, extra_args, use_new_window);
-        Err("Trae 应用多开仅支持 macOS、Windows 和 Linux".to_string())
-    }
-}
-
-pub fn start_trae_default_with_args_with_new_window(
-    extra_args: &[String],
-    use_new_window: bool,
-) -> Result<u32, String> {
-    #[cfg(target_os = "macos")]
-    {
-        let launch_path = resolve_trae_launch_path()?;
-        let app_root = resolve_macos_app_root_from_launch_path(&launch_path)
-            .ok_or_else(|| app_path_missing_error("trae"))?;
-
-        let mut args: Vec<String> = Vec::new();
-        if use_new_window {
-            args.push("--new-window".to_string());
-        } else {
-            args.push("--reuse-window".to_string());
-        }
-        for arg in extra_args {
-            let trimmed = arg.trim();
-            if !trimmed.is_empty() {
-                args.push(trimmed.to_string());
-            }
-        }
-
-        let open_pid = spawn_open_app_with_options(&app_root, &args, false)
-            .map_err(|e| format!("启动 Trae 失败: {}", e))?;
-        crate::modules::logger::log_info("Trae 默认实例启动命令已发送（open -a）");
-        let probe_started = Instant::now();
-        let timeout = Duration::from_secs(6);
-        while probe_started.elapsed() < timeout {
-            if let Some(resolved_pid) = resolve_trae_pid(None, None) {
-                return Ok(resolved_pid);
-            }
-            thread::sleep(Duration::from_millis(200));
-        }
-        crate::modules::logger::log_warn(&format!(
-            "[Trae Start] 启动后 6s 内未匹配到默认实例 PID，回退 open pid={}",
-            open_pid
-        ));
-        return Ok(open_pid);
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-
-        let launch_path = resolve_trae_launch_path()?;
-        let mut cmd = Command::new(&launch_path);
-        apply_managed_proxy_env_to_command(&mut cmd);
-        if should_detach_child() {
-            cmd.creation_flags(0x08000000 | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-        } else {
-            cmd.creation_flags(0x08000000);
-        }
-        if use_new_window {
-            cmd.arg("--new-window");
-        } else {
-            cmd.arg("--reuse-window");
-        }
-        for arg in extra_args {
-            let trimmed = arg.trim();
-            if !trimmed.is_empty() {
-                cmd.arg(trimmed);
-            }
-        }
-        let child =
-            spawn_command_with_trace(&mut cmd).map_err(|e| format!("启动 Trae 失败: {}", e))?;
-        crate::modules::logger::log_info("Trae 默认实例启动命令已发送");
-        return Ok(child.id());
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let launch_path = resolve_trae_launch_path()?;
-        let mut cmd = Command::new(&launch_path);
-        apply_managed_proxy_env_to_command(&mut cmd);
-        if should_detach_child() {
-            cmd.stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-        }
-        if use_new_window {
-            cmd.arg("--new-window");
-        } else {
-            cmd.arg("--reuse-window");
-        }
-        for arg in extra_args {
-            let trimmed = arg.trim();
-            if !trimmed.is_empty() {
-                cmd.arg(trimmed);
-            }
-        }
-        let child = spawn_detached_unix(&mut cmd).map_err(|e| format!("启动 Trae 失败: {}", e))?;
-        crate::modules::logger::log_info("Trae 默认实例启动命令已发送");
-        return Ok(child.id());
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        let _ = (extra_args, use_new_window);
         Err("Trae 应用多开仅支持 macOS、Windows 和 Linux".to_string())
     }
 }
