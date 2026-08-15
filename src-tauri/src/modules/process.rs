@@ -10457,13 +10457,6 @@ fn request_codex_graceful_close(pid: u32) -> bool {
     }
 }
 
-/// 重启 Codex 默认实例，让官方 App 重新读取磁盘上的全局状态。
-pub fn restart_codex_default(extra_args: &[String], timeout_secs: u64) -> Result<u32, String> {
-    ensure_codex_launch_path_configured()?;
-    close_codex_default(timeout_secs)?;
-    start_codex_default(extra_args)
-}
-
 /// 关闭受管 Codex 实例（按 CODEX_HOME 匹配，包含默认实例目录）
 pub fn close_codex_instances(codex_homes: &[String], timeout_secs: u64) -> Result<(), String> {
     #[cfg(target_os = "macos")]

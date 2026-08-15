@@ -39,17 +39,6 @@ fn is_grok_reauth_prepare_error(error: &str) -> bool {
         || normalized.contains("reauth")
 }
 
-fn is_grok_cli_missing_error(error: &str) -> bool {
-    let normalized = error.to_ascii_lowercase();
-    normalized.contains("未检测到 grok cli")
-        || normalized.contains("grok cli 路径不存在")
-        || normalized.contains("请先通过官方安装脚本安装")
-        || (normalized.contains("grok cli")
-            && (normalized.contains("不存在")
-                || normalized.contains("not found")
-                || normalized.contains("未检测")))
-}
-
 struct GrokLaunchContext {
     user_data_dir: String,
     working_dir: Option<String>,
@@ -587,8 +576,8 @@ pub async fn grok_execute_instance_launch_command(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_launch_command_with_binary, is_grok_cli_missing_error, is_grok_reauth_prepare_error,
-        should_use_managed_home, GrokLaunchContext, DEFAULT_INSTANCE_ID,
+        build_launch_command_with_binary, is_grok_reauth_prepare_error, should_use_managed_home,
+        GrokLaunchContext, DEFAULT_INSTANCE_ID,
     };
     use std::path::Path;
 
@@ -598,16 +587,6 @@ mod tests {
             "刷新 Grok token 失败: invalid_grant (Refresh token has been revoked)"
         ));
         assert!(!is_grok_reauth_prepare_error("网络超时"));
-    }
-
-    #[test]
-    fn cli_missing_errors_are_detected() {
-        assert!(is_grok_cli_missing_error(
-            "未检测到 Grok CLI，请先通过官方安装脚本安装"
-        ));
-        assert!(!is_grok_cli_missing_error(
-            "刷新 Grok token 失败: invalid_grant"
-        ));
     }
 
     #[test]

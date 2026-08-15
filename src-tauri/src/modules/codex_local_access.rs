@@ -18717,13 +18717,6 @@ fn official_catalog_json_for_provider_gateway(account: &CodexAccount) -> Option<
     }
 }
 
-fn write_provider_gateway_model_catalog(
-    profile_dir: &Path,
-    slots: &[ProviderGatewayModelSlot],
-) -> Result<(), String> {
-    write_provider_gateway_model_catalog_with_templates(profile_dir, slots, None, None)
-}
-
 fn write_provider_gateway_model_catalog_with_templates(
     profile_dir: &Path,
     slots: &[ProviderGatewayModelSlot],
@@ -27329,7 +27322,8 @@ mod tests {
         websocket_connect_error_from_http_response, windows_proxy_url_from_server,
         windows_reg_dword_enabled, windows_reg_query_map,
         write_local_access_profile_model_override, write_local_access_profile_takeover,
-        write_provider_gateway_model_catalog, write_string_atomic, write_string_atomic_if_changed,
+        write_provider_gateway_model_catalog_with_templates, write_string_atomic,
+        write_string_atomic_if_changed,
         AccountUsagePriority, CodexLocalAccessCollection, CodexLocalAccessGatewayMode,
         CodexLocalAccessScope, CodexModelProviderGatewayChatTestRequest, GatewayResponseAdapter,
         ParsedRequest, ResolvedLocalApiKey, ResponseUsageCollector, RoutingCandidate,
@@ -28460,7 +28454,7 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Internet Settings
             .expect("track provider models");
         write_local_access_profile_model_override(&profile_dir, "gpt-5.5")
             .expect("write model override");
-        write_provider_gateway_model_catalog(&profile_dir, &slots)
+        write_provider_gateway_model_catalog_with_templates(&profile_dir, &slots, None, None)
             .expect("write provider model catalog");
 
         let catalog: Value = serde_json::from_str(

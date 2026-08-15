@@ -4376,14 +4376,6 @@ pub fn restore_desktop_gateway_account_to_profile(
     Ok(())
 }
 
-pub fn restore_desktop_account_to_default_profile(account_id: &str) -> Result<(), String> {
-    let target_dir = get_default_claude_desktop_user_data_dir()?;
-    quit_claude_desktop_for_profile_write()?;
-    restore_default_desktop_gateway_official_config()?;
-    restore_desktop_account_to_profile(account_id, &target_dir, true)?;
-    restore_default_desktop_gateway_official_config()
-}
-
 fn backup_current_desktop_profile(target_dir: &Path) -> Result<Option<PathBuf>, String> {
     if !target_dir.exists() {
         return Ok(None);
