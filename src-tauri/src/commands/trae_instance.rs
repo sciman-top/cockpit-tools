@@ -31,7 +31,6 @@ fn resolve_running_pid(
 }
 
 async fn inject_bound_account(
-    platform: modules::trae_account::TraePlatformKind,
     user_data_dir: &str,
     bind_account_id: Option<&str>,
 ) -> Result<(), String> {
@@ -305,7 +304,6 @@ pub async fn trae_start_instance(
         let _ = modules::trae_instance::update_default_pid_for_platform(platform, None)?;
 
         inject_bound_account(
-            platform,
             default_dir_str.as_str(),
             default_settings.bind_account_id.as_deref(),
         )
@@ -363,12 +361,7 @@ pub async fn trae_start_instance(
     )?;
     let _ = modules::trae_instance::update_instance_pid_for_platform(platform, &instance.id, None)?;
 
-    inject_bound_account(
-        platform,
-        &instance.user_data_dir,
-        instance.bind_account_id.as_deref(),
-    )
-    .await?;
+    inject_bound_account(&instance.user_data_dir, instance.bind_account_id.as_deref()).await?;
 
     let extra_args = modules::process::parse_extra_args(&instance.extra_args);
     let pid = modules::process::start_trae_platform_with_args_with_new_window(

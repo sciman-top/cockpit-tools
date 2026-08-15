@@ -8,7 +8,6 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 
 use crate::models::zcode::{ZcodeAccount, ZcodeAccountIndex, ZcodeAuthMode};
@@ -871,7 +870,7 @@ pub fn inject_to_instance_root(account_id: &str, root: &Path) -> Result<ZcodeAcc
 fn detect_app_version() -> String {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = Command::new("/usr/bin/plutil")
+        if let Ok(output) = std::process::Command::new("/usr/bin/plutil")
             .args([
                 "-extract",
                 "CFBundleShortVersionString",

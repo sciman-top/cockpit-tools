@@ -5654,12 +5654,6 @@ fn get_default_codex_windows_app_user_data_dirs(default_codex_home: &str) -> Has
 }
 
 #[cfg(target_os = "windows")]
-fn is_codex_windows_main_process_command_line(cmdline: &str) -> bool {
-    let lower = cmdline.to_ascii_lowercase();
-    !lower.is_empty() && !is_helper_command_line(&lower) && !lower.contains("crashpad_handler")
-}
-
-#[cfg(target_os = "windows")]
 fn is_codex_windows_resource_process_command_line(cmdline: &str) -> bool {
     let lower = cmdline.to_ascii_lowercase();
     lower.contains(r"\app\resources\codex.exe") || lower.contains("resources\\codex.exe")

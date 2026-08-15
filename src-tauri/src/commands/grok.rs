@@ -1,7 +1,6 @@
 use crate::models::grok::{GrokAccountView, GrokOAuthStartResponse};
 use crate::modules::{config, grok_account, grok_oauth, logger};
 use serde::Serialize;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tauri::AppHandle;
@@ -72,7 +71,7 @@ fn validate_cli_file(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(path)
+        let mode = std::fs::metadata(path)
             .map_err(|error| format!("读取 Grok CLI 路径失败: {}", error))?
             .permissions()
             .mode();

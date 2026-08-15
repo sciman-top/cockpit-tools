@@ -111,7 +111,6 @@ const CODEX_LOCAL_ACCESS_RUNTIME_ACCOUNT_ID: &str = "codex_local_access_runtime"
 const CODEX_IMAGEGEN_ACTOR_HEADER: &str = "x-openai-actor-authorization";
 const CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER: &str =
     "x-agtools-disable-image-generation";
-const CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER_VALUE: &str = "chat";
 const CODEX_PROFILE_AUTH_FILE: &str = "auth.json";
 const CODEX_PROFILE_CONFIG_FILE: &str = "config.toml";
 const CODEX_LOCAL_ACCESS_AUTH_PROJECTION_FILE: &str = ".cockpit_codex_auth.json";
@@ -10687,15 +10686,15 @@ fn write_string_atomic_if_changed(path: &Path, content: &str) -> Result<bool, St
     Ok(true)
 }
 
-fn harden_sidecar_auth_file_permissions(path: &Path) -> Result<(), String> {
+fn harden_sidecar_auth_file_permissions(_path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+        std::fs::set_permissions(_path, std::fs::Permissions::from_mode(0o600)).map_err(
             |error| {
                 format!(
                     "设置 API 服务 sidecar 认证文件权限失败: path={}, error={}",
-                    path.display(),
+                    _path.display(),
                     error
                 )
             },
@@ -13362,12 +13361,10 @@ fn collect_private_lan_ipv4_candidates() -> Vec<LanIpv4Candidate> {
 
 #[cfg(target_os = "windows")]
 fn collect_private_lan_ipv4_candidates() -> Vec<LanIpv4Candidate> {
+    use std::os::windows::process::CommandExt;
+
     let mut command = StdCommand::new("ipconfig");
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
+    command.creation_flags(0x08000000);
     match command.output() {
         Ok(output) => parse_windows_ipconfig_candidates(&String::from_utf8_lossy(&output.stdout)),
         Err(_) => Vec::new(),
@@ -18956,7 +18953,6 @@ async fn spawn_provider_gateway_sidecar(
         .stderr(Stdio::piped());
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
 
@@ -27303,7 +27299,6 @@ mod tests {
         SidecarUsageEvent, UsageCapture, BOUND_OAUTH_QUOTA_RESERVE_MAX_SNAPSHOT_AGE_SECONDS,
         CODEX_AUTO_REVIEW_MODEL_ID, CODEX_EXPERIMENTAL_MODEL_ID, CODEX_IMAGEGEN_ACTOR_HEADER,
         CODEX_IMAGE_MODEL_ID, CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER,
-        CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER_VALUE,
         CODEX_LOCAL_ACCESS_MODEL_CATALOG_FILE, CODEX_PROFILE_AUTH_FILE, CODEX_PROFILE_CONFIG_FILE,
         CODEX_PROVIDER_MODEL_BACKUP_FILE, CODEX_PROVIDER_MODEL_CATALOG_FILE,
         DEFAULT_MAX_RETRY_INTERVAL_MS, DEFAULT_MODEL_PRICING_VERSION,
@@ -34381,7 +34376,7 @@ data: {"error":{"code":"server_error","type":"upstream","message":"stream aborte
         assert!(config.contains("requires_openai_auth = false"));
         assert!(config.contains(CODEX_IMAGEGEN_ACTOR_HEADER));
         assert!(config.contains(CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER));
-        assert!(config.contains(CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER_VALUE));
+        assert!(config.contains("chat"));
         assert!(config.contains(&format!(
             "model_catalog_json = \"{}\"",
             CODEX_LOCAL_ACCESS_MODEL_CATALOG_FILE

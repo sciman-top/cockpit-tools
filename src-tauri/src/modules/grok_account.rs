@@ -5,7 +5,7 @@ use crate::models::grok::{
 use crate::modules::{account, atomic_write, config, grok_oauth, logger, provider_current_state};
 use chrono::{DateTime, Utc};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -2832,15 +2832,18 @@ pub fn run_quota_alert_if_needed() -> Result<(), String> {
 mod tests {
     use super::{
         access_still_usable, account_from_auth_object, accounts_match_for_upsert,
-        acquire_secret_lock, apply_refreshed_token, auth_entry_matches_account,
-        auth_registry_entry, auth_registry_for, default_grok_home, ensure_secret_dir,
-        find_matching_auth_entry_in_registry, list_accounts_checked, load_account,
-        load_account_from_path, load_index_from_paths, parse_auth_registry,
-        pick_best_live_credential, quota_from_payload, quota_remaining_metrics, remove_account,
-        resolve_account_id_from_registry, save_account_locked,
-        should_retry_quota_after_unauthorized, string_field, validate_api_provider_config,
-        write_account_to_auth_path_if_token_matches, write_account_to_official_auth_path,
-        write_account_to_profile, GrokCredSource, LiveCredentialCandidate,
+        apply_refreshed_token, auth_entry_matches_account, auth_registry_entry, auth_registry_for,
+        find_matching_auth_entry_in_registry, load_index_from_paths, parse_auth_registry,
+        pick_best_live_credential, quota_from_payload, quota_remaining_metrics,
+        resolve_account_id_from_registry, should_retry_quota_after_unauthorized, string_field,
+        validate_api_provider_config, write_account_to_auth_path_if_token_matches,
+        write_account_to_official_auth_path, write_account_to_profile, GrokCredSource,
+        LiveCredentialCandidate,
+    };
+    #[cfg(unix)]
+    use super::{
+        acquire_secret_lock, default_grok_home, ensure_secret_dir, list_accounts_checked,
+        load_account, load_account_from_path, remove_account, save_account_locked,
     };
     use crate::models::grok::{
         GrokAccount, GrokAccountView, GrokAuthMode, GrokProductUsage, GrokQuota,
