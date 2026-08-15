@@ -271,52 +271,135 @@ type CodexWindowThresholdKey =
   | 'codex_quota_alert_primary_threshold'
   | 'codex_quota_alert_secondary_threshold';
 
+interface QuickSettingsPlatformConfig {
+  label: string;
+  refreshKey: keyof GeneralConfig;
+  currentAccountRefreshPlatform: CurrentAccountRefreshPlatform;
+  quotaAlertEnabledKey: QuotaAlertEnabledKey;
+  quotaAlertThresholdKey: QuotaAlertThresholdKey;
+  refreshLabelKey: string;
+  appTarget?: AppPathTarget;
+  appPathKey?: keyof GeneralConfig;
+  appPathLabelKey?: string;
+  appPathLabelDefault?: string;
+}
+
+const QUICK_SETTINGS_PLATFORM_CONFIG: Record<QuickSettingsType, QuickSettingsPlatformConfig> = {
+  antigravity: {
+    label: 'Antigravity', refreshKey: 'auto_refresh_minutes', currentAccountRefreshPlatform: 'antigravity',
+    quotaAlertEnabledKey: 'quota_alert_enabled', quotaAlertThresholdKey: 'quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'antigravity_legacy', appPathKey: 'antigravity_app_path',
+    appPathLabelKey: 'quickSettings.antigravity.appPath', appPathLabelDefault: '启动路径',
+  },
+  codex: {
+    label: 'Codex', refreshKey: 'codex_auto_refresh_minutes', currentAccountRefreshPlatform: 'codex',
+    quotaAlertEnabledKey: 'codex_quota_alert_enabled', quotaAlertThresholdKey: 'codex_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.codexRefreshInterval', appTarget: 'codex', appPathKey: 'codex_app_path',
+    appPathLabelKey: 'quickSettings.codex.appPath', appPathLabelDefault: '启动路径',
+  },
+  claude: {
+    label: 'Claude', refreshKey: 'claude_auto_refresh_minutes', currentAccountRefreshPlatform: 'claude',
+    quotaAlertEnabledKey: 'claude_quota_alert_enabled', quotaAlertThresholdKey: 'claude_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.claudeRefreshInterval', appTarget: 'claude', appPathKey: 'claude_app_path',
+    appPathLabelKey: 'quickSettings.claude.appPath', appPathLabelDefault: 'Claude 启动路径',
+  },
+  github_copilot: {
+    label: 'GitHub Copilot', refreshKey: 'ghcp_auto_refresh_minutes', currentAccountRefreshPlatform: 'ghcp',
+    quotaAlertEnabledKey: 'ghcp_quota_alert_enabled', quotaAlertThresholdKey: 'ghcp_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.ghcpRefreshInterval', appTarget: 'vscode', appPathKey: 'vscode_app_path',
+    appPathLabelKey: 'quickSettings.githubCopilot.appPath', appPathLabelDefault: 'VS Code 路径',
+  },
+  windsurf: {
+    label: 'Devin', refreshKey: 'windsurf_auto_refresh_minutes', currentAccountRefreshPlatform: 'windsurf',
+    quotaAlertEnabledKey: 'windsurf_quota_alert_enabled', quotaAlertThresholdKey: 'windsurf_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.windsurfRefreshInterval', appTarget: 'windsurf', appPathKey: 'windsurf_app_path',
+    appPathLabelKey: 'quickSettings.windsurf.appPath', appPathLabelDefault: 'Devin 路径',
+  },
+  kiro: {
+    label: 'Kiro', refreshKey: 'kiro_auto_refresh_minutes', currentAccountRefreshPlatform: 'kiro',
+    quotaAlertEnabledKey: 'kiro_quota_alert_enabled', quotaAlertThresholdKey: 'kiro_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.kiroRefreshInterval', appTarget: 'kiro', appPathKey: 'kiro_app_path',
+    appPathLabelKey: 'quickSettings.kiro.appPath', appPathLabelDefault: 'Kiro 路径',
+  },
+  cursor: {
+    label: 'Cursor', refreshKey: 'cursor_auto_refresh_minutes', currentAccountRefreshPlatform: 'cursor',
+    quotaAlertEnabledKey: 'cursor_quota_alert_enabled', quotaAlertThresholdKey: 'cursor_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.cursorRefreshInterval', appTarget: 'cursor', appPathKey: 'cursor_app_path',
+    appPathLabelKey: 'quickSettings.cursor.appPath', appPathLabelDefault: 'Cursor 路径',
+  },
+  grok: {
+    label: 'Grok CLI', refreshKey: 'grok_auto_refresh_minutes', currentAccountRefreshPlatform: 'grok',
+    quotaAlertEnabledKey: 'grok_quota_alert_enabled', quotaAlertThresholdKey: 'grok_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval',
+  },
+  codebuddy: {
+    label: 'CodeBuddy', refreshKey: 'codebuddy_auto_refresh_minutes', currentAccountRefreshPlatform: 'codebuddy',
+    quotaAlertEnabledKey: 'codebuddy_quota_alert_enabled', quotaAlertThresholdKey: 'codebuddy_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'codebuddy', appPathKey: 'codebuddy_app_path',
+    appPathLabelKey: 'quickSettings.codebuddy.appPath', appPathLabelDefault: 'CodeBuddy 路径',
+  },
+  codebuddy_cn: {
+    label: 'CodeBuddy CN', refreshKey: 'codebuddy_cn_auto_refresh_minutes', currentAccountRefreshPlatform: 'codebuddy_cn',
+    quotaAlertEnabledKey: 'codebuddy_cn_quota_alert_enabled', quotaAlertThresholdKey: 'codebuddy_cn_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'codebuddy_cn', appPathKey: 'codebuddy_cn_app_path',
+    appPathLabelKey: 'quickSettings.codebuddyCn.appPath', appPathLabelDefault: 'CodeBuddy CN 路径',
+  },
+  qoder: {
+    label: 'Qoder', refreshKey: 'qoder_auto_refresh_minutes', currentAccountRefreshPlatform: 'qoder',
+    quotaAlertEnabledKey: 'qoder_quota_alert_enabled', quotaAlertThresholdKey: 'qoder_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'qoder', appPathKey: 'qoder_app_path',
+    appPathLabelKey: 'quickSettings.qoder.appPath', appPathLabelDefault: 'Qoder 路径',
+  },
+  zcode: {
+    label: 'ZCode', refreshKey: 'zcode_auto_refresh_minutes', currentAccountRefreshPlatform: 'zcode',
+    quotaAlertEnabledKey: 'quota_alert_enabled', quotaAlertThresholdKey: 'quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'zcode', appPathKey: 'zcode_app_path',
+    appPathLabelKey: 'quickSettings.zcode.appPath', appPathLabelDefault: 'ZCode 启动路径',
+  },
+  trae: {
+    label: 'Trae', refreshKey: 'trae_auto_refresh_minutes', currentAccountRefreshPlatform: 'trae',
+    quotaAlertEnabledKey: 'trae_quota_alert_enabled', quotaAlertThresholdKey: 'trae_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'trae', appPathKey: 'trae_app_path',
+    appPathLabelKey: 'quickSettings.trae.appPath', appPathLabelDefault: 'Trae 路径',
+  },
+  trae_solo: {
+    label: 'TRAE SOLO', refreshKey: 'trae_solo_auto_refresh_minutes', currentAccountRefreshPlatform: 'trae_solo',
+    quotaAlertEnabledKey: 'trae_solo_quota_alert_enabled', quotaAlertThresholdKey: 'trae_solo_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'trae_solo', appPathKey: 'trae_solo_app_path',
+    appPathLabelKey: 'quickSettings.traeSolo.appPath', appPathLabelDefault: 'TRAE SOLO 路径',
+  },
+  trae_cn: {
+    label: 'Trae CN', refreshKey: 'trae_cn_auto_refresh_minutes', currentAccountRefreshPlatform: 'trae_cn',
+    quotaAlertEnabledKey: 'trae_cn_quota_alert_enabled', quotaAlertThresholdKey: 'trae_cn_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'trae_cn', appPathKey: 'trae_cn_app_path',
+    appPathLabelKey: 'quickSettings.traeCn.appPath', appPathLabelDefault: 'Trae CN 路径',
+  },
+  trae_solo_cn: {
+    label: 'TRAE SOLO CN', refreshKey: 'trae_solo_cn_auto_refresh_minutes', currentAccountRefreshPlatform: 'trae_solo_cn',
+    quotaAlertEnabledKey: 'trae_solo_cn_quota_alert_enabled', quotaAlertThresholdKey: 'trae_solo_cn_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'trae_solo_cn', appPathKey: 'trae_solo_cn_app_path',
+    appPathLabelKey: 'quickSettings.traeSoloCn.appPath', appPathLabelDefault: 'TRAE SOLO CN 路径',
+  },
+  workbuddy: {
+    label: 'WorkBuddy', refreshKey: 'workbuddy_auto_refresh_minutes', currentAccountRefreshPlatform: 'workbuddy',
+    quotaAlertEnabledKey: 'workbuddy_quota_alert_enabled', quotaAlertThresholdKey: 'workbuddy_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'workbuddy', appPathKey: 'workbuddy_app_path',
+    appPathLabelKey: 'quickSettings.workbuddy.appPath', appPathLabelDefault: 'WorkBuddy 路径',
+  },
+  zed: {
+    label: 'Zed', refreshKey: 'zed_auto_refresh_minutes', currentAccountRefreshPlatform: 'zed',
+    quotaAlertEnabledKey: 'zed_quota_alert_enabled', quotaAlertThresholdKey: 'zed_quota_alert_threshold',
+    refreshLabelKey: 'quickSettings.refreshInterval', appTarget: 'zed', appPathKey: 'zed_app_path',
+    appPathLabelKey: 'quickSettings.zed.appPath', appPathLabelDefault: 'Zed 路径',
+  },
+};
+
 type AppLaunchCandidate = {
   target_type: string;
   label: string;
   target: string;
   source: string;
   supports_multi_instance: boolean;
-};
-
-const getAppPathKeyForTarget = (target: AppPathTarget): keyof GeneralConfig => {
-  switch (target) {
-    case 'antigravity':
-    case 'antigravity_legacy':
-      return 'antigravity_app_path';
-    case 'codex':
-      return 'codex_app_path';
-    case 'claude':
-      return 'claude_app_path';
-    case 'vscode':
-      return 'vscode_app_path';
-    case 'windsurf':
-      return 'windsurf_app_path';
-    case 'kiro':
-      return 'kiro_app_path';
-    case 'cursor':
-      return 'cursor_app_path';
-    case 'codebuddy':
-      return 'codebuddy_app_path';
-    case 'codebuddy_cn':
-      return 'codebuddy_cn_app_path';
-    case 'qoder':
-      return 'qoder_app_path';
-    case 'zcode':
-      return 'zcode_app_path';
-    case 'trae':
-      return 'trae_app_path';
-    case 'trae_solo':
-      return 'trae_solo_app_path';
-    case 'trae_cn':
-      return 'trae_cn_app_path';
-    case 'trae_solo_cn':
-      return 'trae_solo_cn_app_path';
-    case 'workbuddy':
-      return 'workbuddy_app_path';
-    case 'zed':
-      return 'zed_app_path';
-  }
 };
 
 interface QuickSettingsPopoverProps {
@@ -383,49 +466,6 @@ function resolveCodexQuickConfigPresetId(
   return 'custom';
 }
 
-const getCurrentAccountRefreshPlatformForType = (
-  platformType: QuickSettingsType,
-): CurrentAccountRefreshPlatform => {
-  switch (platformType) {
-    case 'antigravity':
-      return 'antigravity';
-    case 'codex':
-      return 'codex';
-    case 'claude':
-      return 'claude';
-    case 'github_copilot':
-      return 'ghcp';
-    case 'windsurf':
-      return 'windsurf';
-    case 'kiro':
-      return 'kiro';
-    case 'cursor':
-      return 'cursor';
-    case 'grok':
-      return 'grok';
-    case 'codebuddy':
-      return 'codebuddy';
-    case 'codebuddy_cn':
-      return 'codebuddy_cn';
-    case 'qoder':
-      return 'qoder';
-    case 'zcode':
-      return 'zcode';
-    case 'trae':
-      return 'trae';
-    case 'trae_solo':
-      return 'trae_solo';
-    case 'trae_cn':
-      return 'trae_cn';
-    case 'trae_solo_cn':
-      return 'trae_solo_cn';
-    case 'workbuddy':
-      return 'workbuddy';
-    case 'zed':
-      return 'zed';
-  }
-};
-
 const normalizeAutoSwitchAccountScopeMode = (
   value?: string | null,
 ): AutoSwitchAccountScopeMode =>
@@ -435,6 +475,7 @@ const normalizeAutoSwitchAccountScopeMode = (
 
 export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   const { t } = useTranslation();
+  const quickSettingsConfig = QUICK_SETTINGS_PLATFORM_CONFIG[type];
   const isWindows = usePlatformRuntimeSupport('windows-only');
   const overviewFilterScope = useMemo(
     () => resolveAccountsOverviewScopeFromQuickSettingsType(type),
@@ -1033,30 +1074,6 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     }
   };
 
-  const getRefreshKeyForType = (t: QuickSettingsType): keyof GeneralConfig => {
-    switch (t) {
-      case 'antigravity': return 'auto_refresh_minutes';
-      case 'codex': return 'codex_auto_refresh_minutes';
-      case 'claude': return 'claude_auto_refresh_minutes';
-      case 'github_copilot': return 'ghcp_auto_refresh_minutes';
-      case 'windsurf': return 'windsurf_auto_refresh_minutes';
-      case 'kiro': return 'kiro_auto_refresh_minutes';
-      case 'cursor': return 'cursor_auto_refresh_minutes';
-      case 'grok': return 'grok_auto_refresh_minutes';
-      case 'codebuddy': return 'codebuddy_auto_refresh_minutes';
-      case 'codebuddy_cn': return 'codebuddy_cn_auto_refresh_minutes';
-      case 'qoder': return 'qoder_auto_refresh_minutes';
-      case 'zcode': return 'zcode_auto_refresh_minutes';
-      case 'trae': return 'trae_auto_refresh_minutes';
-      case 'trae_solo': return 'trae_solo_auto_refresh_minutes';
-      case 'trae_cn': return 'trae_cn_auto_refresh_minutes';
-      case 'trae_solo_cn': return 'trae_solo_cn_auto_refresh_minutes';
-      case 'workbuddy': return 'workbuddy_auto_refresh_minutes';
-      case 'zed': return 'zed_auto_refresh_minutes';
-      default: return 'auto_refresh_minutes';
-    }
-  };
-
   const saveConfig = useCallback(
     async (updates: Partial<GeneralConfig>) => {
       const current = configRef.current;
@@ -1094,14 +1111,17 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     [t]
   );
 
-  const handlePickAppPath = async (target: AppPathTarget) => {
+  const handlePickAppPath = async () => {
+    const target = quickSettingsConfig.appTarget;
+    const appPathKey = quickSettingsConfig.appPathKey;
+    if (!target || !appPathKey) return;
     try {
       const selected = await open({ multiple: false, directory: false });
       const path = Array.isArray(selected) ? selected[0] : selected;
       if (!path || !config) return;
 
       setAppLaunchCandidates([]);
-      saveConfig({ [getAppPathKeyForTarget(target)]: path });
+      saveConfig({ [appPathKey]: path });
     } catch (err) {
       console.error('Failed to pick path:', err);
       setError(t('quickSettings.error.pickPathFailed', {
@@ -1111,7 +1131,10 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     }
   };
 
-  const handleResetAppPath = async (target: AppPathTarget) => {
+  const handleResetAppPath = async () => {
+    const target = quickSettingsConfig.appTarget;
+    const appPathKey = quickSettingsConfig.appPathKey;
+    if (!target || !appPathKey) return;
     if (pathDetecting) return;
     if (isWindows) {
       setPathDetecting(true);
@@ -1145,7 +1168,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     try {
       const detected = await invoke<string | null>('detect_app_path', { app: target, force: true });
       setAppLaunchCandidates([]);
-      saveConfig({ [getAppPathKeyForTarget(target)]: detected || '' });
+      saveConfig({ [appPathKey]: detected || '' });
     } catch (err) {
       console.error('Failed to reset path:', err);
       setError(t('quickSettings.error.resetPathFailed', {
@@ -1158,8 +1181,10 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   };
 
   const handleSelectAppLaunchCandidate = (candidate: AppLaunchCandidate) => {
+    const appPathKey = quickSettingsConfig.appPathKey;
+    if (!appPathKey) return;
     setError(null);
-    saveConfig({ [getAppPathKeyForTarget(getAppTarget())]: candidate.target });
+    saveConfig({ [appPathKey]: candidate.target });
   };
 
   const handlePickCodexSpecifiedAppPath = async () => {
@@ -1192,49 +1217,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     }
   }, [openingCodexConfig, t]);
 
-  const getTitle = () => {
-    const platformLabel = (() => {
-      switch (type) {
-        case 'antigravity':
-          return 'Antigravity';
-        case 'codex':
-          return 'Codex';
-        case 'claude':
-          return 'Claude';
-        case 'github_copilot':
-          return 'GitHub Copilot';
-        case 'windsurf':
-          return 'Devin';
-        case 'kiro':
-          return 'Kiro';
-        case 'cursor':
-          return 'Cursor';
-        case 'grok':
-          return 'Grok CLI';
-        case 'codebuddy':
-          return 'CodeBuddy';
-        case 'codebuddy_cn':
-          return 'CodeBuddy CN';
-        case 'qoder':
-          return 'Qoder';
-        case 'zcode':
-          return 'ZCode';
-        case 'trae':
-          return 'Trae';
-        case 'trae_solo':
-          return 'TRAE SOLO';
-        case 'trae_cn':
-          return 'Trae CN';
-        case 'trae_solo_cn':
-          return 'TRAE SOLO CN';
-        case 'workbuddy':
-          return 'WorkBuddy';
-        case 'zed':
-          return 'Zed';
-      }
-    })();
-    return `${platformLabel} ${t('nav.settings', '设置')}`;
-  };
+  const title = `${quickSettingsConfig.label} ${t('nav.settings', '设置')}`;
 
   const getSessionSharingPlatformLabel = () => {
     switch (type) {
@@ -1268,259 +1251,22 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     }
   };
 
-  const getRefreshKey = (): keyof GeneralConfig => {
-    return getRefreshKeyForType(type);
-  };
-
-  const getQuotaAlertEnabledKeyForType = (t: QuickSettingsType): QuotaAlertEnabledKey => {
-    switch (t) {
-      case 'codex':
-        return 'codex_quota_alert_enabled';
-      case 'claude':
-        return 'claude_quota_alert_enabled';
-      case 'github_copilot':
-        return 'ghcp_quota_alert_enabled';
-      case 'windsurf':
-        return 'windsurf_quota_alert_enabled';
-      case 'kiro':
-        return 'kiro_quota_alert_enabled';
-      case 'cursor':
-        return 'cursor_quota_alert_enabled';
-      case 'grok':
-        return 'grok_quota_alert_enabled';
-      case 'codebuddy':
-        return 'codebuddy_quota_alert_enabled';
-      case 'codebuddy_cn':
-        return 'codebuddy_cn_quota_alert_enabled';
-      case 'qoder':
-        return 'qoder_quota_alert_enabled';
-      case 'trae':
-        return 'trae_quota_alert_enabled';
-      case 'trae_solo':
-        return 'trae_solo_quota_alert_enabled';
-      case 'trae_cn':
-        return 'trae_cn_quota_alert_enabled';
-      case 'trae_solo_cn':
-        return 'trae_solo_cn_quota_alert_enabled';
-      case 'workbuddy':
-        return 'workbuddy_quota_alert_enabled';
-      case 'zed':
-        return 'zed_quota_alert_enabled';
-      default:
-        return 'quota_alert_enabled';
-    }
-  };
-
-  const getQuotaAlertThresholdKeyForType = (t: QuickSettingsType): QuotaAlertThresholdKey => {
-    switch (t) {
-      case 'codex':
-        return 'codex_quota_alert_threshold';
-      case 'claude':
-        return 'claude_quota_alert_threshold';
-      case 'github_copilot':
-        return 'ghcp_quota_alert_threshold';
-      case 'windsurf':
-        return 'windsurf_quota_alert_threshold';
-      case 'kiro':
-        return 'kiro_quota_alert_threshold';
-      case 'cursor':
-        return 'cursor_quota_alert_threshold';
-      case 'grok':
-        return 'grok_quota_alert_threshold';
-      case 'codebuddy':
-        return 'codebuddy_quota_alert_threshold';
-      case 'codebuddy_cn':
-        return 'codebuddy_cn_quota_alert_threshold';
-      case 'qoder':
-        return 'qoder_quota_alert_threshold';
-      case 'trae':
-        return 'trae_quota_alert_threshold';
-      case 'trae_solo':
-        return 'trae_solo_quota_alert_threshold';
-      case 'trae_cn':
-        return 'trae_cn_quota_alert_threshold';
-      case 'trae_solo_cn':
-        return 'trae_solo_cn_quota_alert_threshold';
-      case 'workbuddy':
-        return 'workbuddy_quota_alert_threshold';
-      case 'zed':
-        return 'zed_quota_alert_threshold';
-      default:
-        return 'quota_alert_threshold';
-    }
-  };
-
-  const getRefreshLabel = () => {
-    switch (type) {
-      case 'antigravity':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-      case 'codex':
-        return t('quickSettings.codexRefreshInterval', '配额自动刷新');
-      case 'claude':
-        return t('quickSettings.claudeRefreshInterval', '配额自动刷新');
-      case 'github_copilot':
-        return t('quickSettings.ghcpRefreshInterval', '配额自动刷新');
-      case 'windsurf':
-        return t('quickSettings.windsurfRefreshInterval', '配额自动刷新');
-      case 'kiro':
-        return t('quickSettings.kiroRefreshInterval', '配额自动刷新');
-      case 'cursor':
-        return t('quickSettings.cursorRefreshInterval', '配额自动刷新');
-      case 'grok':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-      case 'codebuddy':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-      case 'codebuddy_cn':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-      case 'qoder':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-      case 'zcode':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-      case 'trae':
-      case 'trae_solo':
-      case 'trae_cn':
-      case 'trae_solo_cn':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-      case 'workbuddy':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-      case 'zed':
-        return t('quickSettings.refreshInterval', '配额自动刷新');
-    }
-  };
+  const refreshLabel = t(quickSettingsConfig.refreshLabelKey, '配额自动刷新');
 
   const showAppPathSection = type !== 'grok';
   const antigravityLaunchOnSwitch = config?.antigravity_launch_on_switch ?? true;
 
-  const getAppPath = (): string => {
-    if (!config) return '';
-    switch (type) {
-      case 'antigravity':
-        return config.antigravity_app_path;
-      case 'codex':
-        return config.codex_app_path;
-      case 'claude':
-        return config.claude_app_path;
-      case 'github_copilot':
-        return config.vscode_app_path;
-      case 'windsurf':
-        return config.windsurf_app_path;
-      case 'kiro':
-        return config.kiro_app_path;
-      case 'cursor':
-        return config.cursor_app_path;
-      case 'grok':
-        return '';
-      case 'codebuddy':
-        return config.codebuddy_app_path;
-      case 'codebuddy_cn':
-        return config.codebuddy_cn_app_path;
-      case 'qoder':
-        return config.qoder_app_path;
-      case 'zcode':
-        return config.zcode_app_path || '';
-      case 'trae':
-        return config.trae_app_path;
-      case 'trae_solo':
-        return config.trae_solo_app_path;
-      case 'trae_cn':
-        return config.trae_cn_app_path;
-      case 'trae_solo_cn':
-        return config.trae_solo_cn_app_path;
-      case 'workbuddy':
-        return config.workbuddy_app_path;
-      case 'zed':
-        return config.zed_app_path;
-      default:
-        return '';
-    }
-  };
+  const appPath = config && quickSettingsConfig.appPathKey
+    ? String(config[quickSettingsConfig.appPathKey] ?? '')
+    : '';
+  const appPathLabel = quickSettingsConfig.appPathLabelKey
+    ? t(quickSettingsConfig.appPathLabelKey, quickSettingsConfig.appPathLabelDefault ?? '')
+    : '';
 
-  const getAppPathLabel = () => {
-    switch (type) {
-      case 'antigravity':
-        return t('quickSettings.antigravity.appPath', '启动路径');
-      case 'codex':
-        return t('quickSettings.codex.appPath', '启动路径');
-      case 'claude':
-        return t('quickSettings.claude.appPath', 'Claude 启动路径');
-      case 'github_copilot':
-        return t('quickSettings.githubCopilot.appPath', 'VS Code 路径');
-      case 'windsurf':
-        return t('quickSettings.windsurf.appPath', 'Devin 路径');
-      case 'kiro':
-        return t('quickSettings.kiro.appPath', 'Kiro 路径');
-      case 'cursor':
-        return t('quickSettings.cursor.appPath', 'Cursor 路径');
-      case 'grok':
-        return t('quickSettings.grok.appPath', 'Grok CLI 路径');
-      case 'codebuddy':
-        return t('quickSettings.codebuddy.appPath', 'CodeBuddy 路径');
-      case 'codebuddy_cn':
-        return t('quickSettings.codebuddyCn.appPath', 'CodeBuddy CN 路径');
-      case 'qoder':
-        return t('quickSettings.qoder.appPath', 'Qoder 路径');
-      case 'zcode':
-        return t('quickSettings.zcode.appPath', 'ZCode 启动路径');
-      case 'trae':
-        return t('quickSettings.trae.appPath', 'Trae 路径');
-      case 'trae_solo':
-        return t('quickSettings.traeSolo.appPath', 'TRAE SOLO 路径');
-      case 'trae_cn':
-        return t('quickSettings.traeCn.appPath', 'Trae CN 路径');
-      case 'trae_solo_cn':
-        return t('quickSettings.traeSoloCn.appPath', 'TRAE SOLO CN 路径');
-      case 'workbuddy':
-        return t('quickSettings.workbuddy.appPath', 'WorkBuddy 路径');
-      case 'zed':
-        return t('quickSettings.zed.appPath', 'Zed 路径');
-    }
-  };
-
-  const getAppTarget = (): AppPathTarget => {
-    switch (type) {
-      case 'antigravity':
-        return 'antigravity_legacy';
-      case 'codex':
-        return 'codex';
-      case 'claude':
-        return 'claude';
-      case 'github_copilot':
-        return 'vscode';
-      case 'windsurf':
-        return 'windsurf';
-      case 'kiro':
-        return 'kiro';
-      case 'cursor':
-        return 'cursor';
-      case 'grok':
-        return 'antigravity';
-      case 'codebuddy':
-        return 'codebuddy';
-      case 'codebuddy_cn':
-        return 'codebuddy_cn';
-      case 'qoder':
-        return 'qoder';
-      case 'zcode':
-        return 'zcode';
-      case 'trae':
-        return 'trae';
-      case 'trae_solo':
-        return 'trae_solo';
-      case 'trae_cn':
-        return 'trae_cn';
-      case 'trae_solo_cn':
-        return 'trae_solo_cn';
-      case 'workbuddy':
-        return 'workbuddy';
-      case 'zed':
-        return 'zed';
-    }
-  };
-
-  const refreshValue = config ? (config[getRefreshKey()] as number) : 10;
+  const refreshValue = config ? (config[quickSettingsConfig.refreshKey] as number) : 10;
   const isPreset = refreshPresets.includes(String(refreshValue));
   const showRefreshInput = refreshEditing;
-  const currentAccountRefreshPlatform = getCurrentAccountRefreshPlatformForType(type);
+  const currentAccountRefreshPlatform = quickSettingsConfig.currentAccountRefreshPlatform;
   const currentAccountRefreshValue = currentAccountRefreshMap[currentAccountRefreshPlatform] ?? 1;
   const isCurrentAccountRefreshAllowed = refreshValue > 0;
   const currentAccountRefreshDisplayValue = isCurrentAccountRefreshAllowed
@@ -1547,8 +1293,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
   const normalizedAutoSwitchSelectedGroupIds = autoSwitchSelectedGroupIds.filter((groupId) =>
     validAutoSwitchGroupIdSet.has(groupId)
   );
-  const quotaAlertEnabledKey = getQuotaAlertEnabledKeyForType(type);
-  const quotaAlertThresholdKey = getQuotaAlertThresholdKeyForType(type);
+  const quotaAlertEnabledKey = quickSettingsConfig.quotaAlertEnabledKey;
+  const quotaAlertThresholdKey = quickSettingsConfig.quotaAlertThresholdKey;
   const quotaAlertEnabledValue = config ? Boolean(config[quotaAlertEnabledKey]) : false;
   const quotaAlertThresholdValue = config ? Number(config[quotaAlertThresholdKey]) : 20;
   const isQuotaAlertThresholdPreset = thresholdPresets.includes(String(quotaAlertThresholdValue));
@@ -1609,14 +1355,14 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     } else {
       setCustomRefresh('');
       setRefreshEditing(false);
-      saveConfig({ [getRefreshKey()]: parseInt(val, 10) });
+      saveConfig({ [quickSettingsConfig.refreshKey]: parseInt(val, 10) });
     }
   };
 
   const handleCustomRefreshApply = () => {
     const parsed = parseInt(customRefresh, 10);
     if (!isNaN(parsed) && parsed >= 1) {
-      saveConfig({ [getRefreshKey()]: parsed });
+      saveConfig({ [quickSettingsConfig.refreshKey]: parsed });
       setCustomRefresh('');
       setRefreshEditing(false);
       return;
@@ -2010,7 +1756,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     <div className="qs-overlay">
       <div className="qs-modal" ref={modalRef}>
         <div className="qs-header">
-          <span className="qs-title">{getTitle()}</span>
+          <span className="qs-title">{title}</span>
           <button className="qs-close" onClick={() => setIsOpen(false)} aria-label={t('common.close')}>
             <X size={16} />
           </button>
@@ -2295,7 +2041,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
             <div className="qs-section">
               <div className="qs-section-header">
                 <RefreshCw size={15} />
-                <span>{getRefreshLabel()}</span>
+                <span>{refreshLabel}</span>
               </div>
               <div className="qs-field-group">
                 {showRefreshInput ? (
@@ -2442,7 +2188,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
               <div className="qs-section">
 	                <div className="qs-section-header">
 	                  <FolderOpen size={15} />
-	                  <span>{getAppPathLabel()}</span>
+	                  <span>{appPathLabel}</span>
 	                </div>
                 {type === 'antigravity' && config && (
                   <>
@@ -2483,7 +2229,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                   <input
                     type="text"
                     className="qs-path-input"
-                    value={getAppPath()}
+                    value={appPath}
                     placeholder={
                       type === 'claude'
                         ? t(
@@ -2494,7 +2240,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                     }
                     onChange={(e) => {
                       setAppLaunchCandidates([]);
-                      saveConfig({ [getAppPathKeyForTarget(getAppTarget())]: e.target.value });
+                      const appPathKey = quickSettingsConfig.appPathKey;
+                      if (appPathKey) saveConfig({ [appPathKey]: e.target.value });
                     }}
                   />
                   <div className="qs-path-actions">
@@ -2505,7 +2252,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                           setAppLaunchCandidates([]);
                           saveConfig({ zcode_app_path: '' });
                         }}
-                        disabled={pathDetecting || !getAppPath().trim()}
+                        disabled={pathDetecting || !appPath.trim()}
                         title={t('common.clear', '清除')}
                       >
                         {t('common.clear', '清除')}
@@ -2513,7 +2260,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                     )}
                     <button
                       className="qs-btn"
-                      onClick={() => handlePickAppPath(getAppTarget())}
+                      onClick={handlePickAppPath}
                       disabled={pathDetecting}
                       title={t('settings.general.codexPathSelect', '选择')}
                     >
@@ -2521,7 +2268,7 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                     </button>
                     <button
                       className="qs-btn"
-                      onClick={() => handleResetAppPath(getAppTarget())}
+                      onClick={handleResetAppPath}
                       disabled={pathDetecting}
                       title={
                         pathDetecting
@@ -2552,12 +2299,12 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                             key={`${candidate.target_type}:${candidate.target}`}
                             type="button"
                             className={`qs-claude-candidate-item${
-                              getAppPath().trim() === candidate.target ? ' selected' : ''
+                              appPath.trim() === candidate.target ? ' selected' : ''
                             }`}
                             onClick={() => handleSelectAppLaunchCandidate(candidate)}
                           >
                             <div className="qs-claude-candidate-main">
-                              <span>{candidate.label || getTitle()}</span>
+                              <span>{candidate.label || title}</span>
                               <span className="qs-claude-candidate-badge">
                                 {candidate.target_type === 'windows_app'
                                   ? t('appPath.missing.windowsApp', 'Microsoft Store')
@@ -3660,8 +3407,8 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
       <button
         className={`btn btn-secondary icon-only ${isOpen ? 'active' : ''}`}
         onClick={() => setIsOpen(!isOpen)}
-        title={getTitle()}
-        aria-label={getTitle()}
+        title={title}
+        aria-label={title}
       >
         <Settings size={14} />
       </button>
