@@ -29,20 +29,12 @@ interface SideNavProps {
   page: Page;
   setPage: (page: Page) => void;
   onOpenPlatformLayout: () => void;
-  easterEggClickCount: number;
-  onEasterEggTriggerClick: () => void;
-  hasBreakoutSession: boolean;
   updateActionState: 'hidden' | 'available' | 'downloading' | 'installing' | 'ready';
   updateProgress: number;
   onUpdateActionClick: () => void;
   updateRemindersEnabled: boolean;
   sponsorEntryVisible: boolean;
   onOpenLogViewer: () => void;
-}
-
-interface FlyingRocket {
-  id: number;
-  x: number;
 }
 
 type SideNavEntryId = PlatformLayoutEntryId | ApiRelayLayoutEntryId;
@@ -133,9 +125,6 @@ export function SideNav({
   page,
   setPage,
   onOpenPlatformLayout,
-  easterEggClickCount,
-  onEasterEggTriggerClick,
-  hasBreakoutSession,
   updateActionState,
   updateProgress,
   onUpdateActionClick,
@@ -145,7 +134,6 @@ export function SideNav({
 }: SideNavProps) {
   const { t } = useTranslation();
   const { showModal } = useGlobalModal();
-  const [flyingRockets, setFlyingRockets] = useState<FlyingRocket[]>([]);
   const [showMore, setShowMore] = useState(false);
   const [classicAdaptiveScale, setClassicAdaptiveScale] = useState(1);
   const [classicNavNeedsScroll, setClassicNavNeedsScroll] = useState(false);
@@ -164,7 +152,6 @@ export function SideNav({
   const isClassicLayout = sideNavLayoutMode === 'classic';
   const isClassicCollapsed = isClassicLayout && classicCollapsed;
   const showClassicLabels = isClassicLayout && !classicCollapsed;
-  const rocketIdRef = useRef(0);
   const classicSwitchDontAskAgainRef = useRef(false);
   const sideNavRef = useRef<HTMLElement>(null);
   const updateEntryRef = useRef<HTMLDivElement>(null);
@@ -658,26 +645,6 @@ export function SideNav({
     };
   }, [isClassicLayout, isClassicCollapsed, shouldShowUpdateActionEntry]);
 
-  const handleLogoClick = useCallback(() => {
-    if (hasBreakoutSession) {
-      onEasterEggTriggerClick();
-      return;
-    }
-
-    const newRocket: FlyingRocket = {
-      id: rocketIdRef.current++,
-      x: (Math.random() - 0.5) * 40,
-    };
-
-    setFlyingRockets((prev) => [...prev, newRocket]);
-
-    setTimeout(() => {
-      setFlyingRockets((prev) => prev.filter((rocket) => rocket.id !== newRocket.id));
-    }, 1500);
-
-    onEasterEggTriggerClick();
-  }, [hasBreakoutSession, onEasterEggTriggerClick]);
-
   useEffect(() => {
     if (!showMore) return;
     const handleClickOutside = (event: MouseEvent) => {
@@ -896,41 +863,14 @@ export function SideNav({
         <div className="side-nav-brand-main">
           <div
             ref={logoRef}
-            className={`brand-logo rocket-easter-egg${hasBreakoutSession ? ' rocket-easter-egg-active' : ''}`}
-            onClick={handleLogoClick}
-            title={hasBreakoutSession ? t('breakout.resumeGameNav', '继续游戏') : undefined}
+            className="brand-logo"
           >
             <Rocket size={isClassicLayout ? classicBrandLogoIconSize : 20} />
-            {hasBreakoutSession && <span className="rocket-session-indicator" aria-hidden="true" />}
-            {!hasBreakoutSession && easterEggClickCount > 0 && (
-              <span className="rocket-click-count">{easterEggClickCount}</span>
-            )}
           </div>
 
           {isClassicLayout && !isClassicCollapsed && (
             <div className="side-nav-brand-title">{APP_DISPLAY_NAME}</div>
           )}
-        </div>
-
-        <div
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            pointerEvents: 'none',
-          }}
-        >
-          {flyingRockets.map((rocket) => (
-            <span
-              key={rocket.id}
-              className="flying-rocket"
-              style={{ '--rocket-x': `${rocket.x}px` } as CSSProperties}
-            >
-              🚀
-            </span>
-          ))}
         </div>
 
       </div>

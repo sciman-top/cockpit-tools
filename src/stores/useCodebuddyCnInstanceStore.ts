@@ -1,7 +1,7 @@
-import * as codebuddyCnInstanceService from '../services/codebuddyCnInstanceService';
+import { createPlatformInstanceService } from '../services/platform/createPlatformInstanceService';
 import { createInstanceStore } from './createInstanceStore';
 
 export const useCodebuddyCnInstanceStore = createInstanceStore(
-  codebuddyCnInstanceService,
+  createPlatformInstanceService('codebuddy_cn'),
   'agtools.codebuddycn.instances.cache',
 );

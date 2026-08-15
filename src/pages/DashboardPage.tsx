@@ -127,7 +127,6 @@ import type { TraePlatformId } from '../services/traeService';
 interface DashboardPageProps {
   onNavigate: (page: Page) => void;
   onOpenPlatformLayout: () => void;
-  onEasterEggTriggerClick: () => void;
 }
 
 const DASHBOARD_DEFERRED_PREFETCH_DELAY_MS = 6000;
@@ -279,7 +278,6 @@ type DashboardEntryId = PlatformLayoutEntryId | ApiRelayLayoutEntryId;
 export function DashboardPage({
   onNavigate,
   onOpenPlatformLayout,
-  onEasterEggTriggerClick,
 }: DashboardPageProps) {
   const { t } = useTranslation();
   const antigravityRuntimeTarget = useAntigravityRuntimeTarget();
@@ -3642,12 +3640,7 @@ export function DashboardPage({
                 </span>
               )}
               <div
-                className={`stat-icon-bg ${iconClass} stat-icon-trigger`}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  onEasterEggTriggerClick();
-                }}
+                className={`stat-icon-bg ${iconClass}`}
               >
                 {group?.iconKind === 'custom' && group.iconCustomDataUrl ? (
                   <img

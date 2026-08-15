@@ -16,10 +16,7 @@ Thank you for your interest in contributing to Cockpit Tools! This project aims 
 
 ## 🛠️ Project Structure
 
-This project is a Cargo Workspace:
-- `crates/cockpit-core`: Shared business logic (Library).
-- `src-tauri`: The GUI application (Tauri + React).
-- `crates/cockpit-cli`: The command-line interface.
+The desktop application lives in `src-tauri` (Tauri + React).
 
 ## 📝 Coding Standards
 
@@ -30,8 +27,7 @@ This project is a Cargo Workspace:
 ## 🧪 Testing
 
 - **GUI:** `npm run tauri dev`
-- **CLI:** `cargo run --package cockpit-cli -- <commands>`
-- **Core:** `cargo test --package cockpit-core`
+- **Rust:** `cargo test --manifest-path src-tauri/Cargo.toml --lib`
 
 ## 📬 Submitting a Pull Request
 
@@ -64,7 +60,7 @@ Please be respectful and professional in all interactions. We follow the [Contri
 | `npm run typecheck` | Run TypeScript type checking (auto-runs before build) |
 | `npm run build` | Build frontend (syncs version + typecheck + vite build) |
 | `npm run sync-version` | Sync `package.json` version to Tauri config |
-| `npm run release:preflight` | Run full release pre-check (locales + typecheck + build + cargo check) |
+| `npm run release:preflight` | Run release checks (locales + web build/typecheck + Rust lib tests) |
 
 ### State Management & i18n
 

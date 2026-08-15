@@ -1,7 +1,7 @@
-import * as qoderInstanceService from '../services/qoderInstanceService';
+import { createPlatformInstanceService } from '../services/platform/createPlatformInstanceService';
 import { createInstanceStore } from './createInstanceStore';
 
 export const useQoderInstanceStore = createInstanceStore(
-  qoderInstanceService,
+  createPlatformInstanceService('qoder'),
   'agtools.qoder.instances.cache',
 );

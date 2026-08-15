@@ -279,7 +279,6 @@ function isAllowedEnglishReuse(key, value) {
     'instances.labels.quota',
     'wakeup.form.intervalStart',
     'windsurf.credits.title',
-    'breakout.historyLevelShort',
     'settings.general.minutes',
     'settings.webdav.retentionTitle',
     'settings.webdav.retentionDesc',

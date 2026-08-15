@@ -1,7 +1,7 @@
-import * as kiroInstanceService from '../services/kiroInstanceService';
+import { createPlatformInstanceService } from '../services/platform/createPlatformInstanceService';
 import { createInstanceStore } from './createInstanceStore';
 
 export const useKiroInstanceStore = createInstanceStore(
-  kiroInstanceService,
+  createPlatformInstanceService('kiro'),
   'agtools.kiro.instances.cache',
 );

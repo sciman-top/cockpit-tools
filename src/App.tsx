@@ -25,7 +25,6 @@ import type { QuickSettingsType } from './components/QuickSettingsPopover';
 import { isMainWindowNavigablePage, type Page } from './types/navigation';
 import type { TopRightAd } from './types/topRightAd';
 import { useAutoRefresh } from './hooks/useAutoRefresh';
-import { useEasterEggTrigger } from './hooks/useEasterEggTrigger';
 import { useGlobalModal } from './hooks/useGlobalModal';
 import { changeLanguage, getCurrentLanguage, normalizeLanguage, syncLanguage } from './i18n';
 import { useAccountStore } from './stores/useAccountStore';
@@ -186,9 +185,6 @@ const VersionJumpNotification = lazy(() =>
 );
 const CloseConfirmDialog = lazy(() =>
   import('./components/CloseConfirmDialog').then((module) => ({ default: module.CloseConfirmDialog })),
-);
-const BreakoutModal = lazy(() =>
-  import('./components/easter-egg/BreakoutModal').then((module) => ({ default: module.BreakoutModal })),
 );
 const LogViewerModal = lazy(() =>
   import('./components/LogViewerModal').then((module) => ({ default: module.LogViewerModal })),
@@ -840,8 +836,6 @@ function MainApp() {
   const [showLogViewer, setShowLogViewer] = useState(false);
   const [showPlatformLayoutModal, setShowPlatformLayoutModal] = useState(false);
   const [platformLayoutRequestedGroupId, setPlatformLayoutRequestedGroupId] = useState<string | null>(null);
-  const [showBreakout, setShowBreakout] = useState(false);
-  const [hasBreakoutSession, setHasBreakoutSession] = useState(false);
   const [appPathMissing, setAppPathMissing] = useState<AppPathMissingDetail | null>(null);
   const [appPathSetting, setAppPathSetting] = useState(false);
   const [appPathDetecting, setAppPathDetecting] = useState(false);
@@ -901,10 +895,6 @@ function MainApp() {
   const openPlatformLayoutModal = useCallback(() => {
     setPlatformLayoutRequestedGroupId(null);
     setShowPlatformLayoutModal(true);
-  }, []);
-  const openBreakout = useCallback(() => {
-    setHasBreakoutSession(true);
-    setShowBreakout(true);
   }, []);
   const ensureExternalImportVersionCompatible = useCallback(
     async (payload: ExternalProviderImportPayload): Promise<boolean> => {
@@ -997,36 +987,6 @@ function MainApp() {
       dispatchExternalProviderImportEvent(normalized);
     }, 0);
   }, [ensureExternalImportVersionCompatible]);
-  const handleBreakoutMinimize = useCallback(() => {
-    setShowBreakout(false);
-  }, []);
-  const handleBreakoutTerminate = useCallback(() => {
-    setShowBreakout(false);
-    setHasBreakoutSession(false);
-  }, []);
-  const handleResumeBreakout = useCallback(() => {
-    if (!hasBreakoutSession) return;
-    setShowBreakout(true);
-  }, [hasBreakoutSession]);
-
-  const {
-    count: easterEggClickCount,
-    registerClick: handleEasterEggTriggerClick,
-    reset: resetEasterEggTrigger,
-  } = useEasterEggTrigger({
-    threshold: 20,
-    windowMs: 8000,
-    onTrigger: openBreakout,
-  });
-  const handleBreakoutEntryTriggerClick = useCallback(() => {
-    if (hasBreakoutSession) {
-      resetEasterEggTrigger();
-      handleResumeBreakout();
-      return;
-    }
-    handleEasterEggTriggerClick();
-  }, [handleEasterEggTriggerClick, handleResumeBreakout, hasBreakoutSession, resetEasterEggTrigger]);
-  
   // 启用自动刷新 hook
   useAutoRefresh();
 
@@ -3735,16 +3695,6 @@ function MainApp() {
         </Suspense>
       )}
 
-      {hasBreakoutSession && (
-        <Suspense fallback={null}>
-          <BreakoutModal
-            open={showBreakout}
-            onMinimize={handleBreakoutMinimize}
-            onTerminate={handleBreakoutTerminate}
-          />
-        </Suspense>
-      )}
-
       {appPathMissing && (
         <div className="qs-overlay" style={{ zIndex: 10100 }}>
           <div className="qs-modal app-path-missing-modal" onClick={(e) => e.stopPropagation()}>
@@ -3956,9 +3906,6 @@ function MainApp() {
         page={page}
         setPage={setPage}
         onOpenPlatformLayout={openPlatformLayoutModal}
-        easterEggClickCount={easterEggClickCount}
-        onEasterEggTriggerClick={handleBreakoutEntryTriggerClick}
-        hasBreakoutSession={hasBreakoutSession}
         updateActionState={updateAction.state}
         updateProgress={updateAction.progress}
         onUpdateActionClick={handleQuickUpdateActionClick}
@@ -4007,7 +3954,6 @@ function MainApp() {
             <DashboardPage
               onNavigate={setPage}
               onOpenPlatformLayout={openPlatformLayoutModal}
-              onEasterEggTriggerClick={handleBreakoutEntryTriggerClick}
             />
           </VisibleBootPage>
           <VisibleBootPage when={page === 'api-relay'}>

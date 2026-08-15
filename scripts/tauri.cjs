@@ -22,23 +22,6 @@ function withGoPath(options = {}) {
   };
 }
 
-function run(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    cwd: repoRoot,
-    stdio: 'inherit',
-    shell: false,
-    ...withGoPath(options),
-  });
-
-  if (result.error) {
-    throw result.error;
-  }
-
-  if (result.status !== 0) {
-    process.exit(typeof result.status === 'number' ? result.status : 1);
-  }
-}
-
 function runFinal(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: repoRoot,
@@ -55,12 +38,10 @@ function runFinal(command, args, options = {}) {
 }
 
 function runTauriDirect() {
-  run('npm.cmd', ['run', 'sync-version'], { shell: process.platform === 'win32' });
   runFinal('npx.cmd', ['tauri', ...process.argv.slice(2)], { shell: process.platform === 'win32' });
 }
 
 if (process.platform !== 'win32') {
-  run('npm', ['run', 'sync-version']);
   runFinal('npx', ['tauri', ...process.argv.slice(2)]);
 }
 
@@ -90,8 +71,6 @@ const scriptBody = [
   '@echo off',
   `set "PATH=${goBinPath};%PATH%"`,
   `call "${vcvars64Path}"`,
-  'if errorlevel 1 exit /b %errorlevel%',
-  'call npm.cmd run sync-version',
   'if errorlevel 1 exit /b %errorlevel%',
   `call "${tauriCliPath}" ${quotedArgs.join(' ')}`.trim(),
 ].join('\r\n');

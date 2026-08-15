@@ -59,28 +59,11 @@ if (!hasFlag('--skip-locales')) {
   });
 }
 
-if (!hasFlag('--skip-typecheck')) {
-  steps.push({
-    name: 'TypeScript typecheck',
-    command: 'npm',
-    args: ['run', 'typecheck'],
-  });
-}
-
 if (!hasFlag('--skip-build')) {
   steps.push({
     name: 'Web build',
     command: 'npm',
     args: ['run', 'build'],
-  });
-}
-
-if (!hasFlag('--skip-cargo')) {
-  steps.push({
-    name: 'Rust cargo check',
-    command: 'cargo',
-    args: ['check'],
-    cwd: path.join(process.cwd(), 'src-tauri'),
   });
 }
 

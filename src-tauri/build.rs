@@ -58,10 +58,12 @@ fn emit_sidecar_rerun_inputs(path: &Path) {
         return;
     }
 
+    let file_name = path.file_name().and_then(|name| name.to_str());
     let should_track = matches!(
-        path.file_name().and_then(|name| name.to_str()),
+        file_name,
         Some("go.mod") | Some("go.sum")
-    ) || path.extension().and_then(|extension| extension.to_str()) == Some("go");
+    ) || (path.extension().and_then(|extension| extension.to_str()) == Some("go")
+        && !file_name.is_some_and(|name| name.ends_with("_test.go")));
 
     if should_track {
         println!("cargo:rerun-if-changed={}", path.display());

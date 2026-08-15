@@ -1,7 +1,7 @@
-import * as zcodeInstanceService from '../services/zcodeInstanceService';
+import { createPlatformInstanceService } from '../services/platform/createPlatformInstanceService';
 import { createInstanceStore } from './createInstanceStore';
 
 export const useZcodeInstanceStore = createInstanceStore(
-  zcodeInstanceService,
+  createPlatformInstanceService('zcode'),
   'agtools.zcode.instances.cache',
 );

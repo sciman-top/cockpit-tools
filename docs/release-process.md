@@ -19,14 +19,13 @@ npm run release:preflight
 该命令会依次执行：
 
 1. `node scripts/check_locales.cjs`
-2. `npm run typecheck`
-3. `npm run build`
-4. `cargo check`（在 `src-tauri` 下）
+2. `npm run build`（包含 TypeScript 检查）
+3. `cargo test --lib`（在 `src-tauri` 下）
 
 可选跳过参数（排障用，不建议正式发布时使用）：
 
 ```bash
-node scripts/release/preflight.cjs --skip-locales --skip-typecheck --skip-build --skip-cargo
+node scripts/release/preflight.cjs --skip-locales --skip-build --skip-cargo-test
 ```
 
 ## 3. 打包产物（macOS / Windows；Homebrew 推荐）

@@ -1,7 +1,7 @@
-import * as cursorInstanceService from '../services/cursorInstanceService';
+import { createPlatformInstanceService } from '../services/platform/createPlatformInstanceService';
 import { createInstanceStore } from './createInstanceStore';
 
 export const useCursorInstanceStore = createInstanceStore(
-  cursorInstanceService,
+  createPlatformInstanceService('cursor'),
   'agtools.cursor.instances.cache',
 );

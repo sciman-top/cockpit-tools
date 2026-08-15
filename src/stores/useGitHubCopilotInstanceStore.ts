@@ -1,7 +1,7 @@
-import * as codexInstanceService from '../services/githubCopilotInstanceService';
+import { createPlatformInstanceService } from '../services/platform/createPlatformInstanceService';
 import { createInstanceStore } from './createInstanceStore';
 
 export const useGitHubCopilotInstanceStore = createInstanceStore(
-  codexInstanceService,
+  createPlatformInstanceService('github_copilot'),
   'agtools.github_copilot.instances.cache',
 );

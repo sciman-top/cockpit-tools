@@ -1,7 +1,7 @@
-import * as workbuddyInstanceService from '../services/workbuddyInstanceService';
+import { createPlatformInstanceService } from '../services/platform/createPlatformInstanceService';
 import { createInstanceStore } from './createInstanceStore';
 
 export const useWorkbuddyInstanceStore = createInstanceStore(
-  workbuddyInstanceService,
+  createPlatformInstanceService('workbuddy'),
   'agtools.workbuddy.instances.cache',
 );

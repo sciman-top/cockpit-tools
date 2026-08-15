@@ -1,7 +1,7 @@
-import * as codexInstanceService from '../services/windsurfInstanceService';
+import { createPlatformInstanceService } from '../services/platform/createPlatformInstanceService';
 import { createInstanceStore } from './createInstanceStore';
 
 export const useWindsurfInstanceStore = createInstanceStore(
-  codexInstanceService,
+  createPlatformInstanceService('windsurf'),
   'agtools.windsurf.instances.cache',
 );
