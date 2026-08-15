@@ -1285,62 +1285,6 @@ fn build_deepseek_direct_provider_catalog_json(
         .map_err(|error| format!("序列化 DeepSeek 模型目录失败: {}", error))
 }
 
-fn build_deepseek_official_model_catalog_json(
-    selected_models: &[String],
-) -> Result<String, String> {
-    let mut catalog: serde_json::Value = serde_json::from_str(DEEPSEEK_CODEX_MODELS_JSON)
-        .map_err(|error| format!("解析官方 DeepSeek models.json 失败: {}", error))?;
-    let selected: HashSet<String> = selected_deepseek_official_models(selected_models)
-        .into_iter()
-        .map(|model| model.to_ascii_lowercase())
-        .collect();
-
-    let models = catalog
-        .get_mut("models")
-        .and_then(serde_json::Value::as_array_mut)
-        .ok_or_else(|| "官方 DeepSeek models.json 缺少 models 数组".to_string())?;
-
-    models.retain(|model| {
-        let slug = model
-            .get("slug")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        selected.contains(&slug)
-    });
-
-    models.sort_by(|left, right| {
-        let left_slug = left
-            .get("slug")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        let right_slug = right
-            .get("slug")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-        let rank = |slug: &str| -> u8 {
-            if slug.eq_ignore_ascii_case(DEEPSEEK_DEFAULT_MODEL) {
-                0
-            } else if slug.eq_ignore_ascii_case("deepseek-v4-pro") {
-                1
-            } else {
-                2
-            }
-        };
-        rank(left_slug)
-            .cmp(&rank(right_slug))
-            .then_with(|| left_slug.cmp(right_slug))
-    });
-
-    if models.is_empty() {
-        return Err("DeepSeek 模型目录为空，请至少保留 deepseek-v4-flash".to_string());
-    }
-
-    serde_json::to_string_pretty(&catalog)
-        .map_err(|error| format!("序列化官方 DeepSeek models.json 失败: {}", error))
-}
-
 fn sync_deepseek_shell_remap_catalog_to_dir(
     base_dir: &Path,
     account: &CodexAccount,
@@ -7029,70 +6973,6 @@ fn managed_projection_dirs_for_account(account_id: &str) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     dirs.retain(|dir| seen.insert(dir.to_string_lossy().to_string()));
     dirs
-}
-
-pub fn cleanup_managed_model_catalogs_on_startup() -> Result<usize, String> {
-    let current_account_id = load_account_index().current_account_id;
-    let account_requires_managed_catalog = |account_id: Option<&str>| {
-        account_id
-            .and_then(load_account)
-            .map(|account| {
-                crate::modules::codex_local_access::account_requires_provider_gateway(&account)
-                    || account_syncs_model_catalog_to_codex(&account)
-            })
-            .unwrap_or(false)
-    };
-    let current_requires_managed_catalog =
-        account_requires_managed_catalog(current_account_id.as_deref());
-    let mut dirs: HashMap<String, (PathBuf, bool)> = HashMap::new();
-    let mut add_dir = |dir: PathBuf, preserve_catalog: bool| {
-        let key = dir.to_string_lossy().to_string();
-        dirs.entry(key)
-            .and_modify(|(_, preserve)| *preserve |= preserve_catalog)
-            .or_insert((dir, preserve_catalog));
-    };
-
-    add_dir(get_codex_home(), current_requires_managed_catalog);
-    if let Some(wsl_dir) = configured_codex_wsl_config_dir() {
-        add_dir(wsl_dir, current_requires_managed_catalog);
-    }
-    if let Ok(store) = crate::modules::codex_instance::load_instance_store() {
-        if let Ok(default_home) = crate::modules::codex_instance::get_default_codex_home() {
-            add_dir(
-                default_home,
-                account_requires_managed_catalog(store.default_settings.bind_account_id.as_deref()),
-            );
-        }
-        for instance in store.instances {
-            add_dir(
-                PathBuf::from(instance.user_data_dir),
-                account_requires_managed_catalog(instance.bind_account_id.as_deref()),
-            );
-        }
-    }
-
-    let mut cleaned = 0;
-    let mut failures = Vec::new();
-    for (_, (dir, preserve_catalog)) in dirs {
-        if preserve_catalog || experimental_model_policy_enabled(&dir) {
-            continue;
-        }
-        match cleanup_managed_model_catalog_for_dir(&dir) {
-            Ok(true) => cleaned += 1,
-            Ok(false) => {}
-            Err(error) => failures.push(format!("profile_dir={}, error={}", dir.display(), error)),
-        }
-    }
-
-    if failures.is_empty() {
-        Ok(cleaned)
-    } else {
-        Err(format!(
-            "清理受管 Codex 模型目录部分失败: cleaned={}, failures={}",
-            cleaned,
-            failures.join("; ")
-        ))
-    }
 }
 
 fn projection_dirs_equal(left: &Path, right: &Path) -> bool {
@@ -14796,54 +14676,6 @@ supports_websockets = false
     }
 
     #[test]
-    fn startup_cleanup_preserves_active_chat_completions_provider_catalog() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let env = TestEnvGuard::new("codex-chat-provider-startup-catalog-test");
-        let mut account = CodexAccount::new_api_key(
-            "deepseek-api-key".to_string(),
-            "deepseek@example.com".to_string(),
-            "sk-deepseek".to_string(),
-            CodexApiProviderMode::Custom,
-            Some("https://api.deepseek.com/v1".to_string()),
-            Some("deepseek".to_string()),
-            Some("DeepSeek".to_string()),
-            vec!["deepseek-v4-pro".to_string()],
-        );
-        account.api_wire_api = Some("chat_completions".to_string());
-        save_account(&account).expect("save chat completions account");
-        save_account_index(&build_test_account_index(&account))
-            .expect("save current account index");
-
-        let codex_home = env.codex_home();
-        fs::write(
-            codex_home.join("config.toml"),
-            format!(
-                "model_catalog_json = \"{}\"\n",
-                super::CODEX_MANAGED_MODEL_CATALOG_FILE
-            ),
-        )
-        .expect("write provider catalog config");
-        fs::write(
-            codex_home.join(super::CODEX_MANAGED_MODEL_CATALOG_FILE),
-            r#"{"models":[{"slug":"deepseek-v4-pro"}]}"#,
-        )
-        .expect("write provider catalog");
-
-        assert_eq!(
-            super::cleanup_managed_model_catalogs_on_startup().expect("startup cleanup"),
-            0
-        );
-        assert!(codex_home
-            .join(super::CODEX_MANAGED_MODEL_CATALOG_FILE)
-            .exists());
-        assert!(fs::read_to_string(codex_home.join("config.toml"))
-            .expect("read provider config")
-            .contains("model_catalog_json"));
-    }
-
-    #[test]
     fn deepseek_account_normalize_defaults_to_official_responses_profile() {
         let mut account = CodexAccount::new_api_key(
             "deepseek-api-key".to_string(),
@@ -15003,39 +14835,6 @@ supports_websockets = false
         assert_eq!(
             models[1].get("display_name").and_then(|item| item.as_str()),
             Some("DeepSeek-V4-Pro")
-        );
-    }
-
-    #[test]
-    fn deepseek_official_catalog_json_prefers_flash_and_keeps_tool_metadata() {
-        let json = super::build_deepseek_official_model_catalog_json(&[]).expect("build catalog");
-        let value: serde_json::Value = serde_json::from_str(&json).expect("parse catalog");
-        let models = value
-            .get("models")
-            .and_then(|item| item.as_array())
-            .expect("models array");
-        assert!(models.len() >= 2);
-        assert_eq!(
-            models[0].get("slug").and_then(|item| item.as_str()),
-            Some("deepseek-v4-flash")
-        );
-        assert_eq!(
-            models[0]
-                .get("apply_patch_tool_type")
-                .and_then(|item| item.as_str()),
-            Some("freeform")
-        );
-        assert_eq!(
-            models[0].get("shell_type").and_then(|item| item.as_str()),
-            Some("shell_command")
-        );
-        assert!(models[0]
-            .get("base_instructions")
-            .and_then(|item| item.as_str())
-            .is_some_and(|text| !text.trim().is_empty()));
-        assert_eq!(
-            models[1].get("slug").and_then(|item| item.as_str()),
-            Some("deepseek-v4-pro")
         );
     }
 
