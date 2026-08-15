@@ -331,10 +331,6 @@ pub fn log_codex_api_warn(message: &str) {
     warn!(target: CODEX_API_LOG_TARGET, "{}", sanitize_message(message));
 }
 
-pub fn log_codex_api_error(message: &str) {
-    error!(target: CODEX_API_LOG_TARGET, "{}", sanitize_message(message));
-}
-
 fn sanitize_message(message: &str) -> String {
     EMAIL_REGEX
         .replace_all(message, |caps: &Captures| mask_email(&caps[0]))

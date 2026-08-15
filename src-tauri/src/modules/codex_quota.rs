@@ -1681,19 +1681,6 @@ pub async fn refresh_account_quota(account_id: &str) -> Result<CodexQuota, Strin
     result
 }
 
-pub async fn refresh_account_quota_with_options(
-    account_id: &str,
-    options: RefreshQuotaOptions,
-) -> Result<CodexQuota, String> {
-    let result = refresh_account_quota_once(account_id, options).await;
-    crate::modules::codex_local_access::reevaluate_bound_oauth_quota_reserve_after_refresh(
-        account_id,
-        result.is_ok(),
-    )
-    .await;
-    result
-}
-
 pub async fn probe_import_account_quota(account: &CodexAccount) -> Result<CodexQuota, String> {
     if account.is_agent_identity_auth() {
         return fetch_quota(account).await.map(|result| result.quota);
@@ -1758,12 +1745,6 @@ const CODEX_QUOTA_REFRESH_MAX_CONCURRENT: usize = 5;
 ///
 /// `respect_group_quota_refresh=true`：跳过分组策略为「不刷新」的账号。
 /// 显式「刷新分组」应传 `false`。
-pub async fn refresh_quotas_for_account_ids(
-    account_ids: &[String],
-) -> Result<Vec<(String, Result<CodexQuota, String>)>, String> {
-    refresh_quotas_for_account_ids_with_options(account_ids, true).await
-}
-
 pub async fn refresh_quotas_for_account_ids_with_options(
     account_ids: &[String],
     respect_group_quota_refresh: bool,

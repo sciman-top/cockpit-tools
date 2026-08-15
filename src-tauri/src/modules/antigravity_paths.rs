@@ -154,14 +154,6 @@ pub fn state_db_path() -> Result<PathBuf, String> {
     Ok(global_storage_dir()?.join("state.vscdb"))
 }
 
-pub fn storage_json_path() -> Result<PathBuf, String> {
-    Ok(global_storage_dir()?.join("storage.json"))
-}
-
-pub fn machine_id_path() -> Result<PathBuf, String> {
-    Ok(default_user_data_dir()?.join("machineid"))
-}
-
 pub fn legacy_global_storage_dir() -> Result<PathBuf, String> {
     Ok(legacy_default_user_data_dir()?
         .join("User")
