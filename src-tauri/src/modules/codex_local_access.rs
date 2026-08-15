@@ -2607,20 +2607,6 @@ fn visible_codex_model_ids_for_api_key(
     )
 }
 
-fn visible_codex_model_ids_for_api_key_with_accounts(
-    collection: &CodexLocalAccessCollection,
-    api_key: &ResolvedLocalApiKey,
-    accounts: &[CodexAccount],
-    health_by_account_id: Option<&HashMap<String, RuntimeAccountHealth>>,
-) -> Vec<String> {
-    visible_codex_model_ids_for_api_key_with_optional_accounts(
-        collection,
-        api_key,
-        Some(accounts),
-        health_by_account_id,
-    )
-}
-
 fn visible_codex_model_ids_for_api_key_with_optional_accounts(
     collection: &CodexLocalAccessCollection,
     api_key: &ResolvedLocalApiKey,
@@ -5207,19 +5193,6 @@ fn build_chat_chunk_template(
         });
     }
     template
-}
-
-fn build_chat_completion_stream_body(
-    upstream_body: &[u8],
-    original_request_body: &[u8],
-    requested_model: &str,
-) -> String {
-    let mut transformer =
-        ChatCompletionStreamTransformer::new(original_request_body, requested_model);
-    let mut stream_body = transformer.feed(upstream_body);
-    let (tail, _) = transformer.finish();
-    stream_body.extend_from_slice(&tail);
-    String::from_utf8(stream_body).unwrap_or_default()
 }
 
 fn build_cooldown_key(account_id: &str, model_key: &str) -> Option<String> {
@@ -27260,30 +27233,30 @@ mod tests {
         backup_current_profile_model_before_provider_gateway, bound_oauth_quota_refresh_failures,
         bound_oauth_quota_reserve_blocks_account, bridge_websocket_streams,
         build_account_scoped_upstream_body, build_base_url_with_host,
-        build_chat_completion_payload, build_chat_completion_stream_body,
-        build_codex_client_models_response, build_collection_base_url, build_images_api_payload,
-        build_local_access_api_key, build_local_models_response,
-        build_model_provider_gateway_test_collection, build_ordered_account_ids,
-        build_request_routing_hint, build_runtime_account, build_upstream_websocket_url,
-        calculate_usage_cost_usd, calendar_stats_window_starts, canonical_model_for_client_model,
-        classify_upstream_error_category, cleanup_profile_takeover_without_backup,
-        cleanup_provider_gateway_profile_model_overrides, codex_price,
-        collect_local_access_profile_takeover_dirs_from_store, compare_routing_candidates,
-        count_request_logs_for_model_ids, default_codex_model_ids, effective_api_key_account_ids,
-        empty_stats_snapshot, extract_usage_capture, filter_bound_oauth_quota_reserve_account,
-        filter_websocket_client_message, insert_local_access_usage_event,
-        inspect_local_access_profile_attachment, inspect_local_access_profile_config,
-        is_codex_local_access_auth_text, is_codex_local_access_config_for_api_key,
-        is_codex_oauth_auth_text, is_image_generation_capability_error,
-        is_local_access_eligible_account, is_local_access_gateway_base_url,
-        is_provider_gateway_eligible_account, is_responses_completion_event,
-        is_stream_incomplete_error_message, is_upstream_response_failed_error_message,
-        legacy_stream_error_category, local_access_chat_completions_url,
-        local_access_ineligible_reason, lookup_codex_model_provider_base_url_in_dir,
-        macos_proxy_url_from_scutil_map, max_credential_attempts_for_strategy,
-        merge_collection_and_account_excluded_models, model_pricing,
-        model_provider_direct_test_client_model, model_provider_test_uses_provider_gateway,
-        normalize_account_id_list, normalize_account_model_rules, normalize_collection_api_keys,
+        build_chat_completion_payload, build_codex_client_models_response,
+        build_collection_base_url, build_images_api_payload, build_local_access_api_key,
+        build_local_models_response, build_model_provider_gateway_test_collection,
+        build_ordered_account_ids, build_request_routing_hint, build_runtime_account,
+        build_upstream_websocket_url, calculate_usage_cost_usd, calendar_stats_window_starts,
+        canonical_model_for_client_model, classify_upstream_error_category,
+        cleanup_profile_takeover_without_backup, cleanup_provider_gateway_profile_model_overrides,
+        codex_price, collect_local_access_profile_takeover_dirs_from_store,
+        compare_routing_candidates, count_request_logs_for_model_ids, default_codex_model_ids,
+        effective_api_key_account_ids, empty_stats_snapshot, extract_usage_capture,
+        filter_bound_oauth_quota_reserve_account, filter_websocket_client_message,
+        insert_local_access_usage_event, inspect_local_access_profile_attachment,
+        inspect_local_access_profile_config, is_codex_local_access_auth_text,
+        is_codex_local_access_config_for_api_key, is_codex_oauth_auth_text,
+        is_image_generation_capability_error, is_local_access_eligible_account,
+        is_local_access_gateway_base_url, is_provider_gateway_eligible_account,
+        is_responses_completion_event, is_stream_incomplete_error_message,
+        is_upstream_response_failed_error_message, legacy_stream_error_category,
+        local_access_chat_completions_url, local_access_ineligible_reason,
+        lookup_codex_model_provider_base_url_in_dir, macos_proxy_url_from_scutil_map,
+        max_credential_attempts_for_strategy, merge_collection_and_account_excluded_models,
+        model_pricing, model_provider_direct_test_client_model,
+        model_provider_test_uses_provider_gateway, normalize_account_id_list,
+        normalize_account_model_rules, normalize_collection_api_keys,
         normalize_custom_routing_rules, normalized_sidecar_error_category,
         open_local_access_logs_db_once, parse_codex_retry_after,
         parse_responses_payload_from_upstream, parse_websocket_upstream_error,
@@ -27318,19 +27291,18 @@ mod tests {
         tool_declares_image_generation_capability, usage_event_from_row,
         validate_api_key_account_scope_update, validate_client_model_visible,
         validate_loaded_local_access_bound_oauth_account, visible_codex_model_ids_for_api_key,
-        visible_codex_model_ids_for_api_key_with_accounts, websocket_accept_value,
+        visible_codex_model_ids_for_api_key_with_optional_accounts, websocket_accept_value,
         websocket_connect_error_from_http_response, windows_proxy_url_from_server,
         windows_reg_dword_enabled, windows_reg_query_map,
         write_local_access_profile_model_override, write_local_access_profile_takeover,
         write_provider_gateway_model_catalog_with_templates, write_string_atomic,
-        write_string_atomic_if_changed,
-        AccountUsagePriority, CodexLocalAccessCollection, CodexLocalAccessGatewayMode,
-        CodexLocalAccessScope, CodexModelProviderGatewayChatTestRequest, GatewayResponseAdapter,
-        ParsedRequest, ResolvedLocalApiKey, ResponseUsageCollector, RoutingCandidate,
-        SidecarUsageDetails, SidecarUsageEvent, UsageCapture,
-        BOUND_OAUTH_QUOTA_RESERVE_MAX_SNAPSHOT_AGE_SECONDS, CODEX_AUTO_REVIEW_MODEL_ID,
-        CODEX_EXPERIMENTAL_MODEL_ID, CODEX_IMAGEGEN_ACTOR_HEADER, CODEX_IMAGE_MODEL_ID,
-        CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER,
+        write_string_atomic_if_changed, AccountUsagePriority, ChatCompletionStreamTransformer,
+        CodexLocalAccessCollection, CodexLocalAccessGatewayMode, CodexLocalAccessScope,
+        CodexModelProviderGatewayChatTestRequest, GatewayResponseAdapter, ParsedRequest,
+        ResolvedLocalApiKey, ResponseUsageCollector, RoutingCandidate, SidecarUsageDetails,
+        SidecarUsageEvent, UsageCapture, BOUND_OAUTH_QUOTA_RESERVE_MAX_SNAPSHOT_AGE_SECONDS,
+        CODEX_AUTO_REVIEW_MODEL_ID, CODEX_EXPERIMENTAL_MODEL_ID, CODEX_IMAGEGEN_ACTOR_HEADER,
+        CODEX_IMAGE_MODEL_ID, CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER,
         CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER_VALUE,
         CODEX_LOCAL_ACCESS_MODEL_CATALOG_FILE, CODEX_PROFILE_AUTH_FILE, CODEX_PROFILE_CONFIG_FILE,
         CODEX_PROVIDER_MODEL_BACKUP_FILE, CODEX_PROVIDER_MODEL_CATALOG_FILE,
@@ -28872,10 +28844,11 @@ wire_api = "responses"
             token_used: 0,
         };
 
-        let models = visible_codex_model_ids_for_api_key_with_accounts(
+        let accounts = [paid_account, free_account];
+        let models = visible_codex_model_ids_for_api_key_with_optional_accounts(
             &collection,
             &api_key,
-            &[paid_account, free_account],
+            Some(&accounts),
             None,
         );
 
@@ -33773,7 +33746,11 @@ data: {"response":{"id":"resp_1","created_at":123,"model":"gpt-5.4","status":"co
 
 "#;
 
-        let stream_body = build_chat_completion_stream_body(upstream_sse, br#"{}"#, "gpt-5.4");
+        let mut transformer = ChatCompletionStreamTransformer::new(br#"{}"#, "gpt-5.4");
+        let mut stream_body = transformer.feed(upstream_sse);
+        let (tail, _) = transformer.finish();
+        stream_body.extend_from_slice(&tail);
+        let stream_body = String::from_utf8(stream_body).expect("UTF-8 stream body");
         assert!(stream_body.contains("chat.completion.chunk"));
         assert!(stream_body.contains("stream-body"));
         assert!(stream_body.contains("\"cached_tokens\":1"));

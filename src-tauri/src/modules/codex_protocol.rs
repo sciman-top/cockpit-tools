@@ -101,10 +101,6 @@ pub(crate) fn managed_codex_model_ids() -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn normalize_responses_body_for_codex(body: &mut Value) -> bool {
-    normalize_responses_body_for_codex_with_lite(body, false)
-}
-
 pub fn normalize_responses_body_for_codex_with_lite(
     body: &mut Value,
     force_responses_lite: bool,
@@ -718,7 +714,9 @@ mod tests {
             "temperature": 0.1,
         });
 
-        assert!(normalize_responses_body_for_codex(&mut body));
+        assert!(normalize_responses_body_for_codex_with_lite(
+            &mut body, false
+        ));
         assert_eq!(body.get("stream").and_then(Value::as_bool), Some(true));
         assert_eq!(body.get("store").and_then(Value::as_bool), Some(false));
         assert_eq!(body.get("instructions").and_then(Value::as_str), Some(""));
@@ -743,7 +741,7 @@ mod tests {
             "parallel_tool_calls": true,
         });
 
-        normalize_responses_body_for_codex(&mut body);
+        normalize_responses_body_for_codex_with_lite(&mut body, false);
         assert_eq!(
             body.get("parallel_tool_calls").and_then(Value::as_bool),
             Some(false)
@@ -819,7 +817,9 @@ mod tests {
             }
         });
 
-        assert!(normalize_responses_body_for_codex(&mut body));
+        assert!(normalize_responses_body_for_codex_with_lite(
+            &mut body, false
+        ));
         for pointer in ["/tools", "/tool_choice/tools", "/input/0/tools"] {
             assert_eq!(
                 body.pointer(pointer)
@@ -866,7 +866,7 @@ mod tests {
             "tool_choice": {"type": "image_generation"}
         });
 
-        normalize_responses_body_for_codex(&mut body);
+        normalize_responses_body_for_codex_with_lite(&mut body, false);
         assert_eq!(
             body.get("tools").and_then(Value::as_array).map(Vec::len),
             Some(4)
@@ -889,7 +889,7 @@ mod tests {
             "tools": [{"type": "web_search_preview"}],
         });
 
-        normalize_responses_body_for_codex(&mut body);
+        normalize_responses_body_for_codex_with_lite(&mut body, false);
         assert_eq!(
             body.pointer("/input/0/role").and_then(Value::as_str),
             Some("developer")
@@ -935,7 +935,9 @@ mod tests {
             }]
         });
 
-        assert!(normalize_responses_body_for_codex(&mut body));
+        assert!(normalize_responses_body_for_codex_with_lite(
+            &mut body, false
+        ));
         assert_eq!(
             body.pointer("/input/0/namespace").and_then(Value::as_str),
             Some("mcp__example")
@@ -1007,7 +1009,9 @@ mod tests {
             ]
         });
 
-        assert!(normalize_responses_body_for_codex(&mut body));
+        assert!(normalize_responses_body_for_codex_with_lite(
+            &mut body, false
+        ));
         assert!(body.pointer("/input/0/namespace").is_none());
     }
 

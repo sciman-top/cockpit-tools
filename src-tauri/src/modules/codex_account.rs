@@ -2538,13 +2538,6 @@ fn read_api_provider_from_config_toml(base_dir: &Path) -> ApiProviderConfig {
     )
 }
 
-fn write_api_provider_to_config_toml(
-    base_dir: &Path,
-    provider_config: &ApiProviderConfig,
-) -> Result<(), String> {
-    write_api_provider_to_config_toml_with_options(base_dir, provider_config, true)
-}
-
 fn write_api_provider_to_config_toml_with_options(
     base_dir: &Path,
     provider_config: &ApiProviderConfig,
@@ -10644,9 +10637,10 @@ mod tests {
         upsert_account_from_access_token, upsert_account_from_access_token_with_hints,
         upsert_account_from_auth_tokens, upsert_agent_identity_account, upsert_api_key_account,
         validate_api_key_credentials, write_account_bundle_to_dir,
-        write_api_key_bearer_provider_override_to_config_toml, write_api_provider_to_config_toml,
-        write_auth_file_to_dir, write_managed_projection_to_dir, write_quick_config_to_config_toml,
-        ApiProviderConfig, CodexAccessTokenImportHints, CodexAccountGroupRecord, CodexAccountIndex,
+        write_api_key_bearer_provider_override_to_config_toml,
+        write_api_provider_to_config_toml_with_options, write_auth_file_to_dir,
+        write_managed_projection_to_dir, write_quick_config_to_config_toml, ApiProviderConfig,
+        CodexAccessTokenImportHints, CodexAccountGroupRecord, CodexAccountIndex,
         CodexAccountSummary, CodexAuthFile, CodexAuthTokens, CodexGroupQuotaRefreshPolicy,
         CodexJsonImportCandidate, LocalCodexOAuthSnapshot, CODEX_ACCOUNT_DETAIL_SCHEMA_VERSION,
         CODEX_AUTHORIZATION_STATUS_PENDING, CODEX_AUTO_COMPACT_DEFAULT_LIMIT,
@@ -13207,7 +13201,8 @@ mod tests {
         )
         .expect("resolve provider config");
 
-        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+        write_api_provider_to_config_toml_with_options(&base_dir, &provider_config, true)
+            .expect("write config");
 
         let config_path = base_dir.join("config.toml");
         let content = fs::read_to_string(&config_path).expect("read config");
@@ -13241,7 +13236,8 @@ mod tests {
         )
         .expect("resolve provider config");
 
-        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+        write_api_provider_to_config_toml_with_options(&base_dir, &provider_config, true)
+            .expect("write config");
 
         let config_path = base_dir.join("config.toml");
         assert!(!config_path.exists());
@@ -13295,7 +13291,8 @@ requires_openai_auth = false
         )
         .expect("resolve provider config");
 
-        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+        write_api_provider_to_config_toml_with_options(&base_dir, &provider_config, true)
+            .expect("write config");
 
         let content = fs::read_to_string(&config_path).expect("read config");
         #[cfg(target_os = "windows")]
@@ -13343,7 +13340,8 @@ model_context_window = 1000000
         )
         .expect("resolve provider config");
 
-        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+        write_api_provider_to_config_toml_with_options(&base_dir, &provider_config, true)
+            .expect("write config");
 
         let content = fs::read_to_string(&config_path).expect("read config");
         assert!(!content.contains("model_catalog_json"));
@@ -13381,7 +13379,8 @@ multi_agent = true
         )
         .expect("resolve provider config");
 
-        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+        write_api_provider_to_config_toml_with_options(&base_dir, &provider_config, true)
+            .expect("write config");
 
         let content = fs::read_to_string(&config_path).expect("read config");
         assert!(content.contains("model_provider = \"user_manual_provider\""));
@@ -13430,7 +13429,8 @@ requires_openai_auth = false
         )
         .expect("resolve provider config");
 
-        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+        write_api_provider_to_config_toml_with_options(&base_dir, &provider_config, true)
+            .expect("write config");
 
         let content = fs::read_to_string(&config_path).expect("read config");
         assert!(content.contains("model_provider = \"openai_http\""));
@@ -13472,7 +13472,8 @@ multi_agent = true
         )
         .expect("resolve provider config");
 
-        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+        write_api_provider_to_config_toml_with_options(&base_dir, &provider_config, true)
+            .expect("write config");
 
         let content = fs::read_to_string(&config_path).expect("read config");
         assert!(content.contains("model_provider = \"relay\""));
@@ -13497,7 +13498,8 @@ multi_agent = true
         )
         .expect("resolve provider config");
 
-        write_api_provider_to_config_toml(&base_dir, &provider_config).expect("write config");
+        write_api_provider_to_config_toml_with_options(&base_dir, &provider_config, true)
+            .expect("write config");
 
         let config_path = base_dir.join("config.toml");
         let content = fs::read_to_string(&config_path).expect("read config");
