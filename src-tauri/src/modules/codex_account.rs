@@ -6167,121 +6167,6 @@ fn sync_account_from_authority_sources(account: &mut CodexAccount) -> Result<boo
     Ok(changed)
 }
 
-fn sync_account_from_auth_dir_if_current(
-    account: &mut CodexAccount,
-    base_dir: &Path,
-) -> Result<bool, String> {
-    let Some(snapshot) = load_local_oauth_snapshot_from_official_store(base_dir) else {
-        return Ok(false);
-    };
-
-    if !local_oauth_snapshot_matches_account(&snapshot, account) {
-        return Ok(false);
-    }
-
-    if apply_local_oauth_snapshot(account, &snapshot) {
-        save_account(account)?;
-        logger::log_info(&format!(
-            "Codex 账号已从官方凭证源同步最新 Token: account_id={}, source_dir={}",
-            account.id,
-            base_dir.display()
-        ));
-    }
-
-    Ok(true)
-}
-
-/// 显式导入/同步入口：只在用户主动选择从官方目录回读时使用，业务主路径禁止自动调用。
-pub fn sync_current_official_account_from_dir(
-    base_dir: &Path,
-) -> Result<Option<CodexAccount>, String> {
-    let Some(snapshot) = load_local_oauth_snapshot_from_official_store(base_dir) else {
-        return Ok(None);
-    };
-
-    for mut account in list_accounts() {
-        if account.is_api_key_auth() {
-            continue;
-        }
-        if !local_oauth_snapshot_matches_account(&snapshot, &account) {
-            continue;
-        }
-
-        if apply_local_oauth_snapshot(&mut account, &snapshot) {
-            save_account(&account)?;
-            logger::log_info(&format!(
-                "Codex 当前官方凭证已同步回账号库: account_id={}, source_dir={}",
-                account.id,
-                base_dir.display()
-            ));
-        }
-        return Ok(Some(account));
-    }
-
-    Ok(None)
-}
-
-/// 显式导入/同步入口：只在用户主动选择从指定目录回读时使用，业务主路径禁止自动调用。
-pub fn sync_account_from_auth_dir(
-    account_id: &str,
-    base_dir: &Path,
-) -> Result<CodexAccount, String> {
-    let mut account =
-        load_account(account_id).ok_or_else(|| format!("账号不存在: {}", account_id))?;
-    if account.is_api_key_auth() || account.is_agent_identity_auth() {
-        return Ok(account);
-    }
-
-    let _ = sync_account_from_auth_dir_if_current(&mut account, base_dir)?;
-    Ok(account)
-}
-
-pub fn sync_managed_projection_from_auth_dir(
-    account_id: &str,
-    base_dir: &Path,
-) -> Result<CodexAccount, String> {
-    let projection = read_managed_projection_from_dir(base_dir)
-        .ok_or_else(|| "目标目录不是 Cockpit 受管 Codex 投影，已拒绝反向同步".to_string())?;
-    if projection.account_id != account_id {
-        return Err(format!(
-            "受管投影账号不匹配: expected={}, actual={}",
-            account_id, projection.account_id
-        ));
-    }
-
-    let mut account =
-        load_account(account_id).ok_or_else(|| format!("账号不存在: {}", account_id))?;
-    if account.is_api_key_auth() || account.is_agent_identity_auth() {
-        return Ok(account);
-    }
-    if account.token_generation != projection.token_generation {
-        return Err(format!(
-            "受管投影版本已过期，跳过反向同步: account_id={}, store_generation={}, projection_generation={}",
-            account_id, account.token_generation, projection.token_generation
-        ));
-    }
-
-    let snapshot = load_local_oauth_snapshot_from_official_store(base_dir)
-        .ok_or_else(|| "受管投影缺少可同步的 OAuth Token".to_string())?;
-    if !local_oauth_snapshot_matches_account(&snapshot, &account) {
-        return Err("受管投影 Token 与账号不匹配，已拒绝反向同步".to_string());
-    }
-
-    if apply_local_oauth_snapshot(&mut account, &snapshot) {
-        save_account(&account)?;
-        write_prepared_account_bundle_to_dir(base_dir, &account)?;
-        write_managed_account_projections(&account);
-        logger::log_info(&format!(
-            "Codex 受管投影已同步回账号库: account_id={}, generation={}, source_dir={}",
-            account.id,
-            account.token_generation,
-            base_dir.display()
-        ));
-    }
-
-    Ok(account)
-}
-
 /// Local API Service / loopback client URLs must not overwrite a stored real upstream.
 fn is_loopback_or_local_gateway_base_url(raw: Option<&str>) -> bool {
     let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -7531,74 +7416,6 @@ pub async fn keepalive_managed_account(
     }
 
     perform_managed_token_refresh(account, reason, false).await
-}
-
-pub async fn execute_with_managed_account_projection<R, F>(
-    account_id: &str,
-    auth_dir: &Path,
-    reason: &str,
-    operation: F,
-) -> Result<(CodexAccount, R, Option<String>), String>
-where
-    F: FnOnce(&CodexAccount) -> R,
-{
-    let api_key_account =
-        load_account(account_id).ok_or_else(|| format!("账号不存在: {}", account_id))?;
-    if api_key_account.is_api_key_auth() {
-        let sync_error = if normalize_optional_ref(
-            api_key_account.bound_oauth_account_id.as_deref(),
-        )
-        .is_some()
-        {
-            let oauth_account =
-                refresh_bound_oauth_account_for_api_key(&api_key_account, reason).await?;
-            write_api_key_account_bundle_with_oauth_to_dir(
-                auth_dir,
-                &api_key_account,
-                &oauth_account,
-            )?;
-
-            let sync_result =
-                match sync_managed_projection_from_auth_dir(&oauth_account.id, auth_dir) {
-                    Ok(_) => {
-                        let latest_oauth_account = load_account(&oauth_account.id)
-                            .unwrap_or_else(|| oauth_account.clone());
-                        match write_api_key_account_bundle_with_oauth_to_dir(
-                            auth_dir,
-                            &api_key_account,
-                            &latest_oauth_account,
-                        ) {
-                            Ok(_) => None,
-                            Err(err) => Some(err),
-                        }
-                    }
-                    Err(err) => Some(err),
-                };
-            sync_result
-        } else {
-            write_prepared_account_bundle_to_dir(auth_dir, &api_key_account)?;
-            None
-        };
-        let result = operation(&api_key_account);
-        let latest_account = load_account(account_id).unwrap_or(api_key_account);
-
-        return Ok((latest_account, result, sync_error));
-    }
-
-    let lock = codex_token_lock_for(account_id);
-    let _guard = lock.lock().await;
-    let _file_guard = acquire_codex_token_refresh_file_lock(account_id, reason).await?;
-    let account = refresh_managed_account_locked(account_id, false, reason, None).await?;
-    write_prepared_account_bundle_to_dir(auth_dir, &account)?;
-
-    let result = operation(&account);
-    let sync_error = match sync_managed_projection_from_auth_dir(account_id, auth_dir) {
-        Ok(_) => None,
-        Err(err) => Some(err),
-    };
-    let latest_account = load_account(account_id).unwrap_or(account);
-
-    Ok((latest_account, result, sync_error))
 }
 
 /// 准备账号注入：刷新前会先采用更新的官方凭证，随后由账号中心写穿受管投影。
@@ -10941,8 +10758,7 @@ mod tests {
         parse_line_delimited_json_values, read_api_provider_from_config_toml,
         read_quick_config_from_config_toml, remove_accounts, resolve_api_provider_config,
         save_account, save_account_index, should_accept_authority_snapshot,
-        sync_account_from_auth_dir, sync_api_key_account_from_local_state,
-        sync_api_key_provider_accounts, sync_managed_projection_from_auth_dir,
+        sync_api_key_account_from_local_state, sync_api_key_provider_accounts,
         try_parse_pending_oauth_delimited_line, update_account_instance_access,
         update_api_key_credentials, upsert_account, upsert_account_for_reauth,
         upsert_account_from_access_token, upsert_account_from_access_token_with_hints,
@@ -13498,82 +13314,6 @@ mod tests {
             stored.tokens.refresh_token.as_deref()
         );
         fs::remove_dir_all(&data_dir).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn sync_account_from_auth_dir_updates_store_for_managed_home() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let env = TestEnvGuard::new("codex-auth-dir-sync-test");
-
-        let stored = seed_oauth_account(make_codex_tokens(
-            "demo@example.com",
-            "acc-current",
-            "org-current",
-            "seed",
-            "rt-seed",
-        ));
-        let managed_home = env.home_dir.join("managed-homes").join(&stored.id);
-        let latest_tokens = make_codex_tokens(
-            "demo@example.com",
-            "acc-current",
-            "org-current",
-            "managed",
-            "rt-managed",
-        );
-        write_oauth_auth_file(&managed_home, &latest_tokens, "acc-current");
-
-        let synced = sync_account_from_auth_dir(&stored.id, &managed_home).expect("sync account");
-        assert_eq!(synced.tokens.access_token, latest_tokens.access_token);
-        assert_eq!(
-            synced.tokens.refresh_token.as_deref(),
-            latest_tokens.refresh_token.as_deref()
-        );
-
-        let persisted = load_account(&stored.id).expect("persisted account");
-        assert_eq!(persisted.tokens.access_token, latest_tokens.access_token);
-        assert_eq!(
-            persisted.tokens.refresh_token.as_deref(),
-            latest_tokens.refresh_token.as_deref()
-        );
-    }
-
-    #[test]
-    fn managed_projection_sync_requires_projection_marker() {
-        let _lock = crate::modules::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|err| err.into_inner());
-        let env = TestEnvGuard::new("codex-managed-projection-sync-test");
-
-        let stored = seed_oauth_account(make_codex_tokens(
-            "demo@example.com",
-            "acc-current",
-            "org-current",
-            "seed",
-            "rt-seed",
-        ));
-        let managed_home = env.home_dir.join("managed-homes").join(&stored.id);
-        write_oauth_auth_file(&managed_home, &stored.tokens, "acc-current");
-        write_managed_projection_to_dir(&managed_home, &stored).expect("write managed projection");
-
-        let latest_tokens = make_codex_tokens(
-            "demo@example.com",
-            "acc-current",
-            "org-current",
-            "managed",
-            "rt-managed",
-        );
-        write_oauth_auth_file(&managed_home, &latest_tokens, "acc-current");
-
-        let synced = sync_managed_projection_from_auth_dir(&stored.id, &managed_home)
-            .expect("sync managed projection");
-        assert_eq!(synced.tokens.access_token, latest_tokens.access_token);
-        assert_eq!(
-            synced.tokens.refresh_token.as_deref(),
-            latest_tokens.refresh_token.as_deref()
-        );
-        assert!(synced.token_generation > stored.token_generation);
     }
 
     #[test]
