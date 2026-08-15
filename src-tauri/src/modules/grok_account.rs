@@ -1566,13 +1566,6 @@ pub fn remove_account(account_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_matching_default_auth(account: &GrokAccount) -> Result<(), String> {
-    let auth_path = default_grok_home()?.join(AUTH_FILE);
-    remove_matching_auth_scope(&auth_path, account, true)?;
-    remove_matching_auth_scope(&auth_path.with_extension("json.bak"), account, false)?;
-    Ok(())
-}
-
 fn auth_entry_matches_account(current: &Value, account: &GrokAccount) -> bool {
     let current_object = current.as_object();
     let same_token = current_object
@@ -1603,50 +1596,6 @@ fn auth_entry_matches_account(current: &Value, account: &GrokAccount) -> bool {
         .map(|value| value.eq_ignore_ascii_case(&account.email))
         .unwrap_or(false);
     same_email
-}
-
-fn remove_matching_auth_scope(
-    path: &Path,
-    account: &GrokAccount,
-    create_backup: bool,
-) -> Result<bool, String> {
-    if !path.exists() {
-        return Ok(false);
-    }
-    let _lock = acquire_secret_lock(path)?;
-    let content =
-        fs::read_to_string(path).map_err(|error| format!("读取 Grok 默认凭据失败: {}", error))?;
-    let mut registry: Map<String, Value> = serde_json::from_str::<Value>(&content)
-        .map_err(|error| format!("解析 Grok 默认凭据失败: {}", error))?
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "Grok 默认凭据不是 registry 对象".to_string())?;
-    let matching_keys = registry
-        .iter()
-        .filter(|(key, current)| {
-            split_xai_auth_registry_key(key).is_some()
-                && auth_entry_matches_account(current, account)
-        })
-        .map(|(key, _)| key.clone())
-        .collect::<Vec<_>>();
-    if matching_keys.is_empty() {
-        return Ok(false);
-    }
-    for key in matching_keys {
-        registry.remove(&key);
-    }
-    if registry.is_empty() {
-        fs::remove_file(path).map_err(|error| format!("删除 Grok 默认凭据失败: {}", error))?;
-    } else {
-        let next = serde_json::to_string_pretty(&Value::Object(registry))
-            .map_err(|error| format!("序列化 Grok 默认凭据失败: {}", error))?;
-        if create_backup {
-            write_secret_atomic_locked(path, &next)?;
-        } else {
-            replace_secret_atomic_locked(path, &next)?;
-        }
-    }
-    Ok(true)
 }
 
 pub fn remove_accounts(account_ids: &[String]) -> Result<(), String> {
@@ -2039,17 +1988,6 @@ async fn task_usage_for(account: &GrokAccount) -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|error| format!("解析 Grok 任务配额失败: {}", error))
 }
 
-fn live_auth_path_for_account(account: &GrokAccount) -> Result<PathBuf, String> {
-    if config::get_user_config().grok_sync_official_auth_on_switch
-        && provider_current_state::get_current_account_id("grok")?.as_deref()
-            == Some(account.id.as_str())
-        && !account.is_api_key_auth()
-    {
-        return Ok(default_grok_home()?.join(AUTH_FILE));
-    }
-    Ok(managed_profile_dir(&account.id)?.join(AUTH_FILE))
-}
-
 /// access 仍可用的缓冲（秒）：未到 expires_at 且距过期大于该值时优先直接使用，不抢刷。
 const ACCESS_USABLE_LEAD_SECS: i64 = 60;
 /// 与 CLIProxyAPI RefreshLead 对齐：到期前 5 分钟主动 refresh。
@@ -2331,11 +2269,6 @@ fn adopt_best_live_credentials(account: &mut GrokAccount) -> Result<bool, String
         ));
     }
     Ok(changed)
-}
-
-/// 兼容旧调用名：行为升级为多源同账号 best-adopt。
-fn adopt_live_tokens_from_account_home(account: &mut GrokAccount) -> Result<bool, String> {
-    adopt_best_live_credentials(account)
 }
 
 async fn refresh_credentials(account: &mut GrokAccount, force: bool) -> Result<(), String> {
@@ -2904,7 +2837,7 @@ mod tests {
         find_matching_auth_entry_in_registry, list_accounts_checked, load_account,
         load_account_from_path, load_index_from_paths, parse_auth_registry,
         pick_best_live_credential, quota_from_payload, quota_remaining_metrics, remove_account,
-        remove_matching_auth_scope, resolve_account_id_from_registry, save_account_locked,
+        resolve_account_id_from_registry, save_account_locked,
         should_retry_quota_after_unauthorized, string_field, validate_api_provider_config,
         write_account_to_auth_path_if_token_matches, write_account_to_official_auth_path,
         write_account_to_profile, GrokCredSource, LiveCredentialCandidate,
@@ -3103,35 +3036,6 @@ mod tests {
     }
 
     #[test]
-    fn deleting_auth_scope_scrubs_main_and_backup_without_removing_other_scopes() {
-        let temp = TestDir::new();
-        let auth_path = temp.0.join("auth.json");
-        let backup_path = auth_path.with_extension("json.bak");
-        let account = sample_account();
-        let registry = auth_registry_for(&account, Some(json!({"custom-scope":{"key":"keep"}})));
-        let content = serde_json::to_string_pretty(&registry).expect("serialize registry");
-        std::fs::write(&auth_path, &content).expect("write auth registry");
-        std::fs::write(&backup_path, &content).expect("write auth backup");
-
-        assert!(
-            remove_matching_auth_scope(&auth_path, &account, true).expect("remove main auth scope")
-        );
-        assert!(remove_matching_auth_scope(&backup_path, &account, false)
-            .expect("remove backup auth scope"));
-
-        for path in [&auth_path, &backup_path] {
-            let persisted: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(path).expect("read scrubbed registry"),
-            )
-            .expect("parse scrubbed registry");
-            assert!(persisted
-                .get(crate::modules::grok_oauth::AUTH_REGISTRY_KEY)
-                .is_none());
-            assert_eq!(persisted["custom-scope"]["key"], "keep");
-        }
-    }
-
-    #[test]
     fn external_login_change_is_reconciled_and_stale_refresh_does_not_overwrite_it() {
         let temp = TestDir::new();
         let auth_path = temp.0.join("auth.json");
@@ -3197,34 +3101,6 @@ mod tests {
         let mut different_user = sample_account();
         different_user.user_id = Some("user-2".to_string());
         assert!(!accounts_match_for_upsert(&different_user, &existing));
-    }
-
-    #[test]
-    fn auth_cleanup_does_not_fall_back_to_email_when_strong_identity_conflicts() {
-        let temp = TestDir::new();
-        let auth_path = temp.0.join("auth.json");
-        let account = sample_account();
-        let mut external_account = sample_account();
-        external_account.access_token = "external-access".to_string();
-        external_account.principal_id = Some("principal-2".to_string());
-        external_account.user_id = Some("user-2".to_string());
-        let registry = auth_registry_for(&external_account, None);
-        std::fs::write(
-            &auth_path,
-            serde_json::to_string_pretty(&registry).expect("serialize external registry"),
-        )
-        .expect("write external registry");
-
-        assert!(!remove_matching_auth_scope(&auth_path, &account, true)
-            .expect("compare external auth scope"));
-        let persisted: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&auth_path).expect("read preserved external registry"),
-        )
-        .expect("parse preserved external registry");
-        assert_eq!(
-            persisted[crate::modules::grok_oauth::AUTH_REGISTRY_KEY]["key"],
-            "external-access"
-        );
     }
 
     #[test]
