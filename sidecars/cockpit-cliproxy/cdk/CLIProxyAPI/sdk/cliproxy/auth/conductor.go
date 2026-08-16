@@ -4078,12 +4078,14 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 
 	m.mu.Lock()
 	cancelPrev := m.refreshCancel
+	loopPrev := m.refreshLoop
 	m.refreshCancel = nil
 	m.refreshLoop = nil
 	m.mu.Unlock()
 	if cancelPrev != nil {
 		cancelPrev()
 	}
+	loopPrev.wait()
 
 	ctx, cancelCtx := context.WithCancel(parent)
 	workers := refreshMaxConcurrency
@@ -4106,12 +4108,14 @@ func (m *Manager) StartAutoRefresh(parent context.Context, interval time.Duratio
 func (m *Manager) StopAutoRefresh() {
 	m.mu.Lock()
 	cancel := m.refreshCancel
+	loop := m.refreshLoop
 	m.refreshCancel = nil
 	m.refreshLoop = nil
 	m.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	loop.wait()
 	// Stop selector if it implements StoppableSelector (e.g., SessionAffinitySelector)
 	if stoppable, ok := m.selector.(StoppableSelector); ok {
 		stoppable.Stop()

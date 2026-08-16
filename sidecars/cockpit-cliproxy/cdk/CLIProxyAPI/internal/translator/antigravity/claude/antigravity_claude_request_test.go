@@ -70,6 +70,18 @@ func uint64Ptr(v uint64) *uint64 {
 	return &v
 }
 
+func enableSignatureCacheForTest(t *testing.T) {
+	t.Helper()
+
+	previous := cache.SignatureCacheEnabled()
+	cache.ClearSignatureCache("")
+	cache.SetSignatureCacheEnabled(true)
+	t.Cleanup(func() {
+		cache.ClearSignatureCache("")
+		cache.SetSignatureCacheEnabled(previous)
+	})
+}
+
 func TestConvertClaudeRequestToAntigravity_StripsClaudeCodeAttribution(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "claude-sonnet-4-5",
@@ -180,10 +192,10 @@ func TestConvertClaudeRequestToAntigravity_RoleMapping(t *testing.T) {
 }
 
 func TestConvertClaudeRequestToAntigravity_ThinkingBlocks(t *testing.T) {
-	cache.ClearSignatureCache("")
+	enableSignatureCacheForTest(t)
 
-	// Valid signature must be at least 50 characters
-	validSignature := "abc123validSignature1234567890123456789012345678901234567890"
+	validSignature := testAnthropicNativeSignature(t)
+	expectedSignature := base64.StdEncoding.EncodeToString([]byte(validSignature))
 	thinkingText := "Let me think..."
 
 	// Pre-cache the signature (simulating a previous response for the same thinking text)
@@ -217,8 +229,8 @@ func TestConvertClaudeRequestToAntigravity_ThinkingBlocks(t *testing.T) {
 	if firstPart.Get("text").String() != thinkingText {
 		t.Error("thinking text mismatch")
 	}
-	if firstPart.Get("thoughtSignature").String() != validSignature {
-		t.Errorf("Expected thoughtSignature '%s', got '%s'", validSignature, firstPart.Get("thoughtSignature").String())
+	if firstPart.Get("thoughtSignature").String() != expectedSignature {
+		t.Errorf("Expected thoughtSignature '%s', got '%s'", expectedSignature, firstPart.Get("thoughtSignature").String())
 	}
 }
 
@@ -935,18 +947,18 @@ func TestConvertClaudeRequestToAntigravity_ToolUse(t *testing.T) {
 	if funcCall.Get("id").String() != "call_123" {
 		t.Errorf("Expected function id 'call_123', got '%s'", funcCall.Get("id").String())
 	}
-	// Verify skip_thought_signature_validator is added (bypass for tools without valid thinking)
-	expectedSig := "skip_thought_signature_validator"
-	actualSig := parts[0].Get("thoughtSignature").String()
-	if actualSig != expectedSig {
-		t.Errorf("Expected thoughtSignature '%s', got '%s'", expectedSig, actualSig)
+	// The Gemini bypass sentinel is not valid for Claude replay. A tool call
+	// without its own provider-native signature must therefore stay unsigned.
+	if actualSig := parts[0].Get("thoughtSignature"); actualSig.Exists() {
+		t.Errorf("Expected no thoughtSignature, got '%s'", actualSig.String())
 	}
 }
 
-func TestConvertClaudeRequestToAntigravity_ToolUse_WithSignature(t *testing.T) {
-	cache.ClearSignatureCache("")
+func TestConvertClaudeRequestToAntigravity_ToolUse_DoesNotReuseThinkingSignature(t *testing.T) {
+	enableSignatureCacheForTest(t)
 
-	validSignature := "abc123validSignature1234567890123456789012345678901234567890"
+	validSignature := testAnthropicNativeSignature(t)
+	expectedThinkingSignature := base64.StdEncoding.EncodeToString([]byte(validSignature))
 	thinkingText := "Let me think..."
 
 	inputJSON := []byte(`{
@@ -976,21 +988,27 @@ func TestConvertClaudeRequestToAntigravity_ToolUse_WithSignature(t *testing.T) {
 	output := ConvertClaudeRequestToAntigravity("claude-sonnet-4-5-thinking", inputJSON, false)
 	outputStr := string(output)
 
-	// Check function call has the signature from the preceding thinking block (now in contents.1)
+	// The thinking block keeps its normalized Claude signature, but that
+	// signature belongs to the thinking block and must not be copied onto a
+	// separate tool_use block.
+	thinkingPart := gjson.Get(outputStr, "request.contents.1.parts.0")
+	if thinkingPart.Get("thoughtSignature").String() != expectedThinkingSignature {
+		t.Errorf("Expected thinking signature '%s', got '%s'", expectedThinkingSignature, thinkingPart.Get("thoughtSignature").String())
+	}
 	part := gjson.Get(outputStr, "request.contents.1.parts.1")
 	if part.Get("functionCall.name").String() != "get_weather" {
 		t.Errorf("Expected functionCall, got %s", part.Raw)
 	}
-	if part.Get("thoughtSignature").String() != validSignature {
-		t.Errorf("Expected thoughtSignature '%s' on tool_use, got '%s'", validSignature, part.Get("thoughtSignature").String())
+	if toolSignature := part.Get("thoughtSignature"); toolSignature.Exists() {
+		t.Errorf("Expected tool_use to remain unsigned, got '%s'", toolSignature.String())
 	}
 }
 
 func TestConvertClaudeRequestToAntigravity_ReorderThinking(t *testing.T) {
-	cache.ClearSignatureCache("")
+	enableSignatureCacheForTest(t)
 
 	// Case: text block followed by thinking block -> should be reordered to thinking first
-	validSignature := "abc123validSignature1234567890123456789012345678901234567890"
+	validSignature := testAnthropicNativeSignature(t)
 	thinkingText := "Planning..."
 
 	inputJSON := []byte(`{
@@ -1135,9 +1153,9 @@ func TestConvertClaudeRequestToAntigravity_ReorderParallelFunctionCalls(t *testi
 }
 
 func TestConvertClaudeRequestToAntigravity_ReorderThinkingAndTextBeforeFunctionCall(t *testing.T) {
-	cache.ClearSignatureCache("")
+	enableSignatureCacheForTest(t)
 
-	validSignature := "abc123validSignature1234567890123456789012345678901234567890"
+	validSignature := testAnthropicNativeSignature(t)
 	thinkingText := "Let me think about this..."
 
 	inputJSON := []byte(`{
@@ -1533,10 +1551,10 @@ func TestConvertClaudeRequestToAntigravity_TrailingUnsignedThinking_Removed(t *t
 }
 
 func TestConvertClaudeRequestToAntigravity_TrailingSignedThinking_Kept(t *testing.T) {
-	cache.ClearSignatureCache("")
+	enableSignatureCacheForTest(t)
 
 	// Last assistant message ends with signed thinking block - should be kept
-	validSignature := "abc123validSignature1234567890123456789012345678901234567890"
+	validSignature := testAnthropicNativeSignature(t)
 	thinkingText := "Valid thinking..."
 
 	inputJSON := []byte(`{

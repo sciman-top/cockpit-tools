@@ -14,6 +14,8 @@ type testTokenStorage struct {
 	meta map[string]any
 }
 
+type emptyTestTokenStorage struct{}
+
 func (s *testTokenStorage) SetMetadata(meta map[string]any) { s.meta = meta }
 
 func (s *testTokenStorage) SaveTokenToFile(authFilePath string) error {
@@ -22,6 +24,10 @@ func (s *testTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return err
 	}
 	return os.WriteFile(authFilePath, raw, 0o600)
+}
+
+func (*emptyTestTokenStorage) SaveTokenToFile(authFilePath string) error {
+	return os.WriteFile(authFilePath, nil, 0o600)
 }
 
 func TestFileTokenStore_Save_DisabledPersistsFlagForTokenStorage(t *testing.T) {
@@ -60,5 +66,35 @@ func TestFileTokenStore_Save_DisabledPersistsFlagForTokenStorage(t *testing.T) {
 	}
 	if disabled, _ := meta["disabled"].(bool); !disabled {
 		t.Fatalf("disabled=%v, want true (raw=%s)", meta["disabled"], string(raw))
+	}
+}
+
+func TestFileTokenStore_Save_InvalidOutputPreservesExistingCredentials(t *testing.T) {
+	baseDir := t.TempDir()
+	path := filepath.Join(baseDir, "credentials.json")
+	original := []byte(`{"type":"codex","access_token":"keep-me"}`)
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatalf("seed auth file: %v", err)
+	}
+
+	store := NewFileTokenStore()
+	store.SetBaseDir(baseDir)
+	auth := &cliproxyauth.Auth{
+		ID:       "credentials.json",
+		Provider: "codex",
+		FileName: "credentials.json",
+		Storage:  &emptyTestTokenStorage{},
+		Metadata: map[string]any{"type": "codex"},
+	}
+
+	if _, err := store.Save(context.Background(), auth); err == nil {
+		t.Fatal("Save() accepted empty credential output")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read preserved auth file: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("credentials changed after rejected write: got=%q want=%q", got, original)
 	}
 }

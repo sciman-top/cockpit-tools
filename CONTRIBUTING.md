@@ -27,6 +27,7 @@ The desktop application lives in `src-tauri` (Tauri + React).
 ## 🧪 Testing
 
 - **GUI:** `npm run tauri dev`
+- **Frontend:** `npm test`
 - **Rust:** `cargo test --manifest-path src-tauri/Cargo.toml --lib`
 
 ## 📬 Submitting a Pull Request
@@ -57,10 +58,11 @@ Please be respectful and professional in all interactions. We follow the [Contri
 | Command | Description |
 |---------|-------------|
 | `npm run tauri dev` | Start development server (port 1420) |
+| `npm test` | Run frontend behavior tests |
 | `npm run typecheck` | Run TypeScript type checking (auto-runs before build) |
 | `npm run build` | Build frontend (syncs version + typecheck + vite build) |
 | `npm run sync-version` | Sync `package.json` version to Tauri config |
-| `npm run release:preflight` | Run release checks (locales + web build/typecheck + Rust lib tests) |
+| `npm run release:preflight` | Run release checks (locales + frontend tests + web build/typecheck + Rust lib tests) |
 
 ### State Management & i18n
 

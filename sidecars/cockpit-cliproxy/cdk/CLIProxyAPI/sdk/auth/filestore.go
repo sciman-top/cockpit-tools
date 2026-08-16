@@ -25,6 +25,51 @@ type FileTokenStore struct {
 	baseDir string
 }
 
+func replaceAuthFileAtomically(path string, write func(string) error) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("auth filestore: create temporary file failed: %w", err)
+	}
+	tempPath := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err = temp.Close(); err != nil {
+		return fmt.Errorf("auth filestore: close temporary file failed: %w", err)
+	}
+
+	if err = write(tempPath); err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(tempPath)
+	if err != nil {
+		return fmt.Errorf("auth filestore: read temporary file failed: %w", err)
+	}
+	if len(raw) == 0 || !json.Valid(raw) {
+		return fmt.Errorf("auth filestore: refusing to replace credentials with invalid JSON")
+	}
+
+	syncFile, err := os.OpenFile(tempPath, os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("auth filestore: open temporary file for sync failed: %w", err)
+	}
+	if err = syncFile.Sync(); err != nil {
+		_ = syncFile.Close()
+		return fmt.Errorf("auth filestore: sync temporary file failed: %w", err)
+	}
+	if err = syncFile.Close(); err != nil {
+		return fmt.Errorf("auth filestore: close synced temporary file failed: %w", err)
+	}
+	if err = os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("auth filestore: replace credentials failed: %w", err)
+	}
+	cleanup = false
+	return nil
+}
+
 // NewFileTokenStore creates a token store that saves credentials to disk through the
 // TokenStorage implementation embedded in the token record.
 func NewFileTokenStore() *FileTokenStore {
@@ -79,7 +124,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 		if setter, ok := auth.Storage.(metadataSetter); ok {
 			setter.SetMetadata(auth.Metadata)
 		}
-		if err = auth.Storage.SaveTokenToFile(path); err != nil {
+		if err = replaceAuthFileAtomically(path, auth.Storage.SaveTokenToFile); err != nil {
 			return "", err
 		}
 	case auth.Metadata != nil:
@@ -92,23 +137,13 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
 			if jsonEqual(existing, raw) {
 				return path, nil
 			}
-			file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600)
-			if errOpen != nil {
-				return "", fmt.Errorf("auth filestore: open existing failed: %w", errOpen)
-			}
-			if _, errWrite := file.Write(raw); errWrite != nil {
-				_ = file.Close()
-				return "", fmt.Errorf("auth filestore: write existing failed: %w", errWrite)
-			}
-			if errClose := file.Close(); errClose != nil {
-				return "", fmt.Errorf("auth filestore: close existing failed: %w", errClose)
-			}
-			return path, nil
 		} else if !os.IsNotExist(errRead) {
 			return "", fmt.Errorf("auth filestore: read existing failed: %w", errRead)
 		}
-		if errWrite := os.WriteFile(path, raw, 0o600); errWrite != nil {
-			return "", fmt.Errorf("auth filestore: write file failed: %w", errWrite)
+		if err = replaceAuthFileAtomically(path, func(tempPath string) error {
+			return os.WriteFile(tempPath, raw, 0o600)
+		}); err != nil {
+			return "", err
 		}
 	default:
 		return "", fmt.Errorf("auth filestore: nothing to persist for %s", auth.ID)
@@ -222,10 +257,9 @@ func (s *FileTokenStore) readAuthFile(path, baseDir string) (*cliproxyauth.Auth,
 				if errFetch == nil && strings.TrimSpace(fetchedProjectID) != "" {
 					metadata["project_id"] = strings.TrimSpace(fetchedProjectID)
 					if raw, errMarshal := json.Marshal(metadata); errMarshal == nil {
-						if file, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600); errOpen == nil {
-							_, _ = file.Write(raw)
-							_ = file.Close()
-						}
+						_ = replaceAuthFileAtomically(path, func(tempPath string) error {
+							return os.WriteFile(tempPath, raw, 0o600)
+						})
 					}
 				}
 			}

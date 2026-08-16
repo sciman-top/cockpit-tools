@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -216,7 +217,10 @@ func TestPersistCodexAgentIdentityTaskWritesMatchingAuthFile(t *testing.T) {
 	}
 	if info, statErr := os.Stat(path); statErr != nil {
 		t.Fatalf("stat auth file: %v", statErr)
-	} else if info.Mode().Perm()&0o077 != 0 {
+	} else if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		// Go's Windows FileMode is synthesized from file attributes and does not
+		// represent the file's NTFS ACL, so POSIX mode bits are only meaningful on
+		// platforms that implement them.
 		t.Fatalf("auth file permissions = %o", info.Mode().Perm())
 	}
 }

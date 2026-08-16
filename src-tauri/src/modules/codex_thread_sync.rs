@@ -1511,6 +1511,16 @@ mod tests {
         base_dir
     }
 
+    fn set_test_file_modified(path: &Path, modified_at: SystemTime) {
+        // Windows requires a write-capable handle to change file timestamps.
+        fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open test file for timestamp update")
+            .set_modified(modified_at)
+            .expect("set test file mtime");
+    }
+
     #[test]
     fn copied_rollout_preserves_source_modified_time() {
         let temp_dir = make_temp_dir("codex-thread-sync-mtime-copy-test");
@@ -1529,10 +1539,7 @@ mod tests {
         )
         .expect("write source rollout");
         let source_modified_at = UNIX_EPOCH + Duration::from_secs(1_710_000_000);
-        fs::File::open(&rollout_path)
-            .expect("open source rollout")
-            .set_modified(source_modified_at)
-            .expect("set source mtime");
+        set_test_file_modified(&rollout_path, source_modified_at);
 
         let snapshot = ThreadSnapshot {
             id: "s1".to_string(),
@@ -1573,10 +1580,7 @@ mod tests {
         )
         .expect("write rollout");
         let original_modified_at = UNIX_EPOCH + Duration::from_secs(1_720_000_000);
-        fs::File::open(&rollout_path)
-            .expect("open rollout")
-            .set_modified(original_modified_at)
-            .expect("set rollout mtime");
+        set_test_file_modified(&rollout_path, original_modified_at);
 
         rewrite_rollout_provider_for_target(&rollout_path, "relay").expect("rewrite provider");
 

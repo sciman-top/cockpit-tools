@@ -59,6 +59,14 @@ if (!hasFlag('--skip-locales')) {
   });
 }
 
+if (!hasFlag('--skip-frontend-test')) {
+  steps.push({
+    name: 'Frontend behavior tests',
+    command: 'npm',
+    args: ['test'],
+  });
+}
+
 if (!hasFlag('--skip-build')) {
   steps.push({
     name: 'Web build',

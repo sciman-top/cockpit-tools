@@ -59,9 +59,7 @@ fn parse_antigravity_system_credential(
     let refresh_token = normalize_non_empty(payload.token.refresh_token.as_deref())
         .ok_or_else(|| "Antigravity 系统凭据缺少 refresh_token".to_string())?;
 
-    Ok(AntigravitySystemCredential {
-        refresh_token,
-    })
+    Ok(AntigravitySystemCredential { refresh_token })
 }
 
 fn build_antigravity_credential_payload(account: &Account) -> Result<String, String> {

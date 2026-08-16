@@ -597,7 +597,6 @@ impl TrayIconStyle {
             TrayIconStyle::Color => "color",
         }
     }
-
 }
 
 impl Default for TrayIconStyle {

@@ -456,8 +456,7 @@ fn repair_session_visibility_for_instances_with_options(
             skipped_sqlite_file_count += 1;
         }
 
-        let instance_has_planned_changes =
-            !rollout_changes.is_empty() || sqlite_rows_to_update > 0;
+        let instance_has_planned_changes = !rollout_changes.is_empty() || sqlite_rows_to_update > 0;
 
         if options.dry_run {
             if instance_has_planned_changes {
@@ -573,8 +572,7 @@ fn repair_session_visibility_for_instances_with_options(
             }
         };
 
-        let instance_mutated =
-            !rollout_changes.is_empty() || repaired.updated_sqlite_rows > 0;
+        let instance_mutated = !rollout_changes.is_empty() || repaired.updated_sqlite_rows > 0;
 
         if instance_mutated {
             mutated_instance_count += 1;
@@ -1893,8 +1891,7 @@ fn count_sqlite_rows_to_update_for_options(
         skipped_unusable_database: false,
     };
     for db_path in official_state_db_candidate_paths(data_dir) {
-        let item =
-            count_sqlite_rows_to_update_for_db(&db_path, target_provider, selection)?;
+        let item = count_sqlite_rows_to_update_for_db(&db_path, target_provider, selection)?;
         scan.rows_to_update += item.rows_to_update;
         scan.skipped_unusable_database |= item.skipped_unusable_database;
     }
@@ -3208,14 +3205,9 @@ mod tests {
         let scan = count_sqlite_rows_to_update_for_options(&data_dir, "relay", options, &selection)
             .expect("scan quick sqlite");
         assert_eq!(scan.rows_to_update, 2);
-        let repaired = repair_single_instance_for_test(
-            &data_dir,
-            "relay",
-            &[],
-            options,
-            &selection,
-        )
-        .expect("quick repair");
+        let repaired =
+            repair_single_instance_for_test(&data_dir, "relay", &[], options, &selection)
+                .expect("quick repair");
         assert_eq!(repaired.updated_sqlite_rows, 2);
 
         assert_eq!(

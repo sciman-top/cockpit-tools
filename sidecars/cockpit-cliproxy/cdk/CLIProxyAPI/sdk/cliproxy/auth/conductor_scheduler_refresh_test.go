@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,85 @@ type unauthorizedRefreshTestExecutor struct {
 
 func (e unauthorizedRefreshTestExecutor) Refresh(ctx context.Context, auth *Auth) (*Auth, error) {
 	return nil, errors.New("token refresh failed with status 401: invalid_grant")
+}
+
+type dueRefreshEvaluator struct{}
+
+func (dueRefreshEvaluator) ShouldRefresh(time.Time, *Auth) bool { return true }
+
+type blockingAutoRefreshTestExecutor struct {
+	schedulerProviderTestExecutor
+	started      chan struct{}
+	canceled     chan struct{}
+	release      chan struct{}
+	startedOnce  sync.Once
+	canceledOnce sync.Once
+}
+
+func (e *blockingAutoRefreshTestExecutor) Refresh(ctx context.Context, auth *Auth) (*Auth, error) {
+	e.startedOnce.Do(func() { close(e.started) })
+	<-ctx.Done()
+	e.canceledOnce.Do(func() { close(e.canceled) })
+	<-e.release
+	return nil, ctx.Err()
+}
+
+func TestManager_StopAutoRefreshWaitsForRefreshWorkers(t *testing.T) {
+	manager := NewManager(nil, &RoundRobinSelector{}, nil)
+	executor := &blockingAutoRefreshTestExecutor{
+		schedulerProviderTestExecutor: schedulerProviderTestExecutor{provider: "blocking-refresh"},
+		started:                       make(chan struct{}),
+		canceled:                      make(chan struct{}),
+		release:                       make(chan struct{}),
+	}
+	manager.RegisterExecutor(executor)
+	auth := &Auth{
+		ID:       "blocking-refresh-account",
+		Provider: executor.provider,
+		Metadata: map[string]any{"email": "blocking@example.com"},
+		Runtime:  dueRefreshEvaluator{},
+	}
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatalf("register auth: %v", err)
+	}
+
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(executor.release)
+		}
+		manager.StopAutoRefresh()
+	})
+	manager.StartAutoRefresh(context.Background(), time.Millisecond)
+	select {
+	case <-executor.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("auto-refresh worker did not start")
+	}
+
+	stopDone := make(chan struct{})
+	go func() {
+		manager.StopAutoRefresh()
+		close(stopDone)
+	}()
+	select {
+	case <-executor.canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("auto-refresh worker did not receive cancellation")
+	}
+	select {
+	case <-stopDone:
+		t.Fatal("StopAutoRefresh returned before the refresh worker exited")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(executor.release)
+	released = true
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("StopAutoRefresh did not return after the refresh worker exited")
+	}
 }
 
 func TestManager_RefreshAuthUnauthorizedFailureStopsAutoRefreshRetry(t *testing.T) {

@@ -1237,10 +1237,7 @@ fn resolve_binary_with_runtime_config(
                     configured_path.display(),
                     resolved.display()
                 ));
-                match build_usable_resolved_binary(
-                    resolved,
-                    configured_node_path.as_deref(),
-                ) {
+                match build_usable_resolved_binary(resolved, configured_node_path.as_deref()) {
                     Ok(binary) => return Ok(binary),
                     Err(error) => push_runtime_candidate_error(
                         &mut candidate_errors,
@@ -1265,10 +1262,7 @@ fn resolve_binary_with_runtime_config(
                     "[CodexWakeup][CLI] 命中 CODEX_CLI_PATH: {}",
                     path.display()
                 ));
-                match build_usable_resolved_binary(
-                    path,
-                    configured_node_path.as_deref(),
-                ) {
+                match build_usable_resolved_binary(path, configured_node_path.as_deref()) {
                     Ok(binary) => return Ok(binary),
                     Err(error) => push_runtime_candidate_error(
                         &mut candidate_errors,
@@ -1294,14 +1288,9 @@ fn resolve_binary_with_runtime_config(
             "[CodexWakeup][CLI] 从 PATH 检查 codex 候选: {}",
             path.display()
         ));
-        match build_usable_resolved_binary(
-            path,
-            configured_node_path.as_deref(),
-        ) {
+        match build_usable_resolved_binary(path, configured_node_path.as_deref()) {
             Ok(binary) => return Ok(binary),
-            Err(error) => {
-                push_runtime_candidate_error(&mut candidate_errors, "PATH", &error)
-            }
+            Err(error) => push_runtime_candidate_error(&mut candidate_errors, "PATH", &error),
         }
     }
 
@@ -1311,16 +1300,11 @@ fn resolve_binary_with_runtime_config(
                 "[CodexWakeup][CLI] 检查官方客户端内置 Codex: {}",
                 path.display()
             ));
-            match build_usable_resolved_binary(
-                path,
-                configured_node_path.as_deref(),
-            ) {
+            match build_usable_resolved_binary(path, configured_node_path.as_deref()) {
                 Ok(binary) => return Ok(binary),
-                Err(error) => push_runtime_candidate_error(
-                    &mut candidate_errors,
-                    "official_app",
-                    &error,
-                ),
+                Err(error) => {
+                    push_runtime_candidate_error(&mut candidate_errors, "official_app", &error)
+                }
             }
         }
     }
@@ -2273,15 +2257,15 @@ pub fn get_task(task_id: &str) -> Result<Option<CodexWakeupTask>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        append_version_manager_cli_dirs, apply_model_preset_migrations,
-        default_model_presets, prune_missing_accounts_from_state, retain_existing_account_ids,
-        CodexWakeupModelPreset, CodexWakeupSchedule, CodexWakeupState, CodexWakeupTask,
-        GPT_5_5_MODEL_PRESET_MIGRATION_ID, GPT_5_6_MODEL_PRESETS_MIGRATION_ID,
-        PRUNE_LEGACY_MODEL_PRESETS_MIGRATION_ID, REASONING_EFFORT_MEDIUM,
-    };
     #[cfg(unix)]
     use super::build_usable_resolved_binary;
+    use super::{
+        append_version_manager_cli_dirs, apply_model_preset_migrations, default_model_presets,
+        prune_missing_accounts_from_state, retain_existing_account_ids, CodexWakeupModelPreset,
+        CodexWakeupSchedule, CodexWakeupState, CodexWakeupTask, GPT_5_5_MODEL_PRESET_MIGRATION_ID,
+        GPT_5_6_MODEL_PRESETS_MIGRATION_ID, PRUNE_LEGACY_MODEL_PRESETS_MIGRATION_ID,
+        REASONING_EFFORT_MEDIUM,
+    };
     use std::collections::HashSet;
     use std::fs;
     use std::path::PathBuf;
