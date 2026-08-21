@@ -285,6 +285,14 @@
   flex-shrink: 0;
 }
 
+.codex-local-access-current-mode {
+  flex-shrink: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
 .codex-local-access-title-mode-select .single-select-dropdown-trigger {
   min-height: 24px;
   padding: 0 3px 0 0;
@@ -3248,27 +3256,25 @@
 .codex-quota-mini {
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 3px;
   min-width: 0;
 }
 
-.codex-quota-mini-main,
-.codex-quota-mini-left,
+.codex-quota-mini-head,
+.codex-quota-mini-meter,
 .codex-quota-mini-right {
   display: flex;
   align-items: center;
   min-width: 0;
 }
 
-.codex-quota-mini-main {
+.codex-quota-mini-head {
   justify-content: space-between;
-  gap: 8px 10px;
+  gap: 8px;
 }
 
-.codex-quota-mini-left {
-  flex: 1 1 auto;
-  gap: 6px;
+.codex-quota-mini-meter {
+  gap: 8px;
 }
 
 .codex-quota-mini-right {
@@ -3289,17 +3295,19 @@
 }
 
 .codex-quota-mini-label {
-  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: 700;
-  line-height: 1;
+  line-height: 1.3;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .codex-quota-mini-track {
-  flex: 0 0 52px;
-  width: 52px;
+  flex: 1 1 auto;
+  min-width: 0;
   height: 4px;
   overflow: hidden;
   border-radius: 999px;
@@ -3327,12 +3335,18 @@
   background: var(--danger);
 }
 
+.codex-quota-mini-bar.neutral {
+  background: color-mix(in srgb, var(--text-secondary) 42%, transparent);
+}
+
 .codex-quota-mini-pct {
   flex: 0 0 auto;
   min-width: 28px;
   font-size: 11px;
   font-weight: 700;
   line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .codex-quota-mini-pct.high {
@@ -3349,6 +3363,10 @@
 
 .codex-quota-mini-pct.critical {
   color: var(--danger);
+}
+
+.codex-quota-mini-pct.neutral {
+  color: var(--text-secondary);
 }
 
 .codex-quota-mini-reset {
@@ -7959,7 +7977,8 @@
 }
 
 .codex-quick-config-modal {
-  width: min(600px, calc(100vw - 32px));
+  width: min(780px, calc(100vw - 32px));
+  max-width: min(780px, calc(100vw - 32px));
 }
 
 .codex-quick-config-modal .modal-body {
@@ -8171,6 +8190,14 @@
   + .codex-quick-config-switch__slider {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+.codex-quick-config-modal
+  .codex-quick-config-switch
+  input:focus-visible
+  + .codex-quick-config-switch__slider {
+  outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
+  outline-offset: 2px;
 }
 
 .codex-quick-config-modal .codex-quick-config-field__error,

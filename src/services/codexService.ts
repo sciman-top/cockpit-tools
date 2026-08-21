@@ -10,6 +10,7 @@ import {
   CodexBatchDeleteJobStatus,
   CodexProviderWireApi,
   CodexQuickConfig,
+  CodexExperimentalModelDefinition,
   CodexQuota,
   CodexResetCreditsSnapshot,
 } from '../types/codex';
@@ -48,10 +49,16 @@ export async function getCodexQuickConfig(): Promise<CodexQuickConfig> {
 export async function saveCodexQuickConfig(
   modelContextWindow?: number,
   autoCompactTokenLimit?: number,
+  experimentalModelCatalogEnabled?: boolean,
+  experimentalModelCatalogModels?: CodexExperimentalModelDefinition[],
+  experimentalModelCatalogDefaultModelId?: string | null,
 ): Promise<CodexQuickConfig> {
   return await invoke('save_codex_quick_config', {
     modelContextWindow: modelContextWindow ?? null,
     autoCompactTokenLimit: autoCompactTokenLimit ?? null,
+    experimentalModelCatalogEnabled: experimentalModelCatalogEnabled ?? null,
+    experimentalModelCatalogModels: experimentalModelCatalogModels ?? null,
+    experimentalModelCatalogDefaultModelId: experimentalModelCatalogDefaultModelId ?? null,
   });
 }
 
@@ -484,6 +491,18 @@ export async function updateCodexAccountsFingerprintMode(
   mode: CodexFingerprintMode,
 ): Promise<CodexAccount[]> {
   return await invoke('update_codex_accounts_fingerprint_mode', { accountIds, mode });
+}
+
+export async function updateCodexAccountClientPolicy(
+  accountId: string,
+  codexCliOnly: boolean,
+  allowAppServer: boolean,
+): Promise<CodexAccount> {
+  return await invoke('update_codex_account_client_policy', {
+    accountId,
+    codexCliOnly,
+    allowAppServer,
+  });
 }
 
 export async function updateCodexAccountInstanceAccess(
